@@ -195,10 +195,14 @@ FlowRT Message ABI 的 native ABI 基线支持 fixed-size plain data：
 - fixed arrays with `N > 0`
 - nested structs
 
-variable frame 使用固定 header + 尾部变长区的 canonical frame codec，承载无界
-`bytes`、`string` 和 `sequence<T>`。支持 variable frame 的 backend 可以直接传递
-canonical frame；只支持 fixed-size plain data 的 backend 不得重新引入临时 envelope
-或兼容承载层。
+variable frame 使用固定 header + 尾部变长区的 canonical frame codec，承载
+`bytes`、`string` 和 `sequence<T>`；无界形式保持无界 frame 语义，有界形式使用
+`bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>`。具备无界动态分配能力的
+backend 可以直接传递无界 canonical frame；只具备有界分配能力的 backend 只能承载
+可推导 frame 上界的有界 variable frame。`iox2` 通过定容 canonical frame slot 承载
+有界 variable frame，不承载无界变长或指针所有权 payload；超出上界必须返回错误，
+不得截断。只支持 fixed-size plain data 的 backend 不得重新引入临时 envelope 或临时
+兼容承载层。
 
 暂不支持：
 

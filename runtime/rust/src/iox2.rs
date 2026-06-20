@@ -1,7 +1,8 @@
 //! 可选 iceoryx2 transport 的最小 typed pub/sub 支持。
 //!
 //! 该模块只在启用 `iox2` feature 时编译。它用于验证 FlowRT Message ABI plain-data
-//! payload 可以通过 iceoryx2 传输；用户算法代码仍不应直接依赖本模块。
+//! payload 和 bounded canonical frame slot 可以通过 iceoryx2 传输；用户算法代码仍不应
+//! 直接依赖本模块。
 
 use std::{
     collections::BTreeMap,

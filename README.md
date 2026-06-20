@@ -475,13 +475,16 @@ v0.1 的 native ABI 基线是 fixed-size plain data：
 - fixed arrays
 - nested structs
 
-当前也支持无界 variable frame：
+当前也支持 canonical variable frame：
 
 - `bytes`
 - `string`
 - `sequence<T>`
+- `bytes<max=N>`
+- `string<max=N>`
+- `sequence<T,max=N>`
 
-`inproc` 和 `zenoh` 可直接传递 canonical frame。`iox2` 只承载 fixed-size plain data；当 profile 默认选择 `iox2` 且某条 route 使用 variable frame 时，FlowRT 会把该 route 自动降级到支持变长消息的 backend（当前为 `zenoh`），fixed-size route 仍继续走 `iox2`。
+无界 `bytes`、`string` 和 `sequence<T>` 需要 backend 具备无界动态 frame 能力。`inproc` 和 `zenoh` 可直接传递无界 canonical frame；`iox2` 不承载无界变长或指针所有权 payload。带 `max=N` 的有界 variable frame 会推导单条 frame 上界，`iox2` 可以通过定容 canonical frame slot 承载，超出上界时返回错误，不截断。当 profile 默认选择 `iox2` 且某条 route 使用无界 variable frame 时，FlowRT 会把该 route 自动降级到支持无界变长消息的 backend（当前为 `zenoh`），fixed-size 和有界 route 仍继续走 `iox2`。
 
 图像、mask 和其他大 payload 不应作为普通 `bytes` channel 在本机高频路径上传输。
 推荐用标准 FrameDescriptor：channel 只传固定 64 字节 descriptor，字段包含
@@ -674,7 +677,7 @@ runtime = ["rust", "cpp"]
 backends = ["zenoh"]
 ```
 
-省略 `backend` 等价于 `auto`。`auto` 默认跟随 profile backend；如果 profile backend 是 `iox2` 且该 route 使用 variable frame，FlowRT 会自动选择 `zenoh`。`backend` 绑定在单条 `[[bind.dataflow]]` route 上；同一条 route 只能声明一次，跨 RSDL import 后仍归一化为同一个 Contract IR，不通过重复声明做隐式合并。message type 只描述数据 schema，不直接暴露 backend API；实际 transport 由 FlowRT 根据 RSDL 契约、profile 和 route 生成。
+省略 `backend` 等价于 `auto`。`auto` 默认跟随 profile backend；如果 profile backend 是 `iox2` 且该 route 使用无界 variable frame，FlowRT 会自动选择 `zenoh`。带 `max=N` 的有界 variable frame 会留在 `iox2` 并使用定容 frame slot。`backend` 绑定在单条 `[[bind.dataflow]]` route 上；同一条 route 只能声明一次，跨 RSDL import 后仍归一化为同一个 Contract IR，不通过重复声明做隐式合并。message type 只描述数据 schema，不直接暴露 backend API；实际 transport 由 FlowRT 根据 RSDL 契约、profile 和 route 生成。
 
 ## ROS2 Bridge
 

@@ -7,21 +7,26 @@
 
 当前开发线为 `v0.25.0 iox2 Service/Operation Transport`：把 native generated
 Service request/response 与 Operation start/cancel/status control path 接入本机
-`iox2` transport，并保持用户侧只看到 FlowRT typed Service / Operation API。iox2 仍是
-FlowRT runtime API 之下的 backend 实现细节，RSDL、Contract IR、self-description 和
-launch manifest 只暴露 backend 选择、canonical service name 和 capability 结果。
+`iox2` transport，并补齐有界 variable frame over iox2。用户侧仍只看到 FlowRT typed
+Service / Operation API 和常规 `Vec` / `String` / `std::vector` / `std::string` 消息字段。
+iox2 仍是 FlowRT runtime API 之下的 backend 实现细节，RSDL、Contract IR、
+self-description 和 launch manifest 只暴露 backend 选择、canonical service name、
+frame 上界和 capability 结果。
 
 当前 workspace 版本为 `0.25.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
 CHANGELOG v0.25.0 release 段在本发布收尾中同步。`v0.25.0 Iox2 Service Operation Smoke`
-focused gate 覆盖 `iox2_service_demo`、Service / Operation golden、manifest / selfdesc
-endpoint 展示，以及真实 `iceoryx2` SDK 可用时的 build/run 路径。
+focused gate 覆盖 `iox2_service_demo`、Service / Operation golden、有界变长 route 切到
+iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `iceoryx2` SDK 可用
+时的 build/run 路径。
 
-本版本明确长期 invariant：`iox2` 永久只承载 fixed-size plain data，不承载
-`bytes`、`string`、`sequence<T>` 或 canonical variable frame；该规则同时适用于 dataflow
-channel、Service request/response 和 Operation goal/feedback/result。dataflow、Service
-和 Operation 都按 edge 解析 backend：省略 `backend` 继承 profile/default backend；profile
-默认 `iox2` 遇到动态 payload edge 时自动 fallback 到 `zenoh`；显式 `backend = "iox2"`
-遇到动态 payload 时由 validator fail-fast。
+本版本明确长期 invariant：`iox2` 不承载无界变长或指针所有权 payload；fixed-size plain
+data 和可推导 frame 上界的 `bytes<max=N>`、`string<max=N>`、`sequence<T,max=N>` 可走
+定容 canonical frame slot。该规则同时适用于 dataflow channel、Service request/response
+和 Operation start goal；Operation cancel/status control path 仍保持 fixed-size iox2
+service。dataflow、Service 和 Operation 都按 edge 解析 backend：省略 `backend` 继承
+profile/default backend；profile 默认 `iox2` 遇到无界 payload edge 时自动 fallback 到
+`zenoh`；显式 `backend = "iox2"` 遇到无界 payload 时由 validator fail-fast。有界 frame
+publish/call 超出推导上界时返回错误，不截断。
 
 上一发布线为 `v0.24.0 Fault Matrix Completion`：把 v0.23.3 已落地的 global tick、
 fault injection kind、route health、standby failover 和 graph health 组合成可运行、
@@ -423,10 +428,11 @@ sequence 的跨语言布局漂移。`flowrt echo` 使用 self-description 中的
 metadata 解释 variable frame，可展示 `sequence<Point>` 这类 named fixed struct sequence；
 长 sequence 默认输出结构化摘要，`--raw` 输出完整内容。`flowrt pub` / JSON fixture 注入、
 `flowrt replay` 和 `flowrt record` 已覆盖 variable frame boundary input 与 event 主路径，
-record/replay 继续使用 FlowRT-native 事件格式，不引入 ROS2 schema。backend 能力边界不变：
-`iox2` 只承载 fixed-size plain data，variable frame route 必须通过
-`abi:variable_payload_frame` 和 `allocation:unbounded_dynamic` capability 选择支持变长消息
-的 backend，不生成 iox2 variable envelope。
+record/replay 继续使用 FlowRT-native 事件格式，不引入 ROS2 schema。backend 能力边界按
+allocation 维度区分：`abi:variable_payload_frame` 表示 canonical frame 编码能力；
+`allocation:bounded` 表示 frame 上界可由 Contract IR 推导，`allocation:unbounded_dynamic`
+表示 backend 可承载无界动态 frame。`iox2` 提供 bounded variable frame 的定容 slot，
+不提供无界动态分配；无界 variable frame route 仍选择 `zenoh`，不生成 iox2 无界 envelope。
 
 `v0.12.0` 完成 Contract-driven App Authoring 发布收口。当前用户主路径
 已经统一为 `flowrt.toml`、`rsdl/`、`app/` 和可重建的 `flowrt/` 生成目录：
@@ -989,9 +995,9 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   dataflow message。
 - **Variable frame 工程化**：把 `sequence<fixed struct>`、`string`、`bytes` 和嵌套
   variable frame 做成 Rust/C++ codegen、message ABI conformance、backend resolver、
-  self-description、`echo`/`record`/`status` 观测工具的可靠主路径。`iox2` 继续只承载
-  fixed-size plain data；涉及无界变长数据的 route 自动选择支持 variable frame 的
-  backend，不为 `iox2` 重新引入临时 envelope。
+  self-description、`echo`/`record`/`status` 观测工具的可靠主路径。`iox2` 不承载
+  无界 variable frame；涉及无界变长数据的 route 自动选择支持无界动态 frame 的 backend，
+  不为 `iox2` 重新引入无界 envelope。
 - **FrameDescriptor + side-channel lease**：图像、mask 和其他大 payload 不作为普通
   channel payload 承载。FlowRT channel 传递 descriptor、resource id、slot、generation、
   size、format 和 metadata；attach / acquire / release / lease keepalive 归 I/O boundary
@@ -1027,8 +1033,8 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   顶层 target 字段兼容。
 - variable frame 的 Rust/C++ generated message API 覆盖 `bytes`、`string`、
   `sequence<primitive>` 和 `sequence<fixed struct>`；runtime frame codec 的 canonical
-  tail order 已在 Rust/C++ smoke 中覆盖。`iox2` 仍只承载 fixed-size plain data，变长
-  route 自动选择支持 variable frame 的 backend。
+  tail order 已在 Rust/C++ smoke 中覆盖。无界变长 route 自动选择支持无界动态 frame 的
+  backend；有界 `max=N` route 可在 `iox2` 上使用定容 canonical frame slot。
 - CI 增加 `v0.8.0 Integration Smoke` amd64/arm64 focused gate，并在安装后 demo smoke
   中运行 `scripts/test-v080-installed-smoke.sh`，覆盖 variable frame、I/O boundary
   status、FrameDescriptor self-description、bundle schema v2 和 deploy dry-run。
@@ -1163,8 +1169,8 @@ scripts/
 - Rust/C++ message ABI conformance 测试生成，覆盖 size、alignment、field offset、
   byte-level roundtrip、default initialization 和 IR-derived expected byte fixtures。
 - fixed-size plain data 与 variable frame 主线。`bytes`、`string` 和 `sequence<T>`
-  使用 canonical frame；`iox2` 只承载 fixed-size plain data，变长 route 自动选择
-  支持变长消息的 backend。
+  使用 canonical frame；无界变长 route 自动选择支持无界动态 frame 的 backend，有界
+  `bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>` 可在 `iox2` 上使用定容 slot。
 - Rust/C++ generated runtime shell 的生命周期、task 调度、latest/FIFO channel、
   bind-level stale freshness、deadline 检查和参数 pending apply。
 - Service 请求/响应语义：RSDL component 可声明 `service_client` / `service_server`，

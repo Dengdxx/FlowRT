@@ -38,7 +38,7 @@
 | `examples/variable_frame_island_demo` | Rust | `inproc` | `scripts/test-v091-variable-frame-island-demo.sh` | 验证 `sequence<f32>` canonical frame boundary input、`flowrt pub --file --freq` 和 echo 输出摘要 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 | `examples/zenoh_service_demo` | Rust | `zenoh` | `flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl` | 验证 generated Service over zenoh 的跨进程 request/response、typed API 和 service key expression |
-| `examples/iox2_service_demo` | Rust | `iox2` | `flowrt check examples/iox2_service_demo/rsdl/robot.rsdl` | 验证 generated Service/Operation over iox2 的同主机跨进程 control-plane、typed API 和 canonical service name |
+| `examples/iox2_service_demo` | Rust | `iox2` | `flowrt check examples/iox2_service_demo/rsdl/robot.rsdl` | 验证 generated Service/Operation over iox2 的同主机跨进程 control-plane、typed API、bounded frame slot 和 canonical service name |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor 观测 |
@@ -370,7 +370,7 @@ examples/imu_demo_iox2/rsdl/robot.rsdl
 - selected backend 必须是 `iox2`。
 - launch manifest 中的 channel 必须暴露 canonical service name。
 - Rust 和 C++ shell 消费同一份 Contract IR-derived transport 契约。
-- `iox2` 只承载 fixed-size plain data；如果 route 使用 variable frame，Contract IR 会把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），不生成变长 over iox2 的兼容承载层。
+- `iox2` 承载 fixed-size plain data 和带 `max=N` 上界的 bounded variable frame；如果 route 使用无界 variable frame，Contract IR 会把该 route 自动选择到支持无界变长消息的 backend（当前为 `zenoh`），不生成无界变长 over iox2 的兼容承载层。
 
 `mixed_iox2_demo` 和 `imu_demo_iox2` 的基础 smoke 仍以 `check` 为主：
 
@@ -837,9 +837,10 @@ FLOWRT_V0250_REQUIRE_IOX2_SDK=1 scripts/test-v0250-iox2-service-operation-smoke.
 - Service request/response 和 Operation control path 都走 generated iox2 endpoint。
 - self-description 与 `launch/launch.json` 对 iox2 endpoint 暴露 `service` 字段，而不是
   zenoh 的 `key_expr` 字段。
-- `iox2` 只承载 fixed-size plain data；Service request/response 或 Operation
-  goal/feedback/result 含 `bytes`、`string` 或 `sequence<T>` 时，省略 backend 会按 edge
-  fallback 到 `zenoh`，显式 `backend = "iox2"` 会被 validator 拒绝。
+- `iox2` 承载 fixed-size plain data 和 bounded variable frame；Service request/response
+  或 Operation start goal 含 `bytes<max=N>`、`string<max=N>` 或 `sequence<T,max=N>` 时，
+  generated shell 使用定容 frame slot。含无界 `bytes`、`string` 或 `sequence<T>` 时，
+  省略 backend 会按 edge fallback 到 `zenoh`，显式 `backend = "iox2"` 会被 validator 拒绝。
 
 ## `operation_demo`
 
