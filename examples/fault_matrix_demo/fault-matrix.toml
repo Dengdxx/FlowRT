@@ -2,7 +2,7 @@
 name = "fault_matrix_demo"
 rsdl = "rsdl/robot.rsdl"
 profile = "deterministic"
-run_ticks = 6
+run_ticks = 8
 mode = "launch"
 
 [[case]]
