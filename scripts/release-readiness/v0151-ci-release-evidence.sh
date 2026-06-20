@@ -1,6 +1,40 @@
 # v0.15.1 CI release evidence 的发布门禁接线检查。
 # 本文件由 scripts/check-release-readiness.sh source，并复用其 pass/fail helper。
 
+check_release_evidence_workflow_readiness() {
+    local fast_ci_file="$1"
+    local ci_file="$2"
+
+    if [[ ! -f "$fast_ci_file" ]]; then
+        fail "日常 CI 配置不存在: $fast_ci_file"
+    else
+        require_file_text "日常 CI 保留 push/PR 快速验证入口" \
+            "pull_request:" "$fast_ci_file"
+        forbid_file_text "日常 CI 不产出 release evidence" \
+            "Release Evidence Gate" "$fast_ci_file"
+    fi
+
+    if [[ ! -f "$ci_file" ]]; then
+        fail "release candidate 配置不存在: $ci_file"
+    else
+        if grep -qF 'scripts/check-release-readiness.sh "$version"' "$ci_file"; then
+            pass "release evidence gate 运行 release readiness 版本校验"
+        else
+            fail "release evidence gate 缺少 release readiness 版本校验"
+        fi
+        if grep -qF 'deb_version="$(dpkg-deb -f "$deb" Version)"' "$ci_file"; then
+            pass "release evidence gate 校验 deb 版本"
+        else
+            fail "release evidence gate 缺少 deb 版本校验"
+        fi
+        if grep -q 'release-notes' "$ci_file" && grep -qF 'flowrt-release-evidence' "$ci_file"; then
+            pass "release evidence gate 包含 release notes 和 artifact 校验"
+        else
+            fail "release evidence gate 缺少 release notes 或 artifact 校验"
+        fi
+    fi
+}
+
 check_v0151_ci_release_evidence_readiness() {
     local registry_file="$repo_root/scripts/release-gates/registry.toml"
     local release_candidate_script="$repo_root/scripts/check-release-candidate.sh"

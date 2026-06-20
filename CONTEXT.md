@@ -17,7 +17,9 @@ frame 上界和 capability 结果。
 CHANGELOG v0.25.0 release 段在本发布收尾中同步。`v0.25.0 Iox2 Service Operation Smoke`
 focused gate 覆盖 `iox2_service_demo`、Service / Operation golden、有界变长 route 切到
 iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `iceoryx2` SDK 可用
-时的 build/run 路径。
+时的 build/run 路径。该 focused gate 在 amd64 / arm64 runner 上显式安装
+`x86_64-unknown-linux-gnu` Rust target，以覆盖 `linux-amd64` 示例 target 的真实 build
+路径。
 
 本版本明确长期 invariant：`iox2` 不承载无界变长或指针所有权 payload；fixed-size plain
 data 和可推导 frame 上界的 `bytes<max=N>`、`string<max=N>`、`sequence<T,max=N>` 可走

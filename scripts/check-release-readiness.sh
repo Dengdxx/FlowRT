@@ -259,36 +259,8 @@ printf '\n[4/27] Release evidence 版本校验覆盖\n'
 fast_ci_file="$repo_root/.github/workflows/ci.yml"
 ci_file="$repo_root/.github/workflows/release-candidate.yml"
 release_workflow_file="$repo_root/.github/workflows/release.yml"
-if [[ ! -f "$fast_ci_file" ]]; then
-    fail "日常 CI 配置不存在: $fast_ci_file"
-else
-    require_file_text "日常 CI 保留 push/PR 快速验证入口" \
-        "pull_request:" "$fast_ci_file"
-    forbid_file_text "日常 CI 不产出 release evidence" \
-        "Release Evidence Gate" "$fast_ci_file"
-fi
-if [[ ! -f "$ci_file" ]]; then
-    fail "release candidate 配置不存在: $ci_file"
-else
-    # release evidence gate 复用 readiness 脚本做版本来源一致性校验。
-    if grep -qF 'scripts/check-release-readiness.sh "$version"' "$ci_file"; then
-        pass "release evidence gate 运行 release readiness 版本校验"
-    else
-        fail "release evidence gate 缺少 release readiness 版本校验"
-    fi
-    if grep -qF 'deb_version="$(dpkg-deb -f "$deb" Version)"' "$ci_file"; then
-        pass "release evidence gate 校验 deb 版本"
-    else
-        fail "release evidence gate 缺少 deb 版本校验"
-    fi
-
-    # 检查 release evidence 是否校验了 release notes 和 artifact。
-    if grep -q 'release-notes' "$ci_file" && grep -qF 'flowrt-release-evidence' "$ci_file"; then
-        pass "release evidence gate 包含 release notes 和 artifact 校验"
-    else
-        fail "release evidence gate 缺少 release notes 或 artifact 校验"
-    fi
-fi
+source "$repo_root/scripts/release-readiness/v0151-ci-release-evidence.sh"
+check_release_evidence_workflow_readiness "$fast_ci_file" "$ci_file"
 
 if [[ ! -f "$release_workflow_file" ]]; then
     fail "release workflow 不存在: $release_workflow_file"
