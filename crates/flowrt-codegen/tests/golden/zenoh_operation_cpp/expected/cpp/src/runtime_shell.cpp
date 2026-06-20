@@ -642,15 +642,36 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
         status = step_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);
     }
     if (status == flowrt::Status::Ok) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
         auto zenoh_operation_session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
+#endif
         this->operation_client_controller_plan_.bind(
-            flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open("__flowrt_operation_controller_plan_start", zenoh_operation_session),
-            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open("__flowrt_operation_controller_plan_cancel", zenoh_operation_session),
-            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open("__flowrt_operation_controller_plan_status", zenoh_operation_session));
+            flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open(
+                "__flowrt_operation_controller_plan_start"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                , zenoh_operation_session
+#endif
+            ),
+            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
+                "__flowrt_operation_controller_plan_cancel"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                , zenoh_operation_session
+#endif
+            ),
+            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
+                "__flowrt_operation_controller_plan_status"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                , zenoh_operation_session
+#endif
+            ));
         (void)"__flowrt_operation_controller_plan_feedback";
         (void)"__flowrt_operation_controller_plan_result";
         this->operation_start_server_navigator_plan_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open(
-            "__flowrt_operation_controller_plan_start", zenoh_operation_session,
+            "__flowrt_operation_controller_plan_start"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_operation_session
+#endif
+            ,
             [this](const flowrt::OperationStartRequest<PlanGoal>& request) -> flowrt::ServiceResult<flowrt::OperationStartAck> {
                 auto operation_worker_server = this->navigator_;
                 if (!operation_worker_server) {
@@ -716,7 +737,11 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
             status = flowrt::Status::Error;
         }
         this->operation_cancel_server_navigator_plan_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
-            "__flowrt_operation_controller_plan_cancel", zenoh_operation_session,
+            "__flowrt_operation_controller_plan_cancel"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_operation_session
+#endif
+            ,
             [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {
                 const auto snapshot = this->operation_control_0_->snapshot();
                 if (const auto error = this->operation_control_0_->request_cancel(id, snapshot.owner);
@@ -729,7 +754,11 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
             status = flowrt::Status::Error;
         }
         this->operation_status_server_navigator_plan_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
-            "__flowrt_operation_controller_plan_status", zenoh_operation_session,
+            "__flowrt_operation_controller_plan_status"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_operation_session
+#endif
+            ,
             [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {
                 const auto status = this->operation_control_0_->status(id);
                 if (!status.has_value()) {
@@ -1181,11 +1210,28 @@ flowrt::Status App::run_process_client_proc(const flowrt::Backend& backend, std:
         status = step_process_client_proc_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);
     }
     if (status == flowrt::Status::Ok) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
         auto zenoh_operation_session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
+#endif
         this->operation_client_controller_plan_.bind(
-            flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open("__flowrt_operation_controller_plan_start", zenoh_operation_session),
-            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open("__flowrt_operation_controller_plan_cancel", zenoh_operation_session),
-            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open("__flowrt_operation_controller_plan_status", zenoh_operation_session));
+            flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open(
+                "__flowrt_operation_controller_plan_start"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                , zenoh_operation_session
+#endif
+            ),
+            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
+                "__flowrt_operation_controller_plan_cancel"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                , zenoh_operation_session
+#endif
+            ),
+            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
+                "__flowrt_operation_controller_plan_status"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                , zenoh_operation_session
+#endif
+            ));
     }
     flowrt::DeterministicExecutor scheduler{1};
     flowrt::WorkerPool worker_pool{1};
@@ -1541,11 +1587,17 @@ flowrt::Status App::run_process_server_proc(const flowrt::Backend& backend, std:
         status = step_process_server_proc_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);
     }
     if (status == flowrt::Status::Ok) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
         auto zenoh_operation_session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
+#endif
         (void)"__flowrt_operation_controller_plan_feedback";
         (void)"__flowrt_operation_controller_plan_result";
         this->operation_start_server_navigator_plan_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open(
-            "__flowrt_operation_controller_plan_start", zenoh_operation_session,
+            "__flowrt_operation_controller_plan_start"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_operation_session
+#endif
+            ,
             [this](const flowrt::OperationStartRequest<PlanGoal>& request) -> flowrt::ServiceResult<flowrt::OperationStartAck> {
                 auto operation_worker_server = this->navigator_;
                 if (!operation_worker_server) {
@@ -1611,7 +1663,11 @@ flowrt::Status App::run_process_server_proc(const flowrt::Backend& backend, std:
             status = flowrt::Status::Error;
         }
         this->operation_cancel_server_navigator_plan_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
-            "__flowrt_operation_controller_plan_cancel", zenoh_operation_session,
+            "__flowrt_operation_controller_plan_cancel"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_operation_session
+#endif
+            ,
             [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {
                 const auto snapshot = this->operation_control_0_->snapshot();
                 if (const auto error = this->operation_control_0_->request_cancel(id, snapshot.owner);
@@ -1624,7 +1680,11 @@ flowrt::Status App::run_process_server_proc(const flowrt::Backend& backend, std:
             status = flowrt::Status::Error;
         }
         this->operation_status_server_navigator_plan_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
-            "__flowrt_operation_controller_plan_status", zenoh_operation_session,
+            "__flowrt_operation_controller_plan_status"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_operation_session
+#endif
+            ,
             [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {
                 const auto status = this->operation_control_0_->status(id);
                 if (!status.has_value()) {

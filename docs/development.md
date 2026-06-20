@@ -20,6 +20,19 @@ cmake --build build/cpp
 ctest --test-dir build/cpp --output-on-failure
 ```
 
+Codegen transport compile evidence matrix：
+
+```bash
+scripts/test-codegen-compile.sh
+scripts/test-v0260-transport-compile-evidence-smoke.sh
+```
+
+codegen golden snapshot 只锁定生成文本漂移，不能证明 generated shell 可被 Rust/C++ 编译器接受。
+`scripts/test-codegen-compile.sh` 复用 golden corpus，对代表性 inproc、iox2、zenoh
+dataflow、Service、Operation 和 bounded variable frame generated shell 做语法或 crate
+真编译。它仍不同于真实 SDK demo build/run：compile net 证明生成物可编译，`zenoh_service_demo`、
+`iox2_service_demo` 等安装后或 SDK smoke 才证明依赖解析、链接和运行路径可用。
+
 VSCode / clangd：
 
 ```bash

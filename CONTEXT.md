@@ -5,19 +5,18 @@
 
 ## 当前版本背景
 
-当前开发线为 `v0.25.2 Transport Route Health`：不新增 RSDL、Contract IR 或 runtime
-用户语义，只把既有 transport dataflow publish 结果纳入与 inproc FIFO 对齐的 route health
-观测。用户侧仍只看到 FlowRT typed Service / Operation API 和常规 `Vec` / `String` /
-`std::vector` / `std::string` 消息字段；`iox2` / `zenoh` 仍是 FlowRT runtime API 之下的
-backend 实现细节。
+当前开发线为 `v0.26.0 Transport Compile Evidence Matrix`：不新增 RSDL、Contract IR 或
+runtime 用户语义，只把代表性 generated transport shell 纳入真编译证据网。用户侧仍只看到
+FlowRT typed Service / Operation API 和常规 `Vec` / `String` / `std::vector` /
+`std::string` 消息字段；`iox2` / `zenoh` 仍是 FlowRT runtime API 之下的 backend 实现细节。
 
-当前 workspace 版本为 `0.25.2`。版本源、runtime 版本、Cargo.lock、README 安装示例和
-CHANGELOG v0.25.2 release 段在本发布收尾中同步。transport dataflow publish 失败现在会按
-route overflow policy 投影到统一 route counters：`drop_oldest` / `drop_newest` 增加
-`dropped_samples`，`block` 增加 `backpressure`，`error` 增加 `overflow`，同时保留
-backend health / last error 诊断。C++ generated transport dataflow publish 与 Rust 对齐，
-会记录 route backend health、route publish/drop/backpressure/overflow counters 和 transport
-publish error。
+当前 workspace 版本为 `0.26.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
+CHANGELOG v0.26.0 release 段在本发布收尾中同步。`scripts/test-codegen-compile.sh` 现在
+覆盖代表性 iox2 / zenoh generated dataflow、Service、Operation 和 bounded variable frame
+Rust/C++ shell 的真实编译。C++ iox2 Service / Operation client handle 改为绑定 shared
+transport client，避免把 non-movable `Iox2ServiceClient` / `Iox2FrameServiceClient` 放入
+`std::optional`；C++ zenoh Service / Operation 在缺少 zenoh SDK 时不再引用底层
+`::zenoh::Session` 类型，继续走 runtime fail-fast overload。
 
 本版本明确长期 invariant：`iox2` 不承载无界变长或指针所有权 payload；fixed-size plain
 data 和可推导 frame 上界的 `bytes<max=N>`、`string<max=N>`、`sequence<T,max=N>` 可走
@@ -28,7 +27,15 @@ profile/default backend；profile 默认 `iox2` 遇到无界 payload edge 时自
 `zenoh`；显式 `backend = "iox2"` 遇到无界 payload 时由 validator fail-fast。有界 frame
 publish/call 超出字段上界时返回包含字段名与上界的错误，不截断。
 
-上一发布线为 `v0.25.1 Transport Evidence Hardening`：不新增 RSDL、Contract IR 或 runtime
+上一发布线为 `v0.25.2 Transport Route Health`：不新增 RSDL、Contract IR 或 runtime
+用户语义，只把既有 transport dataflow publish 结果纳入与 inproc FIFO 对齐的 route health
+观测。transport dataflow publish 失败会按 route overflow policy 投影到统一 route counters：
+`drop_oldest` / `drop_newest` 增加 `dropped_samples`，`block` 增加 `backpressure`，
+`error` 增加 `overflow`，同时保留 backend health / last error 诊断。C++ generated
+transport dataflow publish 与 Rust 对齐，会记录 route backend health、route publish/drop/
+backpressure/overflow counters 和 transport publish error。
+
+再上一发布线为 `v0.25.1 Transport Evidence Hardening`：不新增 RSDL、Contract IR 或 runtime
 用户语义，只补强 v0.25.0 新增 transport 路径的真实编译证据和发布门禁。`v0.25.1 Transport
 Evidence Smoke` focused gate 在真实 SDK 可用时对 `zenoh_service_demo` 与
 `iox2_service_demo` 执行 `deps + build`，补齐 generated transport app 的真实编译证据；该
@@ -70,10 +77,12 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - Operation 控制面：generated Operation runtime 已支持 inproc、zenoh，并在本版本接入
   iox2；`flowrt op list/status/cancel` 是本机 introspection 控制面。`flowrt op start`、
   跨机 Operation CLI 控制面和 replay 驱动 Operation 执行仍不属于当前范围。
-- 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke，以及 v0.25.1 的
-  `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据已覆盖
-  transport 接线；但这仍不等同于所有 iox2/zenoh generated transport shell 的全面真编译网，
-  新增 transport 分支仍需要按依赖可用性补 smoke 或显式 fail-fast 证据。
+- 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke、v0.25.1 的
+  `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据，以及
+  v0.26.0 的代表性 iox2/zenoh generated dataflow、Service、Operation、bounded variable
+  frame Rust/C++ shell 真编译网已覆盖 transport 接线；但这仍不等同于所有 profile、target
+  和真实 SDK run-time 组合的穷尽矩阵，新增 transport 分支仍需要按依赖可用性补 smoke 或
+  显式 fail-fast 证据。
 - 故障注入：`status_error`、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop` 已进入 test-only deterministic injection / fault matrix 路径；生产随机
   / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。

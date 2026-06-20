@@ -604,7 +604,7 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
         status = step_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);
     }
     if (status == flowrt::Status::Ok) {
-        this->service_client_plan_client_plan_.bind(flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>::open("FlowRT/service/plan_client_plan"));
+        this->service_client_plan_client_plan_.bind(flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>::open_shared("FlowRT/service/plan_client_plan"));
         this->service_server_plan_svc_plan_ = flowrt::iox2::Iox2ServiceServer<PlanRequest, PlanResponse>::open("FlowRT/service/plan_client_plan", 64U);
         this->service_server_plan_svc_plan_->set_schedule_waiter(scheduler_events);
         if (this->service_server_plan_svc_plan_->health().state == flowrt::BackendHealthState::Ready) {
@@ -1039,7 +1039,7 @@ flowrt::Status App::run_process_client_proc(const flowrt::Backend& backend, std:
         status = step_process_client_proc_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);
     }
     if (status == flowrt::Status::Ok) {
-        this->service_client_plan_client_plan_.bind(flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>::open("FlowRT/service/plan_client_plan"));
+        this->service_client_plan_client_plan_.bind(flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>::open_shared("FlowRT/service/plan_client_plan"));
     }
     flowrt::DeterministicExecutor scheduler{1};
     flowrt::WorkerPool worker_pool{1};

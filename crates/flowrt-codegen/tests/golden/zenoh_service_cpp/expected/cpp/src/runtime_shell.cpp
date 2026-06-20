@@ -578,10 +578,21 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
         status = step_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);
     }
     if (status == flowrt::Status::Ok) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
         auto zenoh_service_session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
-        this->service_client_plan_client_plan_.bind(flowrt::zenoh::ZenohServiceClient<PlanRequest, PlanResponse>::open("plan_client.plan", zenoh_service_session));
+#endif
+        this->service_client_plan_client_plan_.bind(flowrt::zenoh::ZenohServiceClient<PlanRequest, PlanResponse>::open(
+            "plan_client.plan"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_service_session
+#endif
+            ));
         this->service_server_plan_svc_plan_ = flowrt::zenoh::ZenohServiceServer<PlanRequest, PlanResponse>::open(
-            "plan_client.plan", zenoh_service_session,
+            "plan_client.plan"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_service_session
+#endif
+            ,
             [this](const PlanRequest& request) -> flowrt::ServiceResult<PlanResponse> {
                 if (!this->plan_svc_) {
                     return flowrt::ServiceResult<PlanResponse>::err(flowrt::ServiceError::Unavailable);
@@ -1008,8 +1019,15 @@ flowrt::Status App::run_process_client_proc(const flowrt::Backend& backend, std:
         status = step_process_client_proc_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);
     }
     if (status == flowrt::Status::Ok) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
         auto zenoh_service_session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
-        this->service_client_plan_client_plan_.bind(flowrt::zenoh::ZenohServiceClient<PlanRequest, PlanResponse>::open("plan_client.plan", zenoh_service_session));
+#endif
+        this->service_client_plan_client_plan_.bind(flowrt::zenoh::ZenohServiceClient<PlanRequest, PlanResponse>::open(
+            "plan_client.plan"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_service_session
+#endif
+            ));
     }
     flowrt::DeterministicExecutor scheduler{1};
     flowrt::WorkerPool worker_pool{1};
@@ -1338,9 +1356,15 @@ flowrt::Status App::run_process_server_proc(const flowrt::Backend& backend, std:
         status = step_process_server_proc_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);
     }
     if (status == flowrt::Status::Ok) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
         auto zenoh_service_session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
+#endif
         this->service_server_plan_svc_plan_ = flowrt::zenoh::ZenohServiceServer<PlanRequest, PlanResponse>::open(
-            "plan_client.plan", zenoh_service_session,
+            "plan_client.plan"
+#ifdef FLOWRT_HAS_ZENOH_CXX
+            , zenoh_service_session
+#endif
+            ,
             [this](const PlanRequest& request) -> flowrt::ServiceResult<PlanResponse> {
                 if (!this->plan_svc_) {
                     return flowrt::ServiceResult<PlanResponse>::err(flowrt::ServiceError::Unavailable);

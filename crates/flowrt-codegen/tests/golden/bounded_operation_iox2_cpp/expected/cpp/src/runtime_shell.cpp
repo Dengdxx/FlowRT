@@ -732,9 +732,9 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
     }
     if (status == flowrt::Status::Ok) {
         this->operation_client_controller_plan_.bind(
-            flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open("FlowRT/service/__flowrt_operation_controller_plan_start"),
-            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open("FlowRT/service/__flowrt_operation_controller_plan_cancel"),
-            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open("FlowRT/service/__flowrt_operation_controller_plan_status"));
+            flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open_shared("FlowRT/service/__flowrt_operation_controller_plan_start"),
+            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open_shared("FlowRT/service/__flowrt_operation_controller_plan_cancel"),
+            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open_shared("FlowRT/service/__flowrt_operation_controller_plan_status"));
         this->operation_start_server_navigator_plan_ = flowrt::iox2::Iox2FrameServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open("FlowRT/service/__flowrt_operation_controller_plan_start", 1U);
         this->operation_start_server_navigator_plan_->set_schedule_waiter(scheduler_events);
         if (this->operation_start_server_navigator_plan_->health().state != flowrt::BackendHealthState::Ready) {
@@ -1192,9 +1192,9 @@ flowrt::Status App::run_process_client_proc(const flowrt::Backend& backend, std:
     }
     if (status == flowrt::Status::Ok) {
         this->operation_client_controller_plan_.bind(
-            flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open("FlowRT/service/__flowrt_operation_controller_plan_start"),
-            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open("FlowRT/service/__flowrt_operation_controller_plan_cancel"),
-            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open("FlowRT/service/__flowrt_operation_controller_plan_status"));
+            flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open_shared("FlowRT/service/__flowrt_operation_controller_plan_start"),
+            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open_shared("FlowRT/service/__flowrt_operation_controller_plan_cancel"),
+            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open_shared("FlowRT/service/__flowrt_operation_controller_plan_status"));
     }
     flowrt::DeterministicExecutor scheduler{1};
     flowrt::WorkerPool worker_pool{1};

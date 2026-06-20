@@ -928,8 +928,19 @@ class Iox2ServiceClient {
         return Iox2ServiceClient(service_name, std::nullopt);
     }
 
+    static std::shared_ptr<Iox2ServiceClient> open_shared(std::string_view service_name) {
+        return std::shared_ptr<Iox2ServiceClient>(
+            new Iox2ServiceClient(service_name, std::nullopt));
+    }
+
     static Iox2ServiceClient unavailable(std::string_view service_name, std::string error) {
         return Iox2ServiceClient(service_name, std::move(error));
+    }
+
+    static std::shared_ptr<Iox2ServiceClient> unavailable_shared(std::string_view service_name,
+                                                                std::string error) {
+        return std::shared_ptr<Iox2ServiceClient>(
+            new Iox2ServiceClient(service_name, std::move(error)));
     }
 
     ServiceResult<Resp> call(const Req &request, std::uint64_t timeout_ms) {
@@ -1053,8 +1064,19 @@ class Iox2FrameServiceClient {
         return Iox2FrameServiceClient(service_name, std::nullopt);
     }
 
+    static std::shared_ptr<Iox2FrameServiceClient> open_shared(std::string_view service_name) {
+        return std::shared_ptr<Iox2FrameServiceClient>(
+            new Iox2FrameServiceClient(service_name, std::nullopt));
+    }
+
     static Iox2FrameServiceClient unavailable(std::string_view service_name, std::string error) {
         return Iox2FrameServiceClient(service_name, std::move(error));
+    }
+
+    static std::shared_ptr<Iox2FrameServiceClient> unavailable_shared(std::string_view service_name,
+                                                                     std::string error) {
+        return std::shared_ptr<Iox2FrameServiceClient>(
+            new Iox2FrameServiceClient(service_name, std::move(error)));
     }
 
     ServiceResult<Resp> call(const Req &request, std::uint64_t timeout_ms) {

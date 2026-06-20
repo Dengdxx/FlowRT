@@ -29,18 +29,18 @@ public:
     OperationClient_controller_plan() : slot_(std::make_shared<Slot>()) {}
 
     void bind(
-        flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49> start_client,
-        flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot> cancel_client,
-        flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot> status_client) {
+        std::shared_ptr<flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>> start_client,
+        std::shared_ptr<flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> cancel_client,
+        std::shared_ptr<flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> status_client) {
         if (slot_) {
-            slot_->start_client.emplace(std::move(start_client));
-            slot_->cancel_client.emplace(std::move(cancel_client));
-            slot_->status_client.emplace(std::move(status_client));
+            slot_->start_client = std::move(start_client);
+            slot_->cancel_client = std::move(cancel_client);
+            slot_->status_client = std::move(status_client);
         }
     }
 
     flowrt::OperationClientResult<flowrt::OperationStartAck> start(const PlanGoal& goal, std::uint64_t timeout_ms = 5000) {
-        if (!slot_ || !slot_->start_client.has_value()) {
+        if (!slot_ || !slot_->start_client) {
             return flowrt::OperationClientResult<flowrt::OperationStartAck>::err(flowrt::OperationClientError::Unavailable);
         }
         const auto owner = flowrt::OperationOwner{.scope_key = flowrt::fnv1a64("controller.plan"), .owner_key = flowrt::fnv1a64("controller.plan")};
@@ -49,14 +49,14 @@ public:
     }
 
     flowrt::OperationClientResult<flowrt::OperationStatusSnapshot> cancel(flowrt::OperationId id, std::uint64_t timeout_ms = 5000) {
-        if (!slot_ || !slot_->cancel_client.has_value()) {
+        if (!slot_ || !slot_->cancel_client) {
             return flowrt::OperationClientResult<flowrt::OperationStatusSnapshot>::err(flowrt::OperationClientError::Unavailable);
         }
         return flowrt::operation_client_result_from_service(slot_->cancel_client->call(id, timeout_ms));
     }
 
     flowrt::OperationClientResult<flowrt::OperationStatusSnapshot> status(flowrt::OperationId id, std::uint64_t timeout_ms = 5000) {
-        if (!slot_ || !slot_->status_client.has_value()) {
+        if (!slot_ || !slot_->status_client) {
             return flowrt::OperationClientResult<flowrt::OperationStatusSnapshot>::err(flowrt::OperationClientError::Unavailable);
         }
         return flowrt::operation_client_result_from_service(slot_->status_client->call(id, timeout_ms));
@@ -64,9 +64,9 @@ public:
 
 private:
     struct Slot {
-        std::optional<flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>> start_client;
-        std::optional<flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> cancel_client;
-        std::optional<flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> status_client;
+        std::shared_ptr<flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>> start_client;
+        std::shared_ptr<flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> cancel_client;
+        std::shared_ptr<flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> status_client;
     };
     std::shared_ptr<Slot> slot_;
 };

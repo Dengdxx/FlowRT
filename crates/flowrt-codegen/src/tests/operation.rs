@@ -712,6 +712,18 @@ fn cpp_zenoh_operation_codegen_wires_transport() {
         "C++ runtime shell must open zenoh Operation start client.\n\n{shell}"
     );
     assert!(
+        shell.contains("#ifdef FLOWRT_HAS_ZENOH_CXX\n        auto zenoh_operation_session"),
+        "C++ zenoh Operation session must be guarded by SDK availability.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(", zenoh_operation_session\n#endif\n            )"),
+        "SDK-enabled Operation path must reuse a shared zenoh session.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open(\n                \"__flowrt_operation_controller_plan_start\"\n#ifdef FLOWRT_HAS_ZENOH_CXX"),
+        "SDK-missing Operation path must call the fail-fast client overload without a session.\n\n{shell}"
+    );
+    assert!(
         shell.contains("flowrt::zenoh::ZenohServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open"),
         "C++ runtime shell must open zenoh Operation start server.\n\n{shell}"
     );
@@ -746,13 +758,21 @@ fn cpp_iox2_operation_codegen_wires_transport() {
         "C++ iox2 Operation must hold an internal start service client.\n\n{components}"
     );
     assert!(
+        components.contains("std::shared_ptr<flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>> start_client"),
+        "C++ iox2 Operation must bind a storable shared start client.\n\n{components}"
+    );
+    assert!(
         components.contains(
             "flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>"
         ),
         "C++ iox2 Operation must hold cancel/status service clients.\n\n{components}"
     );
     assert!(
-        shell.contains("flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open"),
+        !components.contains("std::optional<flowrt::iox2::Iox2ServiceClient"),
+        "C++ iox2 Operation must not store non-movable service clients in optional.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open_shared"),
         "C++ runtime shell must open iox2 Operation start client.\n\n{shell}"
     );
     assert!(
@@ -787,13 +807,21 @@ fn cpp_iox2_operation_bounded_goal_uses_frame_start_transport() {
         "bounded C++ goal start client must use frame service transport.\n\n{components}"
     );
     assert!(
+        components.contains("std::shared_ptr<flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>> start_client"),
+        "bounded C++ Operation must bind a storable shared frame start client.\n\n{components}"
+    );
+    assert!(
         components.contains(
             "flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>"
         ),
         "C++ cancel/status control services should remain fixed-size iox2 clients.\n\n{components}"
     );
     assert!(
-        shell.contains("flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
+        !components.contains("std::optional<flowrt::iox2::Iox2"),
+        "bounded C++ Operation must not store non-movable iox2 clients in optional.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open_shared"),
         "C++ runtime shell must open frame start client.\n\n{shell}"
     );
     assert!(
@@ -801,7 +829,7 @@ fn cpp_iox2_operation_bounded_goal_uses_frame_start_transport() {
         "C++ runtime shell must open frame start server.\n\n{shell}"
     );
     assert!(
-        shell.contains("flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open"),
+        shell.contains("flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open_shared"),
         "C++ runtime shell must keep cancel/status fixed-size clients.\n\n{shell}"
     );
 }

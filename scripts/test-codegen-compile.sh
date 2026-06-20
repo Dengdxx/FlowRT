@@ -57,16 +57,111 @@ export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 echo "codegen compile net: script syntax"
 run bash -n scripts/test-codegen-compile.sh
 
-# C++：plain prepare（契约自带 island mode + boundary）后对生成 shell 做 -fsyntax-only。
-# 单文件语法校验即可捕获 turbofish/模板/缺声明类编译错，无需用户实现或 full build。
-compile_cpp() {
-    local case="$1" proj="$work_dir/$1"
-    echo "codegen compile net: [cpp] $case"
+prepare_case() {
+    local case="$1" proj="$2"
     local inject_args=()
     if [[ -f "$corpus/$case/inject.toml" ]]; then
         inject_args=(--inject "$corpus/$case/inject.toml")
     fi
     run run_flowrt prepare "$corpus/$case/input.rsdl" --out-dir "$proj/flowrt" "${inject_args[@]}"
+}
+
+install_generated_rust_stubs() {
+    local case="$1" proj="$2"
+    local source_dir="$corpus/$case/expected/app/stubs/rust"
+    local dest_dir="$proj/app/rust"
+    local runtime_shell="$proj/flowrt/rust/src/runtime_shell.rs"
+    mkdir -p "$dest_dir"
+
+    if [[ -f "$corpus/$case/stub/mod.rs" ]]; then
+        cp "$corpus/$case/stub/mod.rs" "$dest_dir/mod.rs"
+        return
+    fi
+
+    if [[ ! -d "$source_dir" ]]; then
+        printf 'missing Rust stub source for compile case: %s\n' "$case" >&2
+        return 1
+    fi
+
+    local stub_files=()
+    while IFS= read -r stub; do
+        stub_files+=("$stub")
+        awk '
+            /^pub fn build_app\(\)/ { skip_build_app = 1 }
+            !skip_build_app {
+                gsub(/flowrt_app::/, "crate::")
+                print
+            }
+        ' "$stub" > "$dest_dir/$(basename "$stub")"
+    done < <(find "$source_dir" -maxdepth 1 -type f -name '*.rs' | sort)
+
+    if [[ "${#stub_files[@]}" -eq 0 ]]; then
+        printf 'empty Rust stub source for compile case: %s\n' "$case" >&2
+        return 1
+    fi
+
+    : > "$dest_dir/mod.rs"
+    for stub in "${stub_files[@]}"; do
+        printf 'pub mod %s;\n' "$(basename "$stub" .rs)" >> "$dest_dir/mod.rs"
+    done
+    printf '\n' >> "$dest_dir/mod.rs"
+    printf 'pub fn build_app() -> crate::App {\n' >> "$dest_dir/mod.rs"
+    printf '    crate::App::new(\n' >> "$dest_dir/mod.rs"
+
+    local traits=()
+    while IFS= read -r trait_name; do
+        traits+=("$trait_name")
+    done < <(
+        awk '
+            /pub fn new\(/ { in_new = 1; next }
+            in_new && /\) -> Self/ { exit }
+            in_new {
+                if ($0 ~ /Box<dyn [A-Za-z0-9_]+/) {
+                    line = $0
+                    sub(/^.*Box<dyn /, "", line)
+                    sub(/[^A-Za-z0-9_].*$/, "", line)
+                    print line
+                }
+            }
+        ' "$runtime_shell"
+    )
+
+    if [[ "${#traits[@]}" -eq 0 ]]; then
+        printf 'failed to derive App::new component order for compile case: %s\n' "$case" >&2
+        return 1
+    fi
+
+    local trait_name stub module struct_name
+    for trait_name in "${traits[@]}"; do
+        stub=""
+        for candidate in "${stub_files[@]}"; do
+            if grep -q "impl flowrt_app::components::${trait_name} for" "$candidate"; then
+                stub="$candidate"
+                break
+            fi
+        done
+        if [[ -z "$stub" ]]; then
+            printf 'failed to find Rust stub implementing %s for compile case: %s\n' "$trait_name" "$case" >&2
+            return 1
+        fi
+        module="$(basename "$stub" .rs)"
+        struct_name="$(sed -n -E 's/.*pub struct ([A-Za-z0-9_]+).*/\1/p' "$stub" | head -n1)"
+        if [[ -z "$struct_name" ]]; then
+            printf 'failed to find Rust stub struct in %s\n' "$stub" >&2
+            return 1
+        fi
+        printf '        Box::new(%s::%s::default()),\n' "$module" "$struct_name" >> "$dest_dir/mod.rs"
+    done
+    printf '    )\n' >> "$dest_dir/mod.rs"
+    printf '}\n' >> "$dest_dir/mod.rs"
+}
+
+# C++：plain prepare（契约自带 island mode + boundary）后对生成 shell 做 -fsyntax-only。
+# 单文件语法校验即可捕获 turbofish/模板/缺声明类编译错，无需用户实现或 full build。
+compile_cpp() {
+    local case="$1" proj="$work_dir/$1"
+    echo "codegen compile net: [cpp] $case"
+    prepare_case "$case" "$proj"
     run g++ -std=c++20 -fsyntax-only \
         -I "$proj/flowrt/cpp/include" \
         -I runtime/cpp/include \
@@ -79,13 +174,8 @@ compile_cpp() {
 compile_rust() {
     local case="$1" proj="$work_dir/$1"
     echo "codegen compile net: [rust] $case"
-    mkdir -p "$proj/app/rust"
-    cp "$corpus/$case/stub/mod.rs" "$proj/app/rust/mod.rs"
-    local inject_args=()
-    if [[ -f "$corpus/$case/inject.toml" ]]; then
-        inject_args=(--inject "$corpus/$case/inject.toml")
-    fi
-    run run_flowrt prepare "$corpus/$case/input.rsdl" --out-dir "$proj/flowrt" "${inject_args[@]}"
+    prepare_case "$case" "$proj"
+    install_generated_rust_stubs "$case" "$proj"
     printf '\n[patch.crates-io]\nflowrt = { path = "%s/runtime/rust" }\n' \
         "$repo_root" >> "$proj/flowrt/build/Cargo.toml"
     # 隔离 target-dir：仓库 .cargo/config.toml 把 build.target-dir 钉到共享 target/。
@@ -106,6 +196,14 @@ compile_cpp instance_degrade_cpp
 compile_cpp graph_health_stop_cpp
 compile_cpp fault_injection_restart_cpp
 compile_cpp fault_injection_degrade_recover_cpp
+compile_cpp bounded_channel_iox2_cpp
+compile_cpp cross_process_feedback_cpp
+compile_cpp zenoh_service_cpp
+compile_cpp iox2_service_cpp
+compile_cpp bounded_service_iox2_cpp
+compile_cpp zenoh_operation_cpp
+compile_cpp iox2_operation_cpp
+compile_cpp bounded_operation_iox2_cpp
 compile_rust island_rust_onmsg
 compile_rust sensor_event_time_rust
 compile_rust sync_fusion_rust
@@ -116,5 +214,13 @@ compile_rust instance_degrade_rust
 compile_rust graph_health_stop_rust
 compile_rust fault_injection_restart_rust
 compile_rust fault_injection_degrade_recover_rust
+compile_rust bounded_channel_iox2_rust
+compile_rust cross_process_feedback_rust
+compile_rust zenoh_service_rust
+compile_rust iox2_service_rust
+compile_rust bounded_service_iox2_rust
+compile_rust zenoh_operation_rust
+compile_rust iox2_operation_rust
+compile_rust bounded_operation_iox2_rust
 
 echo "codegen compile net passed"

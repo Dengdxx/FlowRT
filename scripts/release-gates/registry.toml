@@ -109,3 +109,7 @@ script = "scripts/test-v0251-transport-evidence-smoke.sh"
 [[focused_smoke]]
 version = "0.25.2"
 script = "scripts/test-v0252-transport-route-health-smoke.sh"
+
+[[focused_smoke]]
+version = "0.26.0"
+script = "scripts/test-v0260-transport-compile-evidence-smoke.sh"

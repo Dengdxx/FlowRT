@@ -4,6 +4,24 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.26.0 - 2026-06-21
+
+### 修复
+
+- 修复 C++ generated iox2 Service / Operation client handle 的存储模型：生成物改为绑定
+  shared transport client，避免把 non-movable `Iox2ServiceClient` /
+  `Iox2FrameServiceClient` 放入 `std::optional` 后真实编译失败。
+- 修复 C++ generated zenoh Service / Operation shell 在未启用 `FLOWRT_HAS_ZENOH_CXX`
+  时仍引用底层 `::zenoh::Session` 的问题；无 SDK 编译继续走 runtime fail-fast overload。
+- 修复 codegen compile net 的 Rust stub synthesis：参考 stub 内联到 generated crate 时会
+  改写 `flowrt_app::` 路径并统一生成多组件 `build_app()`。
+
+### 测试
+
+- 新增 `v0.26.0 Transport Compile Evidence Smoke` focused gate，扩展 codegen compile net，
+  真编译代表性 iox2 / zenoh generated dataflow、Service、Operation 和 bounded variable
+  frame shell。
+
 ## v0.25.2 - 2026-06-21
 
 ### 修复

@@ -532,6 +532,20 @@ fn cpp_service_iox2_emits_client_and_scheduler_driven_server() {
         "C++ iox2 client handle must hold Iox2ServiceClient.\n\n{header}"
     );
     assert!(
+        header.contains(
+            "void bind(std::shared_ptr<flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>> client)"
+        ),
+        "C++ iox2 client handle must bind a storable shared transport client.\n\n{header}"
+    );
+    assert!(
+        !header.contains("std::optional<flowrt::iox2::Iox2ServiceClient"),
+        "C++ iox2 client handle must not store non-movable Iox2ServiceClient in optional.\n\n{header}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>::open_shared"),
+        "C++ runtime shell must construct shared iox2 service clients.\n\n{shell}"
+    );
+    assert!(
         shell.contains("flowrt::iox2::Iox2ServiceServer"),
         "C++ runtime shell must hold/open Iox2ServiceServer.\n\n{shell}"
     );
@@ -542,6 +556,40 @@ fn cpp_service_iox2_emits_client_and_scheduler_driven_server() {
     assert!(
         !shell.contains("ZenohServiceServer"),
         "C++ iox2 service path must not instantiate ZenohServiceServer.\n\n{shell}"
+    );
+}
+
+/// C++ zenoh service shell 必须在无 zenoh SDK 编译时走 runtime 的 fail-fast overload，
+/// 不能无条件引用底层 `::zenoh::Session` 类型。
+#[test]
+fn cpp_zenoh_service_codegen_guards_sdk_session() {
+    let source = SERVICE_RSDL
+        .replace("language = \"rust\"", "language = \"cpp\"")
+        .replace("backend = \"inproc\"", "backend = \"zenoh\"")
+        .replace(
+            "[component.plan_service]\nlanguage = \"cpp\"",
+            "[component.plan_service]\nlanguage = \"cpp\"\nconcurrency = \"parallel\"",
+        );
+    let contract = contract_from_source(&source);
+
+    let bundle = emit_artifacts(&contract).expect("zenoh C++ service codegen must succeed");
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(
+        shell.contains("#ifdef FLOWRT_HAS_ZENOH_CXX\n        auto zenoh_service_session"),
+        "C++ zenoh service session must be guarded by SDK availability.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(", zenoh_service_session\n#endif\n            )"),
+        "SDK-enabled path must reuse a shared zenoh session.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceClient<PlanRequest, PlanResponse>::open(\n            \"plan_client.plan\"\n#ifdef FLOWRT_HAS_ZENOH_CXX"),
+        "SDK-missing path must call the fail-fast client overload without a session.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceServer<PlanRequest, PlanResponse>::open(\n            \"plan_client.plan\"\n#ifdef FLOWRT_HAS_ZENOH_CXX\n            , zenoh_service_session\n#endif\n            ,"),
+        "SDK-enabled server path must pass the shared zenoh session.\n\n{shell}"
     );
 }
 
@@ -829,12 +877,22 @@ backends = ["iox2", "zenoh"]
         "bounded C++ service client must hold Iox2FrameServiceClient.\n\n{components}"
     );
     assert!(
+        components.contains(
+            "void bind(std::shared_ptr<flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>> client)"
+        ),
+        "bounded C++ service client must bind a storable shared frame client.\n\n{components}"
+    );
+    assert!(
+        !components.contains("std::optional<flowrt::iox2::Iox2FrameServiceClient"),
+        "bounded C++ service client must not store non-movable frame client in optional.\n\n{components}"
+    );
+    assert!(
         shell.contains("flowrt::iox2::Iox2FrameServiceServer<PlanRequest, PlanResponse, 44, 21>"),
         "bounded C++ service server must hold Iox2FrameServiceServer.\n\n{shell}"
     );
     assert!(
         shell.contains(
-            "flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::open"
+            "flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::open_shared"
         ),
         "C++ runtime shell must open frame service client.\n\n{shell}"
     );

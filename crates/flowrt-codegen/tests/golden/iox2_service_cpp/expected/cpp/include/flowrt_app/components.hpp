@@ -29,21 +29,21 @@ public:
     ServiceClient_planner_plan() : slot_(std::make_shared<Slot>()) {}
 
     /** @brief 由所属进程 runtime shell 填充 transport client。 */
-    void bind(flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse> client) {
+    void bind(std::shared_ptr<flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>> client) {
         if (slot_) {
-            slot_->client.emplace(std::move(client));
+            slot_->client = std::move(client);
         }
     }
 
     flowrt::ServiceResult<PlanResponse> call(const PlanRequest& request, std::uint64_t timeout_ms = 1000) {
-        if (!slot_ || !slot_->client.has_value()) {
+        if (!slot_ || !slot_->client) {
             return flowrt::ServiceResult<PlanResponse>::err(flowrt::ServiceError::Unavailable);
         }
         return slot_->client->call(request, timeout_ms);
     }
 
     flowrt::InprocServiceHandle<PlanResponse> start_call(const PlanRequest& request, std::uint64_t timeout_ms = 1000) {
-        if (!slot_ || !slot_->client.has_value()) {
+        if (!slot_ || !slot_->client) {
             return flowrt::InprocServiceHandle<PlanResponse>::ready_error(flowrt::ServiceError::Unavailable);
         }
         return flowrt::InprocServiceHandle<PlanResponse>::ready(slot_->client->call(request, timeout_ms));
@@ -51,7 +51,7 @@ public:
 
 private:
     struct Slot {
-        std::optional<flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>> client;
+        std::shared_ptr<flowrt::iox2::Iox2ServiceClient<PlanRequest, PlanResponse>> client;
     };
     std::shared_ptr<Slot> slot_;
 };
