@@ -719,6 +719,91 @@ backends = ["iox2", "zenoh"]
     assert_eq!(endpoint["backend"], "iox2");
 }
 
+/// C++ profile 默认 iox2 遇到有界变长 service payload 时也必须用 frame slot 承载。
+#[test]
+fn cpp_service_iox2_bounded_variable_emits_frame_slot_transport() {
+    let source = r#"
+[package]
+name = "cpp_service_iox2_bounded_variable"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+label = "string<max=8>"
+samples = "sequence<u32,max=4>"
+
+[type.PlanResponse]
+accepted = "bool"
+detail = "string<max=12>"
+
+[component.plan_service]
+language = "cpp"
+concurrency = "parallel"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[component.planner]
+language = "cpp"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[instance.plan_svc]
+component = "plan_service"
+process = "server_proc"
+target = "linux"
+
+[instance.plan_svc.task]
+trigger = "periodic"
+period_ms = 1000
+
+[instance.plan_client]
+component = "planner"
+process = "client_proc"
+target = "linux"
+
+[instance.plan_client.task]
+trigger = "periodic"
+period_ms = 100
+
+[[bind.service]]
+client = "plan_client.plan"
+server = "plan_svc.plan"
+timeout_ms = 1000
+queue_depth = 16
+overflow = "busy"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["iox2", "zenoh"]
+"#;
+    let contract = contract_from_source(source);
+
+    let bundle = emit_artifacts(&contract).expect("bounded C++ service iox2 codegen must succeed");
+    let components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(
+        components
+            .contains("flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>"),
+        "bounded C++ service client must hold Iox2FrameServiceClient.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2FrameServiceServer<PlanRequest, PlanResponse, 44, 21>"),
+        "bounded C++ service server must hold Iox2FrameServiceServer.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(
+            "flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::open"
+        ),
+        "C++ runtime shell must open frame service client.\n\n{shell}"
+    );
+    assert!(
+        !components.contains("flowrt::zenoh::ZenohServiceClient"),
+        "bounded C++ variable service must not fallback to zenoh.\n\n{components}"
+    );
+}
+
 /// iox2 service selfdesc 使用 canonical service name；zenoh 使用 key expression。
 #[test]
 fn selfdesc_service_separates_iox2_service_name_and_zenoh_key_expr() {

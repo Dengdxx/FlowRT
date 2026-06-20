@@ -721,3 +721,40 @@ fn cpp_iox2_operation_codegen_wires_transport() {
         "C++ iox2 Operation path must not instantiate ZenohServiceServer.\n\n{shell}"
     );
 }
+
+/// C++ iox2 Operation 的 start service 在 goal 有界变长时必须使用 frame slot 承载。
+#[test]
+fn cpp_iox2_operation_bounded_goal_uses_frame_start_transport() {
+    let source = RUST_OPERATION_RSDL
+        .replace("language = \"rust\"", "language = \"cpp\"")
+        .replace("target = \"u32\"", "target = \"string<max=8>\"")
+        .replace("backend = \"inproc\"", "backend = \"iox2\"");
+    let contract = contract_from_source(&source);
+
+    let bundle = emit_artifacts(&contract).unwrap();
+    let components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(
+        components.contains("flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>"),
+        "bounded C++ goal start client must use frame service transport.\n\n{components}"
+    );
+    assert!(
+        components.contains(
+            "flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>"
+        ),
+        "C++ cancel/status control services should remain fixed-size iox2 clients.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
+        "C++ runtime shell must open frame start client.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2FrameServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
+        "C++ runtime shell must open frame start server.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open"),
+        "C++ runtime shell must keep cancel/status fixed-size clients.\n\n{shell}"
+    );
+}

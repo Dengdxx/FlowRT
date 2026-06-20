@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) fn cpp_service_client_handle_classes(
+    contract: &ContractIr,
     plans: &[crate::runtime_plan::ServiceRuntimePlan],
 ) -> String {
     if plans.is_empty() {
@@ -23,7 +24,7 @@ pub(super) fn cpp_service_client_handle_classes(
         if is_zenoh || is_iox2 {
             let backend = if is_iox2 { "iox2" } else { "zenoh" };
             let client_ty = if is_iox2 {
-                format!("flowrt::iox2::Iox2ServiceClient<{req_ty}, {resp_ty}>")
+                cpp_service_client_transport_type(contract, plan, &req_ty, &resp_ty)
             } else {
                 format!("flowrt::zenoh::ZenohServiceClient<{req_ty}, {resp_ty}>")
             };

@@ -4,7 +4,7 @@ use flowrt_ir::{
     ChannelKind, ComponentIr, ComponentKind, ContractIr, DeterminismMode, GraphFaultReaction,
     GraphIr, InstanceFailurePolicy, InstanceIr, IoBoundaryReadiness, LanguageKind,
     OperationConcurrencyPolicy, OperationPreemptPolicy, ParamIr, ParamType, ParamUpdatePolicy,
-    ParamValue, PortIr, Ros2BridgeDirection, StalePolicy as IrStalePolicy,
+    ParamValue, PortIr, Ros2BridgeDirection, StalePolicy as IrStalePolicy, TypeExpr,
 };
 
 mod app_constructor;
@@ -31,16 +31,18 @@ use self::run_emit::*;
 use self::service_emit::*;
 use self::step_emit::*;
 
-use crate::messages::cpp_type;
+use crate::messages::{
+    cpp_type, frame_max_size_for_type, rust_wire_size, type_contains_variable_data,
+};
 use crate::resource_names::{
     resource_access_name, resource_failure_name, resource_health_name, resource_readiness_name,
     resource_satisfaction_status,
 };
 use crate::runtime_plan::{
-    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan,
-    SchedulerDataflowTaskPlan, SchedulerHiddenTaskKind, TaskEmissionPhase,
-    active_binds_for_instances, active_boundaries_for_instances, bind_backend, bind_runtime_plans,
-    boundary_runtime_plans, bridge_runtime_plans, incoming_bind_index_map,
+    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, OperationRuntimePlan,
+    ProcessRuntimePlan, SchedulerDataflowTaskPlan, SchedulerHiddenTaskKind, ServiceRuntimePlan,
+    TaskEmissionPhase, active_binds_for_instances, active_boundaries_for_instances, bind_backend,
+    bind_runtime_plans, boundary_runtime_plans, bridge_runtime_plans, incoming_bind_index_map,
     incoming_boundary_index_map, incoming_bridge_index_map, indent_generated_block,
     indent_generated_block_levels, nested_step_indent, on_message_trigger_guard,
     outgoing_bind_indices_map, outgoing_boundary_indices_map, outgoing_bridge_indices_map,
@@ -82,6 +84,118 @@ fn selected_profile_uses_global_tick(contract: &ContractIr) -> bool {
         .profiles
         .first()
         .is_some_and(|profile| profile.determinism.mode == DeterminismMode::GlobalTick)
+}
+
+fn cpp_iox2_frame_channel_cap(contract: &ContractIr, bind: &BindRuntimePlan) -> Option<usize> {
+    if !type_contains_variable_data(contract, &bind.source_type) {
+        return None;
+    }
+    let TypeExpr::Named { name } = &bind.source_type else {
+        return None;
+    };
+    frame_max_size_for_type(contract, crate::type_by_name(contract, name))
+}
+
+fn cpp_frame_cap_for_expr(contract: &ContractIr, expr: &TypeExpr) -> Option<usize> {
+    match expr {
+        TypeExpr::Named { name } => {
+            frame_max_size_for_type(contract, crate::type_by_name(contract, name))
+        }
+        _ if type_contains_variable_data(contract, expr) => None,
+        _ => Some(rust_wire_size(contract, expr)),
+    }
+}
+
+fn cpp_iox2_frame_service_caps(
+    contract: &ContractIr,
+    plan: &ServiceRuntimePlan,
+) -> Option<(usize, usize)> {
+    let request_variable = type_contains_variable_data(contract, &plan.request_type);
+    let response_variable = type_contains_variable_data(contract, &plan.response_type);
+    if !request_variable && !response_variable {
+        return None;
+    }
+    Some((
+        cpp_frame_cap_for_expr(contract, &plan.request_type)?,
+        cpp_frame_cap_for_expr(contract, &plan.response_type)?,
+    ))
+}
+
+fn cpp_service_client_transport_type(
+    contract: &ContractIr,
+    plan: &ServiceRuntimePlan,
+    req_ty: &str,
+    resp_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = cpp_iox2_frame_service_caps(contract, plan) {
+        format!("flowrt::iox2::Iox2FrameServiceClient<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>")
+    } else {
+        format!("flowrt::iox2::Iox2ServiceClient<{req_ty}, {resp_ty}>")
+    }
+}
+
+fn cpp_service_server_transport_type(
+    contract: &ContractIr,
+    plan: &ServiceRuntimePlan,
+    req_ty: &str,
+    resp_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = cpp_iox2_frame_service_caps(contract, plan) {
+        format!("flowrt::iox2::Iox2FrameServiceServer<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>")
+    } else {
+        format!("flowrt::iox2::Iox2ServiceServer<{req_ty}, {resp_ty}>")
+    }
+}
+
+fn cpp_iox2_operation_start_caps(
+    contract: &ContractIr,
+    plan: &OperationRuntimePlan,
+) -> Option<(usize, usize)> {
+    if !type_contains_variable_data(contract, &plan.goal_type) {
+        return None;
+    }
+    let TypeExpr::Named { name } = &plan.goal_type else {
+        return None;
+    };
+    let goal_cap = frame_max_size_for_type(contract, crate::type_by_name(contract, name))?;
+    const OPERATION_START_REQUEST_HEADER_CAP: usize = 24;
+    const OPERATION_START_ACK_CAP: usize = 49;
+    Some((
+        OPERATION_START_REQUEST_HEADER_CAP + goal_cap,
+        OPERATION_START_ACK_CAP,
+    ))
+}
+
+fn cpp_operation_start_client_transport_type(
+    contract: &ContractIr,
+    plan: &OperationRuntimePlan,
+    goal_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = cpp_iox2_operation_start_caps(contract, plan) {
+        format!(
+            "flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
+        )
+    } else {
+        format!(
+            "flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>"
+        )
+    }
+}
+
+fn cpp_operation_start_server_transport_type(
+    contract: &ContractIr,
+    plan: &OperationRuntimePlan,
+    goal_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = cpp_iox2_operation_start_caps(contract, plan) {
+        format!(
+            "flowrt::iox2::Iox2FrameServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
+        )
+    } else {
+        format!(
+            "flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>"
+        )
+    }
 }
 
 fn cpp_runtime_shell_needs_stdexcept(contract: &ContractIr) -> bool {
@@ -189,8 +303,11 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     output.push_str("#include \"flowrt_app/messages.hpp\"\n\n");
     output.push_str("namespace flowrt_app {\n\n");
 
-    output.push_str(&cpp_service_client_handle_classes(&service_plans));
-    output.push_str(&cpp_operation_client_handle_classes(&operation_plans));
+    output.push_str(&cpp_service_client_handle_classes(contract, &service_plans));
+    output.push_str(&cpp_operation_client_handle_classes(
+        contract,
+        &operation_plans,
+    ));
 
     for component in contract
         .components
@@ -643,7 +760,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     for bind in &bind_plans {
         output.push_str(&format!(
             "    {} {}_;\n",
-            cpp_runtime_channel_type(bind),
+            cpp_runtime_channel_type(contract, bind),
             bind.field_name
         ));
         output.push_str(&format!(
@@ -683,8 +800,9 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         let req_ty = cpp_type(&plan.request_type);
         let resp_ty = cpp_type(&plan.response_type);
         if plan.backend.0 == "iox2" {
+            let server_ty = cpp_service_server_transport_type(contract, plan, &req_ty, &resp_ty);
             output.push_str(&format!(
-                "    std::optional<flowrt::iox2::Iox2ServiceServer<{req_ty}, {resp_ty}>> {server_field}_;\n"
+                "    std::optional<{server_ty}> {server_field}_;\n"
             ));
         } else if plan.backend.0 != "zenoh" {
             output.push_str(&format!(
@@ -723,8 +841,10 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         }
         let goal_ty = cpp_type(&plan.goal_type);
         if plan.backend.0 == "iox2" {
+            let start_server_ty =
+                cpp_operation_start_server_transport_type(contract, plan, &goal_ty);
             output.push_str(&format!(
-                "    std::optional<flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>> {}_;\n",
+                "    std::optional<{start_server_ty}> {}_;\n",
                 cpp_operation_start_server_field_name(plan)
             ));
             output.push_str(&format!(

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <flowrt/backend_health.hpp>
@@ -14,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -105,6 +108,75 @@ class Iox2ChannelConfig {
     std::size_t depth_ = 1;
     OverflowPolicy overflow_ = OverflowPolicy::DropOldest;
     StaleConfig stale_;
+};
+
+/**
+ * @brief 有界 canonical frame 在 iceoryx2 typed payload 中的定容承载。
+ *
+ * `CAP` 来自 Contract IR 中有界变长类型的 frame 上界。slot 只承载 FlowRT canonical frame
+ * bytes，不改变用户侧 `std::vector` / `std::string` API，也不改变 frame wire 格式。
+ */
+template <std::size_t CAP>
+struct Iox2FrameSlot {
+    static constexpr const char *IOX2_TYPE_NAME = "FlowRTIox2FrameSlot";
+
+    std::uint32_t len{};
+    std::array<std::uint8_t, CAP> data{};
+
+    /**
+     * @brief 从已编码的 canonical frame 构造 slot，超出 `CAP` 时返回 nullopt。
+     */
+    static std::optional<Iox2FrameSlot> try_from_frame(
+        std::span<const std::uint8_t> frame) noexcept {
+        if (frame.size() > CAP ||
+            frame.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+            return std::nullopt;
+        }
+        Iox2FrameSlot slot{};
+        slot.len = static_cast<std::uint32_t>(frame.size());
+        std::copy(frame.begin(), frame.end(), slot.data.begin());
+        return slot;
+    }
+
+    /**
+     * @brief 从实现 canonical transport codec 的消息直接编码 slot。
+     */
+    template <CanonicalTransportMessage T>
+    static std::optional<Iox2FrameSlot> try_from_message(const T &message) noexcept {
+        try {
+            std::vector<std::uint8_t> frame(detail::encoded_frame_size(message));
+            detail::encode_frame(message, std::span<std::uint8_t>{frame});
+            return try_from_frame(std::span<const std::uint8_t>{frame});
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    /**
+     * @brief 借用 slot 中的 canonical frame bytes。
+     */
+    [[nodiscard]] std::optional<std::span<const std::uint8_t>> frame() const noexcept {
+        if (static_cast<std::size_t>(len) > CAP) {
+            return std::nullopt;
+        }
+        return std::span<const std::uint8_t>{data.data(), static_cast<std::size_t>(len)};
+    }
+
+    /**
+     * @brief 将 slot 中的 canonical frame 解码成消息。
+     */
+    template <CanonicalTransportMessage T>
+    [[nodiscard]] std::optional<T> decode_message() const noexcept {
+        const auto bytes = frame();
+        if (!bytes.has_value()) {
+            return std::nullopt;
+        }
+        try {
+            return detail::decode_frame<T>(*bytes);
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
 };
 
 /**
@@ -649,6 +721,109 @@ class Iox2PubSub {
 #endif
 };
 
+/**
+ * @brief iox2 有界变长 frame publish-subscribe endpoint。
+ *
+ * 该 wrapper 对 generated shell 暴露与 `Iox2PubSub<T>` 对齐的 channel surface，内部用
+ * `Iox2FrameSlot<CAP>` 通过 iceoryx2 typed pub/sub 传输 canonical frame bytes。
+ */
+template <CanonicalTransportMessage T, std::size_t CAP>
+class Iox2FramePubSub {
+   public:
+    Iox2FramePubSub(Iox2FramePubSub &&) noexcept = default;
+    Iox2FramePubSub(const Iox2FramePubSub &) = delete;
+    auto operator=(Iox2FramePubSub &&) noexcept -> Iox2FramePubSub & = default;
+    auto operator=(const Iox2FramePubSub &) -> Iox2FramePubSub & = delete;
+    ~Iox2FramePubSub() = default;
+
+    /**
+     * @brief 打开或创建一个 FlowRT iox2 frame service endpoint。
+     */
+    static Iox2FramePubSub open_with_config(std::string_view service_name,
+                                            Iox2ChannelConfig config) {
+        return Iox2FramePubSub(service_name, config);
+    }
+
+    std::string_view service_name() const noexcept { return inner_.service_name(); }
+
+    constexpr Iox2ChannelConfig config() const noexcept { return inner_.config(); }
+
+    bool ready() const noexcept { return inner_.ready(); }
+
+    BackendHealthSnapshot health() const { return inner_.health(); }
+
+    ReconnectPolicy reconnect_policy() const noexcept { return inner_.reconnect_policy(); }
+
+    std::uint64_t revision() const noexcept { return inner_.revision(); }
+
+    void set_schedule_waiter(ScheduleWaiter waiter) noexcept {
+        inner_.set_schedule_waiter(std::move(waiter));
+    }
+
+    ChannelPushResult publish_at(const T &value, std::uint64_t published_at_ms) noexcept {
+        const auto slot = Iox2FrameSlot<CAP>::try_from_message(value);
+        if (!slot.has_value()) {
+            return ChannelError::Transport;
+        }
+        return inner_.publish_at(*slot, published_at_ms);
+    }
+
+    ChannelPushResult publish(const T &value) noexcept { return publish_at(value, unix_now_ms()); }
+
+    std::variant<std::optional<T>, ChannelError> receive() noexcept {
+        auto received = inner_.receive();
+        if (std::holds_alternative<ChannelError>(received)) {
+            return std::get<ChannelError>(received);
+        }
+        auto slot = std::get<std::optional<Iox2FrameSlot<CAP>>>(std::move(received));
+        if (!slot.has_value()) {
+            return std::optional<T>{};
+        }
+        auto decoded = slot->template decode_message<T>();
+        if (!decoded.has_value()) {
+            return ChannelError::Transport;
+        }
+        return std::optional<T>{std::move(*decoded)};
+    }
+
+    std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
+        auto latest = inner_.receive_latest_at(now_ms);
+        if (std::holds_alternative<ChannelError>(latest)) {
+            return std::get<ChannelError>(latest);
+        }
+        auto slot_latest = std::get<Latest<Iox2FrameSlot<CAP>>>(latest);
+        latest_stale_ = slot_latest.stale();
+        if (!slot_latest.present()) {
+            received_.reset();
+            return Latest<T>{nullptr, latest_stale_};
+        }
+        auto decoded = slot_latest.as_ref()->template decode_message<T>();
+        if (!decoded.has_value()) {
+            received_.reset();
+            return ChannelError::Transport;
+        }
+        received_ = std::move(*decoded);
+        return Latest<T>{std::addressof(*received_), latest_stale_};
+    }
+
+    Latest<T> cached_latest_at(std::uint64_t now_ms) const noexcept {
+        const auto slot_latest = inner_.cached_latest_at(now_ms);
+        const auto stale = slot_latest.stale();
+        if (!slot_latest.present() || !received_.has_value()) {
+            return Latest<T>{nullptr, stale};
+        }
+        return Latest<T>{std::addressof(*received_), stale};
+    }
+
+   private:
+    Iox2FramePubSub(std::string_view service_name, Iox2ChannelConfig config)
+        : inner_(Iox2PubSub<Iox2FrameSlot<CAP>>::open_with_config(service_name, config)) {}
+
+    Iox2PubSub<Iox2FrameSlot<CAP>> inner_;
+    std::optional<T> received_;
+    bool latest_stale_ = false;
+};
+
 inline std::string iox2_request_endpoint(std::string_view service_name) {
     std::string endpoint{service_name};
     endpoint += "/req";
@@ -842,6 +1017,67 @@ class Iox2ServiceClient {
 };
 
 /**
+ * @brief iox2 有界变长 Service client backend primitive。
+ */
+template <CanonicalTransportMessage Req, CanonicalTransportMessage Resp, std::size_t REQ_CAP,
+          std::size_t RESP_CAP>
+class Iox2FrameServiceClient {
+   public:
+    Iox2FrameServiceClient(const Iox2FrameServiceClient &) = delete;
+    auto operator=(const Iox2FrameServiceClient &) -> Iox2FrameServiceClient & = delete;
+    Iox2FrameServiceClient(Iox2FrameServiceClient &&) = delete;
+    auto operator=(Iox2FrameServiceClient &&) -> Iox2FrameServiceClient & = delete;
+    ~Iox2FrameServiceClient() = default;
+
+    static Iox2FrameServiceClient open(std::string_view service_name) {
+        return Iox2FrameServiceClient(service_name, std::nullopt);
+    }
+
+    static Iox2FrameServiceClient unavailable(std::string_view service_name, std::string error) {
+        return Iox2FrameServiceClient(service_name, std::move(error));
+    }
+
+    ServiceResult<Resp> call(const Req &request, std::uint64_t timeout_ms) {
+        const auto request_slot = Iox2FrameSlot<REQ_CAP>::try_from_message(request);
+        if (!request_slot.has_value()) {
+            return ServiceResult<Resp>::err(ServiceError::Backend);
+        }
+        auto response = inner_.call(*request_slot, timeout_ms);
+        if (response.is_err()) {
+            if (response.error_message().has_value()) {
+                return ServiceResult<Resp>::err_with_message(response.error_code(),
+                                                             *response.error_message());
+            }
+            return ServiceResult<Resp>::err(response.error_code());
+        }
+        const auto response_slot = response.value();
+        if (response_slot == nullptr) {
+            return ServiceResult<Resp>::err(ServiceError::Protocol);
+        }
+        auto decoded = response_slot->template decode_message<Resp>();
+        if (!decoded.has_value()) {
+            return ServiceResult<Resp>::err(ServiceError::Protocol);
+        }
+        return ServiceResult<Resp>::ok(std::move(*decoded));
+    }
+
+    std::string_view service_name() const noexcept { return inner_.service_name(); }
+
+    BackendHealthSnapshot health() const { return inner_.health(); }
+
+   private:
+    Iox2FrameServiceClient(std::string_view service_name, std::optional<std::string> unavailable)
+        : inner_(unavailable.has_value()
+                     ? InnerClient::unavailable(service_name, std::move(*unavailable))
+                     : InnerClient::open(service_name)) {}
+
+    using InnerClient =
+        Iox2ServiceClient<Iox2FrameSlot<REQ_CAP>, Iox2FrameSlot<RESP_CAP>>;
+
+    InnerClient inner_;
+};
+
+/**
  * @brief iox2 fixed-size Service server backend primitive。
  */
 template <typename Req, typename Resp>
@@ -937,6 +1173,75 @@ class Iox2ServiceServer {
     std::optional<Iox2PubSub<Iox2ServiceResponse<Resp>>> response_tx_;
     std::size_t max_in_flight_;
     std::optional<std::string> unavailable_;
+};
+
+/**
+ * @brief iox2 有界变长 Service server backend primitive。
+ */
+template <CanonicalTransportMessage Req, CanonicalTransportMessage Resp, std::size_t REQ_CAP,
+          std::size_t RESP_CAP>
+class Iox2FrameServiceServer {
+   public:
+    Iox2FrameServiceServer(const Iox2FrameServiceServer &) = delete;
+    auto operator=(const Iox2FrameServiceServer &) -> Iox2FrameServiceServer & = delete;
+    Iox2FrameServiceServer(Iox2FrameServiceServer &&) = default;
+    auto operator=(Iox2FrameServiceServer &&) -> Iox2FrameServiceServer & = default;
+    ~Iox2FrameServiceServer() = default;
+
+    static Iox2FrameServiceServer open(std::string_view service_name, std::size_t max_in_flight) {
+        return Iox2FrameServiceServer(service_name, max_in_flight, std::nullopt);
+    }
+
+    static Iox2FrameServiceServer unavailable(std::string_view service_name, std::string error) {
+        return Iox2FrameServiceServer(service_name, 1U, std::move(error));
+    }
+
+    void set_schedule_waiter(ScheduleWaiter waiter) noexcept {
+        inner_.set_schedule_waiter(std::move(waiter));
+    }
+
+    std::optional<std::size_t> poll_requests(
+        const std::function<ServiceResult<Resp>(Req)> &handler) {
+        return inner_.poll_requests([&handler](Iox2FrameSlot<REQ_CAP> slot) {
+            auto request = slot.template decode_message<Req>();
+            if (!request.has_value()) {
+                return ServiceResult<Iox2FrameSlot<RESP_CAP>>::err(ServiceError::Protocol);
+            }
+            auto result = handler(std::move(*request));
+            if (result.is_err()) {
+                if (result.error_message().has_value()) {
+                    return ServiceResult<Iox2FrameSlot<RESP_CAP>>::err_with_message(
+                        result.error_code(), *result.error_message());
+                }
+                return ServiceResult<Iox2FrameSlot<RESP_CAP>>::err(result.error_code());
+            }
+            const auto value = result.value();
+            if (value == nullptr) {
+                return ServiceResult<Iox2FrameSlot<RESP_CAP>>::err(ServiceError::Protocol);
+            }
+            auto response_slot = Iox2FrameSlot<RESP_CAP>::try_from_message(*value);
+            if (!response_slot.has_value()) {
+                return ServiceResult<Iox2FrameSlot<RESP_CAP>>::err(ServiceError::Backend);
+            }
+            return ServiceResult<Iox2FrameSlot<RESP_CAP>>::ok(std::move(*response_slot));
+        });
+    }
+
+    std::string_view service_name() const noexcept { return inner_.service_name(); }
+
+    BackendHealthSnapshot health() const { return inner_.health(); }
+
+   private:
+    Iox2FrameServiceServer(std::string_view service_name, std::size_t max_in_flight,
+                           std::optional<std::string> unavailable)
+        : inner_(unavailable.has_value()
+                     ? InnerServer::unavailable(service_name, std::move(*unavailable))
+                     : InnerServer::open(service_name, max_in_flight)) {}
+
+    using InnerServer =
+        Iox2ServiceServer<Iox2FrameSlot<REQ_CAP>, Iox2FrameSlot<RESP_CAP>>;
+
+    InnerServer inner_;
 };
 
 }  // namespace iox2

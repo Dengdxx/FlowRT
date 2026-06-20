@@ -210,6 +210,80 @@ backends = ["iox2", "zenoh"]
 }
 
 #[test]
+fn cpp_iox2_profile_routes_bounded_variable_messages_over_frame_slots() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "bounded_variable_route_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=8>"
+label = "string<max=12>"
+samples = "sequence<u32,max=4>"
+
+[component.source]
+language = "cpp"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "cpp"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["iox2", "zenoh"]
+"#,
+    );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let runtime_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+    let runtime_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(
+        runtime_header.contains("flowrt::iox2::Iox2FramePubSub<Packet, 60> bind_0_;"),
+        "bounded variable C++ iox2 channel must use frame slot transport.\n\n{runtime_header}"
+    );
+    assert!(
+        runtime_shell.contains("flowrt::iox2::Iox2FramePubSub<Packet, 60>::open_with_config"),
+        "bounded variable C++ iox2 channel must open frame slot transport.\n\n{runtime_shell}"
+    );
+    assert!(
+        !runtime_header.contains("flowrt::iox2::Iox2PubSub<Packet>"),
+        "bounded variable C++ iox2 channel must not use fixed-size iox2 pubsub.\n\n{runtime_header}"
+    );
+    assert!(
+        !runtime_header.contains("flowrt::zenoh::ZenohPubSub<Packet>"),
+        "bounded variable C++ iox2 channel must not fallback to zenoh.\n\n{runtime_header}"
+    );
+}
+
+#[test]
 fn iox2_profile_keeps_frame_descriptor_routes_on_iox2() {
     let ir = contract_from_source(
         r#"

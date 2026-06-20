@@ -908,9 +908,12 @@ pub(super) fn emit_cpp_on_message_wake_checks(
     output
 }
 
-pub(super) fn cpp_runtime_channel_type(bind: &BindRuntimePlan) -> String {
+pub(super) fn cpp_runtime_channel_type(contract: &ContractIr, bind: &BindRuntimePlan) -> String {
     let ty = cpp_type(&bind.source_type);
     if bind_backend(bind) == "iox2" {
+        if let Some(cap) = cpp_iox2_frame_channel_cap(contract, bind) {
+            return format!("flowrt::iox2::Iox2FramePubSub<{ty}, {cap}>");
+        }
         return format!("flowrt::iox2::Iox2PubSub<{ty}>");
     }
     if bind_backend(bind) == "zenoh" {
@@ -936,9 +939,16 @@ pub(super) fn cpp_runtime_channel_initializer(
     bind: &BindRuntimePlan,
 ) -> String {
     if bind_backend(bind) == "iox2" {
+        let channel = if let Some(cap) = cpp_iox2_frame_channel_cap(contract, bind) {
+            format!(
+                "flowrt::iox2::Iox2FramePubSub<{}, {cap}>",
+                cpp_type(&bind.source_type)
+            )
+        } else {
+            format!("flowrt::iox2::Iox2PubSub<{}>", cpp_type(&bind.source_type))
+        };
         return format!(
-            "flowrt::iox2::Iox2PubSub<{}>::open_with_config({}, {})",
-            cpp_type(&bind.source_type),
+            "{channel}::open_with_config({}, {})",
             cpp_string_literal(&iox2_service_name(contract, graph, bind)),
             cpp_iox2_channel_config_expr(bind)
         );

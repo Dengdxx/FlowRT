@@ -355,15 +355,17 @@ fn emit_cpp_iox2_service_endpoints(
         let resp_ty = cpp_type(&plan.response_type);
         if active.contains(plan.client_instance.as_str()) {
             let client_field = cpp_service_client_field_name(plan);
+            let client_ty = cpp_service_client_transport_type(contract, plan, &req_ty, &resp_ty);
             output.push_str(&format!(
-                "        this->{client_field}_.bind(flowrt::iox2::Iox2ServiceClient<{req_ty}, {resp_ty}>::open({name}));\n",
+                "        this->{client_field}_.bind({client_ty}::open({name}));\n",
             ));
         }
         if active.contains(plan.server_instance.as_str()) {
             let server_field = cpp_service_server_field_name(plan);
             let max_in_flight = plan.max_in_flight.max(1);
+            let server_ty = cpp_service_server_transport_type(contract, plan, &req_ty, &resp_ty);
             output.push_str(&format!(
-                "        this->{server_field}_ = flowrt::iox2::Iox2ServiceServer<{req_ty}, {resp_ty}>::open({name}, {max_in_flight}U);\n        this->{server_field}_->set_schedule_waiter(scheduler_events);\n        if (this->{server_field}_->health().state == flowrt::BackendHealthState::Ready) {{\n            introspection_state.register_service({logical_name});\n            introspection_state.mark_service_ready({logical_name});\n        }} else {{\n            status = flowrt::Status::Error;\n        }}\n",
+                "        this->{server_field}_ = {server_ty}::open({name}, {max_in_flight}U);\n        this->{server_field}_->set_schedule_waiter(scheduler_events);\n        if (this->{server_field}_->health().state == flowrt::BackendHealthState::Ready) {{\n            introspection_state.register_service({logical_name});\n            introspection_state.mark_service_ready({logical_name});\n        }} else {{\n            status = flowrt::Status::Error;\n        }}\n",
             ));
         }
     }
@@ -476,8 +478,10 @@ fn emit_cpp_iox2_operation_endpoints(
         let goal_ty = cpp_type(&plan.goal_type);
         if active.contains(plan.client_instance.as_str()) {
             let client_field = cpp_operation_client_field_name(plan);
+            let start_client_ty =
+                cpp_operation_start_client_transport_type(contract, plan, &goal_ty);
             output.push_str(&format!(
-                "        this->{client_field}_.bind(\n            flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>::open({start_name}),\n            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({cancel_name}),\n            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({status_name}));\n",
+                "        this->{client_field}_.bind(\n            {start_client_ty}::open({start_name}),\n            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({cancel_name}),\n            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({status_name}));\n",
             ));
         }
         if active.contains(plan.server_instance.as_str()) {
@@ -485,8 +489,10 @@ fn emit_cpp_iox2_operation_endpoints(
             let cancel_server = cpp_operation_cancel_server_field_name(plan);
             let status_server = cpp_operation_status_server_field_name(plan);
             let max_in_flight = plan.max_in_flight.max(1);
+            let start_server_ty =
+                cpp_operation_start_server_transport_type(contract, plan, &goal_ty);
             output.push_str(&format!(
-                "        this->{start_server}_ = flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>::open({start_name}, {max_in_flight}U);\n        this->{start_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{start_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n        this->{cancel_server}_ = flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({cancel_name}, {max_in_flight}U);\n        this->{cancel_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{cancel_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n        this->{status_server}_ = flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({status_name}, {max_in_flight}U);\n        this->{status_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{status_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n",
+                "        this->{start_server}_ = {start_server_ty}::open({start_name}, {max_in_flight}U);\n        this->{start_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{start_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n        this->{cancel_server}_ = flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({cancel_name}, {max_in_flight}U);\n        this->{cancel_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{cancel_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n        this->{status_server}_ = flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({status_name}, {max_in_flight}U);\n        this->{status_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{status_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n",
             ));
         }
     }
