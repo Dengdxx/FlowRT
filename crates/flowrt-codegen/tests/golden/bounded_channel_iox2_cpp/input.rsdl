@@ -1,0 +1,47 @@
+[package]
+name = "bounded_channel_iox2_cpp"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=8>"
+label = "string<max=12>"
+samples = "sequence<u32,max=4>"
+
+[component.source]
+language = "cpp"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "cpp"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+process = "source_proc"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+process = "sink_proc"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["iox2"]

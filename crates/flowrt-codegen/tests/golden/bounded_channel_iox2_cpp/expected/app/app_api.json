@@ -1,0 +1,214 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "8c9c77ec30737cf3a05e04e01271ee9d514831907af3cd3ba43f4d8f08a768c9",
+    "package_id": "package_ad54b95a1c5aa9b1"
+  },
+  "package": {
+    "name": "bounded_channel_iox2_cpp",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "strict",
+    "profile": "default",
+    "backend": "iox2",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "sink",
+      "qualified_name": "sink",
+      "language": "cpp",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "sink"
+      ],
+      "user_file_path": "app/cpp/components.cpp",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "flowrt::Status on_init(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_start",
+          "signature": "flowrt::Status on_start(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_stop",
+          "signature": "flowrt::Status on_stop(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "flowrt::Status on_shutdown(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_tick",
+          "signature": "flowrt::Status on_tick(const flowrt::Latest<Packet>& packet)",
+          "required": true,
+          "source": "cpp_interface"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "sink",
+          "trigger": "on_message",
+          "readiness": "any_ready",
+          "lane": "sink_serial",
+          "concurrency": "exclusive",
+          "inputs": [
+            "packet"
+          ],
+          "outputs": []
+        }
+      ],
+      "inputs": [
+        {
+          "name": "packet",
+          "type": "Packet",
+          "handler_argument": "const flowrt::Latest<Packet>& packet",
+          "source": "source.packet"
+        }
+      ],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    },
+    {
+      "name": "source",
+      "qualified_name": "source",
+      "language": "cpp",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "source"
+      ],
+      "user_file_path": "app/cpp/components.cpp",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "flowrt::Status on_init(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_start",
+          "signature": "flowrt::Status on_start(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_stop",
+          "signature": "flowrt::Status on_stop(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "flowrt::Status on_shutdown(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_tick",
+          "signature": "flowrt::Status on_tick(flowrt::Output<Packet>& packet)",
+          "required": true,
+          "source": "cpp_interface"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "source",
+          "trigger": "periodic",
+          "period_ms": 5,
+          "readiness": "any_ready",
+          "lane": "source_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": [
+            "packet"
+          ]
+        }
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "packet",
+          "type": "Packet",
+          "handler_argument": "flowrt::Output<Packet>& packet",
+          "targets": [
+            "sink.packet"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    }
+  ],
+  "stubs": [
+    {
+      "language": "cpp",
+      "component": "sink",
+      "path": "app/stubs/cpp/sink.cpp"
+    },
+    {
+      "language": "cpp",
+      "component": "source",
+      "path": "app/stubs/cpp/source.cpp"
+    }
+  ]
+}

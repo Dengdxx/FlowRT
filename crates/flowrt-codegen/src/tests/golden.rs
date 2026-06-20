@@ -169,6 +169,26 @@ fn golden_iox2_service_cpp() {
 }
 
 #[test]
+fn golden_bounded_channel_iox2_rust() {
+    check_case("bounded_channel_iox2_rust");
+}
+
+#[test]
+fn golden_bounded_channel_iox2_cpp() {
+    check_case("bounded_channel_iox2_cpp");
+}
+
+#[test]
+fn golden_bounded_service_iox2_rust() {
+    check_case("bounded_service_iox2_rust");
+}
+
+#[test]
+fn golden_bounded_service_iox2_cpp() {
+    check_case("bounded_service_iox2_cpp");
+}
+
+#[test]
 fn golden_service_iox2_dynamic_fallback() {
     check_case("service_iox2_dynamic_fallback");
 }
@@ -191,6 +211,16 @@ fn golden_zenoh_operation_cpp() {
 #[test]
 fn golden_iox2_operation_cpp() {
     check_case("iox2_operation_cpp");
+}
+
+#[test]
+fn golden_bounded_operation_iox2_rust() {
+    check_case("bounded_operation_iox2_rust");
+}
+
+#[test]
+fn golden_bounded_operation_iox2_cpp() {
+    check_case("bounded_operation_iox2_cpp");
 }
 
 #[test]

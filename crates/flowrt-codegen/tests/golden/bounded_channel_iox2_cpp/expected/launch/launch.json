@@ -1,0 +1,252 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "realtime",
+      "unit": "ms"
+    },
+    "mode": "strict",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": false
+  },
+  "determinism": {
+    "mode": "process_local",
+    "on_timeout": "fault_graph",
+    "processes": [],
+    "tick_timeout_ms": 0
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [],
+      "channels": [
+        {
+          "backend": "iox2",
+          "backend_source": "profile_default",
+          "channel": "latest",
+          "depth": 1,
+          "frame": {
+            "bounded": true,
+            "encoding": "canonical_frame_v1",
+            "iox2_slot_cap_bytes": 60,
+            "max_size_bytes": 60,
+            "message_type": "Packet",
+            "variable": true
+          },
+          "from": "source.packet",
+          "key_expr": null,
+          "max_age_ms": null,
+          "overflow": "drop_oldest",
+          "service": "FlowRT/bounded_channel_iox2_cpp/default/bind_0/source_packet_to_sink_packet",
+          "stale_policy": "warn",
+          "thread_affinity": "scheduler_local_commit",
+          "to": "sink.packet"
+        }
+      ],
+      "instances": [
+        {
+          "component": "sink",
+          "name": "sink",
+          "process": "sink_proc",
+          "runtime": "cpp",
+          "target": "linux"
+        },
+        {
+          "component": "source",
+          "name": "source",
+          "process": "source_proc",
+          "runtime": "cpp",
+          "target": "linux"
+        }
+      ],
+      "mode": "strict",
+      "name": "default",
+      "operations": [],
+      "processes": [
+        {
+          "backend": "iox2",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "sink"
+          ],
+          "io_boundaries": [],
+          "name": "sink_proc",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "cpp",
+          "runtimes": [
+            "cpp"
+          ],
+          "startup_delay_ms": 0,
+          "target": "linux",
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [
+                "packet"
+              ],
+              "instance": "sink",
+              "lane": "sink_serial",
+              "name": "main",
+              "outputs": [],
+              "period_ms": null,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "on_message"
+            }
+          ]
+        },
+        {
+          "backend": "iox2",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "source"
+          ],
+          "io_boundaries": [],
+          "name": "source_proc",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "cpp",
+          "runtimes": [
+            "cpp"
+          ],
+          "startup_delay_ms": 0,
+          "target": "linux",
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "source",
+              "lane": "source_serial",
+              "name": "main",
+              "outputs": [
+                "packet"
+              ],
+              "period_ms": 5,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "sink",
+            "kind": "serial",
+            "name": "sink_serial"
+          },
+          {
+            "instance": "source",
+            "kind": "serial",
+            "name": "source_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "sink",
+            "lane": "sink_serial",
+            "name": "main",
+            "period_ms": null,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "on_message"
+          },
+          {
+            "deadline_ms": null,
+            "instance": "source",
+            "lane": "source_serial",
+            "name": "main",
+            "period_ms": 5,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [
+            "packet"
+          ],
+          "instance": "sink",
+          "lane": "sink_serial",
+          "name": "main",
+          "outputs": [],
+          "period_ms": null,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "on_message"
+        },
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "source",
+          "lane": "source_serial",
+          "name": "main",
+          "outputs": [
+            "packet"
+          ],
+          "period_ms": 5,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "bounded_channel_iox2_cpp",
+  "profile_modes": [
+    {
+      "mode": "strict",
+      "name": "default"
+    }
+  ],
+  "profiles": [
+    "default"
+  ],
+  "targets": [
+    "linux"
+  ]
+}

@@ -1,0 +1,63 @@
+[package]
+name = "bounded_operation_iox2_cpp"
+rsdl_version = "0.1"
+
+[type.PlanGoal]
+target = "string<max=8>"
+
+[type.PlanFeedback]
+progress = "f32"
+
+[type.PlanResult]
+accepted = "bool"
+
+[component.controller]
+language = "cpp"
+
+[component.controller.operation_client.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[component.navigator]
+language = "cpp"
+
+[component.navigator.operation_server.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[instance.controller]
+component = "controller"
+process = "client_proc"
+target = "linux"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 100
+
+[instance.navigator]
+component = "navigator"
+process = "server_proc"
+target = "linux"
+
+[instance.navigator.task]
+trigger = "periodic"
+period_ms = 1000
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+timeout_ms = 5000
+queue_depth = 4
+max_in_flight = 1
+concurrency = "reject"
+preempt = "reject"
+feedback = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["iox2"]

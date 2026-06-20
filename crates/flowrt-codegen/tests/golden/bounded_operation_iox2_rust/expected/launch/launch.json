@@ -1,0 +1,262 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "realtime",
+      "unit": "ms"
+    },
+    "mode": "strict",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": false
+  },
+  "determinism": {
+    "mode": "process_local",
+    "on_timeout": "fault_graph",
+    "processes": [],
+    "tick_timeout_ms": 0
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [],
+      "channels": [],
+      "instances": [
+        {
+          "component": "controller",
+          "name": "controller",
+          "process": "client_proc",
+          "runtime": "rust",
+          "target": "linux"
+        },
+        {
+          "component": "navigator",
+          "name": "navigator",
+          "process": "server_proc",
+          "runtime": "rust",
+          "target": "linux"
+        }
+      ],
+      "mode": "strict",
+      "name": "default",
+      "operations": [
+        {
+          "backend": "iox2",
+          "backend_source": "profile_default",
+          "cancel_service": "FlowRT/service/__flowrt_operation_controller_plan_cancel",
+          "client": "controller.plan",
+          "client_instance": "controller",
+          "client_port": "plan",
+          "concurrency": "reject",
+          "feedback": "PlanFeedback",
+          "feedback_policy": "latest",
+          "goal": "PlanGoal",
+          "goal_frame": {
+            "bounded": true,
+            "encoding": "canonical_frame_v1",
+            "iox2_slot_cap_bytes": null,
+            "max_size_bytes": 16,
+            "message_type": "PlanGoal",
+            "variable": true
+          },
+          "max_in_flight": 1,
+          "name": "controller.plan",
+          "preempt": "reject",
+          "queue_depth": 4,
+          "result": "PlanResult",
+          "result_retention_ms": 60000,
+          "server": "navigator.plan",
+          "server_instance": "navigator",
+          "server_port": "plan",
+          "start_request_frame": {
+            "bounded": true,
+            "encoding": "canonical_frame_v1",
+            "iox2_slot_cap_bytes": 40,
+            "max_size_bytes": 40,
+            "message_type": "OperationStartRequest<PlanGoal>",
+            "variable": true
+          },
+          "start_service": "FlowRT/service/__flowrt_operation_controller_plan_start",
+          "status_service": "FlowRT/service/__flowrt_operation_controller_plan_status",
+          "timeout_ms": 5000
+        }
+      ],
+      "processes": [
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "controller"
+          ],
+          "io_boundaries": [],
+          "name": "client_proc",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "rust",
+          "runtimes": [
+            "rust"
+          ],
+          "startup_delay_ms": 0,
+          "target": "linux",
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "controller",
+              "lane": "controller_serial",
+              "name": "main",
+              "outputs": [],
+              "period_ms": 100,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            }
+          ]
+        },
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "navigator"
+          ],
+          "io_boundaries": [],
+          "name": "server_proc",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "rust",
+          "runtimes": [
+            "rust"
+          ],
+          "startup_delay_ms": 0,
+          "target": "linux",
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "navigator",
+              "lane": "navigator_serial",
+              "name": "main",
+              "outputs": [],
+              "period_ms": 1000,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "controller",
+            "kind": "serial",
+            "name": "controller_serial"
+          },
+          {
+            "instance": "navigator",
+            "kind": "serial",
+            "name": "navigator_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "controller",
+            "lane": "controller_serial",
+            "name": "main",
+            "period_ms": 100,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          },
+          {
+            "deadline_ms": null,
+            "instance": "navigator",
+            "lane": "navigator_serial",
+            "name": "main",
+            "period_ms": 1000,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "controller",
+          "lane": "controller_serial",
+          "name": "main",
+          "outputs": [],
+          "period_ms": 100,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        },
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "navigator",
+          "lane": "navigator_serial",
+          "name": "main",
+          "outputs": [],
+          "period_ms": 1000,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "bounded_operation_iox2_rust",
+  "profile_modes": [
+    {
+      "mode": "strict",
+      "name": "default"
+    }
+  ],
+  "profiles": [
+    "default"
+  ],
+  "targets": [
+    "linux"
+  ]
+}

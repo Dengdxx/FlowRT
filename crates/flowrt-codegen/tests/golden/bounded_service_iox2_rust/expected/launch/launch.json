@@ -1,0 +1,257 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "realtime",
+      "unit": "ms"
+    },
+    "mode": "strict",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": false
+  },
+  "determinism": {
+    "mode": "process_local",
+    "on_timeout": "fault_graph",
+    "processes": [],
+    "tick_timeout_ms": 0
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [],
+      "channels": [],
+      "instances": [
+        {
+          "component": "planner",
+          "name": "plan_client",
+          "process": "client_proc",
+          "runtime": "rust",
+          "target": "linux"
+        },
+        {
+          "component": "plan_service",
+          "name": "plan_svc",
+          "process": "server_proc",
+          "runtime": "rust",
+          "target": "linux"
+        }
+      ],
+      "mode": "strict",
+      "name": "default",
+      "operations": [],
+      "processes": [
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "plan_client"
+          ],
+          "io_boundaries": [],
+          "name": "client_proc",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "rust",
+          "runtimes": [
+            "rust"
+          ],
+          "startup_delay_ms": 0,
+          "target": "linux",
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "plan_client",
+              "lane": "plan_client_serial",
+              "name": "main",
+              "outputs": [],
+              "period_ms": 100,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            }
+          ]
+        },
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "plan_svc"
+          ],
+          "io_boundaries": [],
+          "name": "server_proc",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "rust",
+          "runtimes": [
+            "rust"
+          ],
+          "startup_delay_ms": 0,
+          "target": "linux",
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "plan_svc",
+              "lane": "plan_svc_serial",
+              "name": "main",
+              "outputs": [],
+              "period_ms": 1000,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "plan_client",
+            "kind": "serial",
+            "name": "plan_client_serial"
+          },
+          {
+            "instance": "plan_svc",
+            "kind": "serial",
+            "name": "plan_svc_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "plan_client",
+            "lane": "plan_client_serial",
+            "name": "main",
+            "period_ms": 100,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          },
+          {
+            "deadline_ms": null,
+            "instance": "plan_svc",
+            "lane": "plan_svc_serial",
+            "name": "main",
+            "period_ms": 1000,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [
+        {
+          "backend": "iox2",
+          "backend_source": "profile_default",
+          "client": "plan_client.plan",
+          "client_instance": "plan_client",
+          "client_port": "plan",
+          "lane": null,
+          "max_in_flight": 64,
+          "name": "plan_client.plan",
+          "overflow": "busy",
+          "queue_depth": 16,
+          "request": "PlanRequest",
+          "request_frame": {
+            "bounded": true,
+            "encoding": "canonical_frame_v1",
+            "iox2_slot_cap_bytes": 44,
+            "max_size_bytes": 44,
+            "message_type": "PlanRequest",
+            "variable": true
+          },
+          "response": "PlanResponse",
+          "response_frame": {
+            "bounded": true,
+            "encoding": "canonical_frame_v1",
+            "iox2_slot_cap_bytes": 21,
+            "max_size_bytes": 21,
+            "message_type": "PlanResponse",
+            "variable": true
+          },
+          "server": "plan_svc.plan",
+          "server_instance": "plan_svc",
+          "server_port": "plan",
+          "service": "FlowRT/service/plan_client_plan",
+          "timeout_ms": 1000
+        }
+      ],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "plan_client",
+          "lane": "plan_client_serial",
+          "name": "main",
+          "outputs": [],
+          "period_ms": 100,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        },
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "plan_svc",
+          "lane": "plan_svc_serial",
+          "name": "main",
+          "outputs": [],
+          "period_ms": 1000,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "bounded_service_iox2_rust",
+  "profile_modes": [
+    {
+      "mode": "strict",
+      "name": "default"
+    }
+  ],
+  "profiles": [
+    "default"
+  ],
+  "targets": [
+    "linux"
+  ]
+}
