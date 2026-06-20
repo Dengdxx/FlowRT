@@ -4,6 +4,24 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.25.1 - 2026-06-21
+
+### 修复
+
+- 修正文档中的 C callback v0 能力边界：C v0 已支持 readonly params snapshot，但仍不支持
+  C 侧参数写接口、string param、service、operation、variable frame、`io_boundary`、
+  `external`、`pkg_config`、动态加载、独立 C runtime 和 Python binding。
+
+### 测试
+
+- 新增 `v0.25.1 Transport Evidence Smoke` focused gate，在真实 SDK 可用时对
+  `zenoh_service_demo` 与 `iox2_service_demo` 执行 `deps + build`，补齐 generated transport
+  app 的真实编译证据。
+- v0.25.1 focused smoke 在 amd64 / arm64 runner 上按本机 target 改写临时示例 workspace，
+  避免把交叉构建产物当作可运行或可编译的本机证据。
+- release readiness 新增 v0.25.1 检查，要求 focused gate、registry、package/release
+  evidence 依赖和 C callback v0 文档边界同步存在。
+
 ## v0.25.0 - 2026-06-19
 
 ### 新增
