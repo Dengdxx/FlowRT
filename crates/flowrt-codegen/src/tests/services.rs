@@ -723,7 +723,7 @@ backends = ["iox2", "zenoh"]
     );
     assert!(
         shell.contains(
-            "flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::open"
+            "flowrt::iox2::Iox2FrameServiceClient::<PlanRequest, PlanResponse, 44, 21>::open"
         ),
         "runtime shell must open frame service client.\n\n{shell}"
     );

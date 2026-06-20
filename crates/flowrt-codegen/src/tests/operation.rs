@@ -525,11 +525,11 @@ fn rust_iox2_operation_bounded_goal_uses_frame_start_transport() {
         "cancel/status control services should remain fixed-size iox2 clients.\n\n{components}"
     );
     assert!(
-        shell.contains("flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
+        shell.contains("flowrt::iox2::Iox2FrameServiceClient::<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
         "runtime shell must open frame start client.\n\n{shell}"
     );
     assert!(
-        shell.contains("flowrt::iox2::Iox2FrameServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
+        shell.contains("flowrt::iox2::Iox2FrameServiceServer::<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
         "runtime shell must open frame start server.\n\n{shell}"
     );
     assert!(

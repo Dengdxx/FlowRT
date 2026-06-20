@@ -847,7 +847,9 @@ fn service_client_open_type(contract: &ContractIr, plan: &ServiceRuntimePlan) ->
     if let Some((req_cap, resp_cap)) = iox2_frame_service_caps(contract, plan) {
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
-        format!("flowrt::iox2::Iox2FrameServiceClient<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>")
+        format!(
+            "flowrt::iox2::Iox2FrameServiceClient::<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>"
+        )
     } else {
         "flowrt::iox2::Iox2ServiceClient".to_string()
     }
@@ -857,7 +859,9 @@ fn service_server_open_type(contract: &ContractIr, plan: &ServiceRuntimePlan) ->
     if let Some((req_cap, resp_cap)) = iox2_frame_service_caps(contract, plan) {
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
-        format!("flowrt::iox2::Iox2FrameServiceServer<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>")
+        format!(
+            "flowrt::iox2::Iox2FrameServiceServer::<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>"
+        )
     } else {
         "flowrt::iox2::Iox2ServiceServer".to_string()
     }

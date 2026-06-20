@@ -1128,7 +1128,7 @@ fn iox2_operation_start_client_open_type(
 ) -> String {
     if let Some((req_cap, resp_cap)) = iox2_operation_start_caps(contract, plan) {
         format!(
-            "flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
+            "flowrt::iox2::Iox2FrameServiceClient::<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
         )
     } else {
         "flowrt::iox2::Iox2ServiceClient".to_string()
@@ -1142,7 +1142,7 @@ fn iox2_operation_start_server_open_type(
 ) -> String {
     if let Some((req_cap, resp_cap)) = iox2_operation_start_caps(contract, plan) {
         format!(
-            "flowrt::iox2::Iox2FrameServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
+            "flowrt::iox2::Iox2FrameServiceServer::<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
         )
     } else {
         format!(

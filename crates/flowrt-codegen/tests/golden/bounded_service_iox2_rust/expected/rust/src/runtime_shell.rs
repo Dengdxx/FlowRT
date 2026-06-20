@@ -406,15 +406,15 @@ flowrt::Status::Ok
             status = app.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
         }
         if status == flowrt::Status::Ok {
-        let _ = app.service_client_plan_client_plan.inner.set(match flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::open("FlowRT/service/plan_client_plan") {
+        let _ = app.service_client_plan_client_plan.inner.set(match flowrt::iox2::Iox2FrameServiceClient::<PlanRequest, PlanResponse, 44, 21>::open("FlowRT/service/plan_client_plan") {
             Ok(client) => client,
             Err(error) => {
                 eprintln!("FlowRT: failed to open iox2 service client {}: {error}", "FlowRT/service/plan_client_plan");
                 status = flowrt::Status::Error;
-                flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::unavailable("FlowRT/service/plan_client_plan", error.to_string())
+                flowrt::iox2::Iox2FrameServiceClient::<PlanRequest, PlanResponse, 44, 21>::unavailable("FlowRT/service/plan_client_plan", error.to_string())
             }
         });
-        match flowrt::iox2::Iox2FrameServiceServer<PlanRequest, PlanResponse, 44, 21>::open("FlowRT/service/plan_client_plan", 64usize) {
+        match flowrt::iox2::Iox2FrameServiceServer::<PlanRequest, PlanResponse, 44, 21>::open("FlowRT/service/plan_client_plan", 64usize) {
             Ok(mut server) => {
                 server.set_schedule_waiter(scheduler_events.clone());
                 let _ = app.service_server_plan_svc_plan.set(std::sync::Mutex::new(server));
@@ -927,12 +927,12 @@ late_drop_count: 0,
             status = app.step_process_client_proc_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
         }
         if status == flowrt::Status::Ok {
-        let _ = app.service_client_plan_client_plan.inner.set(match flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::open("FlowRT/service/plan_client_plan") {
+        let _ = app.service_client_plan_client_plan.inner.set(match flowrt::iox2::Iox2FrameServiceClient::<PlanRequest, PlanResponse, 44, 21>::open("FlowRT/service/plan_client_plan") {
             Ok(client) => client,
             Err(error) => {
                 eprintln!("FlowRT: failed to open iox2 service client {}: {error}", "FlowRT/service/plan_client_plan");
                 status = flowrt::Status::Error;
-                flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::unavailable("FlowRT/service/plan_client_plan", error.to_string())
+                flowrt::iox2::Iox2FrameServiceClient::<PlanRequest, PlanResponse, 44, 21>::unavailable("FlowRT/service/plan_client_plan", error.to_string())
             }
         });
         }
@@ -1328,7 +1328,7 @@ late_drop_count: 0,
             status = app.step_process_server_proc_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
         }
         if status == flowrt::Status::Ok {
-        match flowrt::iox2::Iox2FrameServiceServer<PlanRequest, PlanResponse, 44, 21>::open("FlowRT/service/plan_client_plan", 64usize) {
+        match flowrt::iox2::Iox2FrameServiceServer::<PlanRequest, PlanResponse, 44, 21>::open("FlowRT/service/plan_client_plan", 64usize) {
             Ok(mut server) => {
                 server.set_schedule_waiter(scheduler_events.clone());
                 let _ = app.service_server_plan_svc_plan.set(std::sync::Mutex::new(server));
