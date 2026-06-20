@@ -14,7 +14,12 @@ impl PlanService for PlanServiceImpl {
     fn on_plan_request(&mut self, request: &PlanRequest) -> flowrt::ServiceResult<PlanResponse> {
         self.request_count.fetch_add(1, Ordering::Relaxed);
         flowrt::ServiceResult::ok(PlanResponse {
-            accepted: request.goal % 2 == 0,
+            accepted: !request.goal.is_empty(),
+            detail: if request.goal.len() <= 4 {
+                "ok".to_string()
+            } else {
+                "retry".to_string()
+            },
         })
     }
 
@@ -26,7 +31,7 @@ impl PlanService for PlanServiceImpl {
 #[derive(Default)]
 pub struct PlannerImpl {
     next_goal: u32,
-    pending: Option<(u32, flowrt::ServiceCallHandle<PlanResponse>)>,
+    pending: Option<(i32, flowrt::ServiceCallHandle<PlanResponse>)>,
 }
 
 impl Planner for PlannerImpl {
@@ -35,28 +40,29 @@ impl Planner for PlannerImpl {
         plan: &crate::components::ServiceClient_planner_plan,
         result: &mut flowrt::Output<i32>,
     ) -> flowrt::Status {
-        if let Some((goal, handle)) = self.pending.take() {
+        if let Some((goal_value, handle)) = self.pending.take() {
             if handle.poll() {
                 match handle.complete() {
                     flowrt::ServiceResult::Ok(response) => {
                         result.write(if response.accepted {
-                            goal as i32
+                            goal_value
                         } else {
-                            -(goal as i32)
+                            -goal_value
                         });
                     }
                     flowrt::ServiceResult::Err(_, _) => result.write(0),
                 }
             } else {
-                self.pending = Some((goal, handle));
+                self.pending = Some((goal_value, handle));
                 return flowrt::Status::ok();
             }
         }
 
         self.next_goal = self.next_goal.saturating_add(1);
-        let goal = self.next_goal;
+        let goal_value = (self.next_goal % 1000) as i32;
+        let goal = format!("g{goal_value}");
         self.pending = Some((
-            goal,
+            goal_value,
             plan.start_call(PlanRequest { goal }, std::time::Duration::from_millis(500)),
         ));
         flowrt::Status::ok()
@@ -89,7 +95,7 @@ impl Navigator for NavigatorImpl {
         progress.publish(PlanFeedback { progress: 0.5 });
         progress.publish(PlanFeedback { progress: 1.0 });
         flowrt::OperationHandlerResult::succeeded(PlanResult {
-            accepted: goal.target > 0,
+            accepted: !goal.target.is_empty(),
         })
     }
 

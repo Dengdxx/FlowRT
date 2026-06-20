@@ -59,12 +59,82 @@ run cargo test -p flowrt-codegen -j1 -- iox2_service
 echo "v0.25.0 iox2 service/operation smoke: codegen iox2 operation"
 run cargo test -p flowrt-codegen -j1 -- iox2_operation
 
+echo "v0.25.0 iox2 service/operation smoke: bounded variable golden"
+run cargo test -p flowrt-codegen -j1 -- golden_bounded
+
 echo "v0.25.0 iox2 service/operation smoke: codegen dynamic fallback"
 run cargo test -p flowrt-codegen -j1 -- service_iox2_dynamic_fallback
 
 echo "v0.25.0 iox2 service/operation smoke: CLI display separation"
 run cargo test -p flowrt-cli -j1 -- self_description_summary_separates_iox2_service_name_and_zenoh_key_expr
 run cargo test -p flowrt-cli -j1 -- operation_topology_summary_separates_iox2_service_name_and_zenoh_key_expr
+run cargo test -p flowrt-cli -j1 -- self_description_summary_displays_frame_transport_diagnostics
+
+echo "v0.25.0 iox2 service/operation smoke: variable channel switches to bounded iox2"
+route_unbounded="$work_dir/variable_route_unbounded.rsdl"
+route_bounded="$work_dir/variable_route_bounded.rsdl"
+cat > "$route_unbounded" <<'RSDL'
+[package]
+name = "variable_route_switch"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+process = "source_proc"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+process = "sink_proc"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2", "zenoh"]
+RSDL
+sed 's/payload = "bytes"/payload = "bytes<max=8>"/' "$route_unbounded" > "$route_bounded"
+
+unbounded_out="$work_dir/variable_route_unbounded/flowrt"
+bounded_out="$work_dir/variable_route_bounded/flowrt"
+run run_flowrt prepare "$route_unbounded" --out-dir "$unbounded_out"
+run grep -qF '"backend": "zenoh"' "$unbounded_out/launch/launch.json"
+run grep -qF '加 max=N 可留在 iox2' "$unbounded_out/selfdesc/selfdesc.json"
+run run_flowrt prepare "$route_bounded" --out-dir "$bounded_out"
+run grep -qF '"backend": "iox2"' "$bounded_out/launch/launch.json"
+run grep -qF '"iox2_slot_cap_bytes": 16' "$bounded_out/selfdesc/selfdesc.json"
+run grep -qF 'Iox2FramePubSub<Packet, 16>' "$bounded_out/rust/src/runtime_shell.rs"
+if grep -qF 'ZenohPubSub<Packet>' "$bounded_out/rust/src/runtime_shell.rs"; then
+    echo "bounded variable route must stay on iox2 without zenoh pubsub" >&2
+    exit 1
+fi
 
 echo "v0.25.0 iox2 service/operation smoke: example check"
 run run_flowrt check examples/iox2_service_demo/rsdl/robot.rsdl
@@ -74,6 +144,11 @@ demo_out="$work_dir/iox2_service_demo/flowrt"
 run run_flowrt prepare examples/iox2_service_demo/rsdl/robot.rsdl --out-dir "$demo_out"
 run grep -qF '"service": "FlowRT/service/plan_client_plan"' \
     "$demo_out/selfdesc/selfdesc.json"
+run grep -qF '"request_frame": {' "$demo_out/selfdesc/selfdesc.json"
+run grep -qF '"start_request_frame": {' "$demo_out/selfdesc/selfdesc.json"
+run grep -qF '"iox2_slot_cap_bytes": 40' "$demo_out/selfdesc/selfdesc.json"
+run grep -qF 'Iox2FrameServiceClient<PlanRequest, PlanResponse' "$demo_out/rust/src/components.rs"
+run grep -qF 'Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>' "$demo_out/rust/src/components.rs"
 if awk '
     /"services": \[/ { in_services = 1 }
     /"operations": \[/ { in_services = 0 }

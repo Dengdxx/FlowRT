@@ -4,13 +4,14 @@ version = "0.1.0"
 rsdl_version = "0.1"
 
 [type.PlanRequest]
-goal = "u32"
+goal = "string<max=8>"
 
 [type.PlanResponse]
 accepted = "bool"
+detail = "string<max=12>"
 
 [type.PlanGoal]
-target = "u32"
+target = "string<max=8>"
 
 [type.PlanFeedback]
 progress = "f32"
