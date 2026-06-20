@@ -27,7 +27,13 @@ impl flowrt::FrameCodec for PlanRequest {
 
     fn encode_frame(&self, output: &mut [u8]) -> Result<(), flowrt::WireCodecError> {
         let mut tail = Vec::<u8>::new();
+        if self.label.len() > 8 {
+            return Err(flowrt::WireCodecError::invalid_frame("field PlanRequest.label exceeds max 8"));
+        }
         let label_span = flowrt::append_tail_block(&mut tail, self.label.as_bytes())?;
+        if self.samples.len() > 4 {
+            return Err(flowrt::WireCodecError::invalid_frame("field PlanRequest.samples exceeds max 4"));
+        }
         let mut samples_tail = Vec::<u8>::with_capacity(self.samples.len() * 4);
         for element in &self.samples {
             let start = samples_tail.len();
@@ -106,6 +112,9 @@ impl flowrt::FrameCodec for PlanResponse {
 
     fn encode_frame(&self, output: &mut [u8]) -> Result<(), flowrt::WireCodecError> {
         let mut tail = Vec::<u8>::new();
+        if self.detail.len() > 12 {
+            return Err(flowrt::WireCodecError::invalid_frame("field PlanResponse.detail exceeds max 12"));
+        }
         let detail_span = flowrt::append_tail_block(&mut tail, self.detail.as_bytes())?;
         if output.len() != self.encoded_frame_size() {
             return Err(flowrt::WireCodecError::wrong_size(self.encoded_frame_size(), output.len()));

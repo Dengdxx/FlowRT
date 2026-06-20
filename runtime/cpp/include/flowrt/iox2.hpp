@@ -1,8 +1,8 @@
 #pragma once
 
-#include <atomic>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <flowrt/backend_health.hpp>
@@ -143,12 +143,32 @@ struct Iox2FrameSlot {
      */
     template <CanonicalTransportMessage T>
     static std::optional<Iox2FrameSlot> try_from_message(const T &message) noexcept {
+        auto result = try_from_message_result(message);
+        if (std::holds_alternative<Iox2FrameSlot>(result)) {
+            return std::get<Iox2FrameSlot>(std::move(result));
+        }
+        return std::nullopt;
+    }
+
+    /**
+     * @brief 从消息编码 slot，失败时保留 codec 或容量错误说明。
+     */
+    template <CanonicalTransportMessage T>
+    static std::variant<Iox2FrameSlot, std::string> try_from_message_result(
+        const T &message) noexcept {
         try {
             std::vector<std::uint8_t> frame(detail::encoded_frame_size(message));
             detail::encode_frame(message, std::span<std::uint8_t>{frame});
-            return try_from_frame(std::span<const std::uint8_t>{frame});
+            auto slot = try_from_frame(std::span<const std::uint8_t>{frame});
+            if (slot.has_value()) {
+                return std::move(*slot);
+            }
+            return std::string{"frame length "} + std::to_string(frame.size()) +
+                   " exceeds iox2 frame slot capacity " + std::to_string(CAP);
+        } catch (const std::exception &error) {
+            return std::string{error.what()};
         } catch (...) {
-            return std::nullopt;
+            return std::string{"encode FlowRT iox2 frame slot failed"};
         }
     }
 
@@ -1038,11 +1058,13 @@ class Iox2FrameServiceClient {
     }
 
     ServiceResult<Resp> call(const Req &request, std::uint64_t timeout_ms) {
-        const auto request_slot = Iox2FrameSlot<REQ_CAP>::try_from_message(request);
-        if (!request_slot.has_value()) {
-            return ServiceResult<Resp>::err(ServiceError::Backend);
+        auto request_slot = Iox2FrameSlot<REQ_CAP>::try_from_message_result(request);
+        if (std::holds_alternative<std::string>(request_slot)) {
+            return ServiceResult<Resp>::err_with_message(ServiceError::Backend,
+                                                         std::get<std::string>(request_slot));
         }
-        auto response = inner_.call(*request_slot, timeout_ms);
+        auto response =
+            inner_.call(std::get<Iox2FrameSlot<REQ_CAP>>(std::move(request_slot)), timeout_ms);
         if (response.is_err()) {
             if (response.error_message().has_value()) {
                 return ServiceResult<Resp>::err_with_message(response.error_code(),
@@ -1071,8 +1093,7 @@ class Iox2FrameServiceClient {
                      ? InnerClient::unavailable(service_name, std::move(*unavailable))
                      : InnerClient::open(service_name)) {}
 
-    using InnerClient =
-        Iox2ServiceClient<Iox2FrameSlot<REQ_CAP>, Iox2FrameSlot<RESP_CAP>>;
+    using InnerClient = Iox2ServiceClient<Iox2FrameSlot<REQ_CAP>, Iox2FrameSlot<RESP_CAP>>;
 
     InnerClient inner_;
 };
@@ -1219,11 +1240,13 @@ class Iox2FrameServiceServer {
             if (value == nullptr) {
                 return ServiceResult<Iox2FrameSlot<RESP_CAP>>::err(ServiceError::Protocol);
             }
-            auto response_slot = Iox2FrameSlot<RESP_CAP>::try_from_message(*value);
-            if (!response_slot.has_value()) {
-                return ServiceResult<Iox2FrameSlot<RESP_CAP>>::err(ServiceError::Backend);
+            auto response_slot = Iox2FrameSlot<RESP_CAP>::try_from_message_result(*value);
+            if (std::holds_alternative<std::string>(response_slot)) {
+                return ServiceResult<Iox2FrameSlot<RESP_CAP>>::err_with_message(
+                    ServiceError::Backend, std::get<std::string>(response_slot));
             }
-            return ServiceResult<Iox2FrameSlot<RESP_CAP>>::ok(std::move(*response_slot));
+            return ServiceResult<Iox2FrameSlot<RESP_CAP>>::ok(
+                std::get<Iox2FrameSlot<RESP_CAP>>(std::move(response_slot)));
         });
     }
 
@@ -1238,8 +1261,7 @@ class Iox2FrameServiceServer {
                      ? InnerServer::unavailable(service_name, std::move(*unavailable))
                      : InnerServer::open(service_name, max_in_flight)) {}
 
-    using InnerServer =
-        Iox2ServiceServer<Iox2FrameSlot<REQ_CAP>, Iox2FrameSlot<RESP_CAP>>;
+    using InnerServer = Iox2ServiceServer<Iox2FrameSlot<REQ_CAP>, Iox2FrameSlot<RESP_CAP>>;
 
     InnerServer inner_;
 };

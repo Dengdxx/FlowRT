@@ -64,6 +64,9 @@ impl flowrt::FrameCodec for PlanGoal {
 
     fn encode_frame(&self, output: &mut [u8]) -> Result<(), flowrt::WireCodecError> {
         let mut tail = Vec::<u8>::new();
+        if self.target.len() > 8 {
+            return Err(flowrt::WireCodecError::invalid_frame("field PlanGoal.target exceeds max 8"));
+        }
         let target_span = flowrt::append_tail_block(&mut tail, self.target.as_bytes())?;
         if output.len() != self.encoded_frame_size() {
             return Err(flowrt::WireCodecError::wrong_size(self.encoded_frame_size(), output.len()));

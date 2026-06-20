@@ -25,8 +25,17 @@ struct Packet {
 
     void encode_frame(std::span<std::uint8_t> output) const {
         std::vector<std::uint8_t> tail;
+        if (payload.size() > 8U) {
+            throw flowrt::WireCodecError("field Packet.payload exceeds max 8");
+        }
         const auto payload_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{payload.data(), payload.size()});
+        if (label.size() > 12U) {
+            throw flowrt::WireCodecError("field Packet.label exceeds max 12");
+        }
         const auto label_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(label.data()), label.size()});
+        if (samples.size() > 4U) {
+            throw flowrt::WireCodecError("field Packet.samples exceeds max 4");
+        }
         std::vector<std::uint8_t> samples_tail;
         samples_tail.resize(samples.size() * 4);
         std::size_t samples_cursor = 0;

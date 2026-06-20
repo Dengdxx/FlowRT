@@ -48,6 +48,9 @@ struct PlanGoal {
 
     void encode_frame(std::span<std::uint8_t> output) const {
         std::vector<std::uint8_t> tail;
+        if (target.size() > 8U) {
+            throw flowrt::WireCodecError("field PlanGoal.target exceeds max 8");
+        }
         const auto target_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(target.data()), target.size()});
         flowrt::ensure_wire_size(encoded_frame_size(), output.size());
         std::size_t cursor = 0;

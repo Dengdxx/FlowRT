@@ -629,6 +629,97 @@ backends = ["zenoh"]
 }
 
 #[test]
+fn bounded_variable_frame_encoder_reports_field_bound_in_rust_and_cpp() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "bounded_frame_error_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=8>"
+label = "string<max=12>"
+samples = "sequence<u32,max=4>"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "cpp"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+process = "source_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+process = "sink_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["iox2"]
+"#,
+    );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+    let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+
+    assert!(
+        rust_messages.contains(
+            "return Err(flowrt::WireCodecError::invalid_frame(\"field Packet.payload exceeds max 8\"));"
+        ),
+        "Rust frame encoder must report bounded bytes field and max.\n\n{rust_messages}"
+    );
+    assert!(
+        rust_messages.contains(
+            "return Err(flowrt::WireCodecError::invalid_frame(\"field Packet.label exceeds max 12\"));"
+        ),
+        "Rust frame encoder must report bounded string field and max.\n\n{rust_messages}"
+    );
+    assert!(
+        rust_messages.contains(
+            "return Err(flowrt::WireCodecError::invalid_frame(\"field Packet.samples exceeds max 4\"));"
+        ),
+        "Rust frame encoder must report bounded sequence field and max.\n\n{rust_messages}"
+    );
+    assert!(
+        cpp_messages
+            .contains("throw flowrt::WireCodecError(\"field Packet.payload exceeds max 8\");"),
+        "C++ frame encoder must report bounded bytes field and max.\n\n{cpp_messages}"
+    );
+    assert!(
+        cpp_messages
+            .contains("throw flowrt::WireCodecError(\"field Packet.label exceeds max 12\");"),
+        "C++ frame encoder must report bounded string field and max.\n\n{cpp_messages}"
+    );
+    assert!(
+        cpp_messages
+            .contains("throw flowrt::WireCodecError(\"field Packet.samples exceeds max 4\");"),
+        "C++ frame encoder must report bounded sequence field and max.\n\n{cpp_messages}"
+    );
+}
+
+#[test]
 fn variable_frame_tests_embed_cross_language_byte_fixtures_and_malformed_decode() {
     let ir = contract_from_source(
         r#"

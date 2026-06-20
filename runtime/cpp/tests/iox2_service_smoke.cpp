@@ -46,6 +46,31 @@ struct FrameMsg {
     }
 };
 
+struct BoundedFrameMsg {
+    std::vector<std::uint8_t> payload;
+
+    [[nodiscard]] std::size_t encoded_frame_size() const noexcept { return 1U + payload.size(); }
+
+    void encode_frame(std::span<std::uint8_t> output) const {
+        if (payload.size() > 3U) {
+            throw flowrt::WireCodecError("field BoundedFrameMsg.payload exceeds max 3");
+        }
+        flowrt::ensure_wire_size(encoded_frame_size(), output.size());
+        output[0] = static_cast<std::uint8_t>(payload.size());
+        std::copy(payload.begin(), payload.end(), output.begin() + 1U);
+    }
+
+    static BoundedFrameMsg decode_frame(std::span<const std::uint8_t> input) {
+        if (input.empty()) {
+            throw flowrt::WireCodecError(1U, 0U);
+        }
+        const auto len = static_cast<std::size_t>(input[0]);
+        flowrt::ensure_wire_size(len, input.size() - 1U);
+        return BoundedFrameMsg{.payload =
+                                   std::vector<std::uint8_t>{input.begin() + 1, input.end()}};
+    }
+};
+
 int main() {
     const auto slot = flowrt::iox2::Iox2FrameSlot<4>::try_from_message(
         FrameMsg{.payload = std::vector<std::uint8_t>{1U, 2U, 3U}});
@@ -57,6 +82,10 @@ int main() {
     assert(!flowrt::iox2::Iox2FrameSlot<3>::try_from_message(
                 FrameMsg{.payload = std::vector<std::uint8_t>{1U, 2U, 3U}})
                 .has_value());
+    const auto bounded_error = flowrt::iox2::Iox2FrameSlot<8>::try_from_message_result(
+        BoundedFrameMsg{.payload = std::vector<std::uint8_t>{1U, 2U, 3U, 4U}});
+    assert(std::holds_alternative<std::string>(bounded_error));
+    assert(std::get<std::string>(bounded_error) == "field BoundedFrameMsg.payload exceeds max 3");
 
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
     const auto name = std::string{"FlowRT/Cpp/Iox2/Service/Smoke/"} + std::to_string(::getpid());
@@ -91,8 +120,8 @@ int main() {
     assert(client.health().state == flowrt::BackendHealthState::Unsupported);
     const auto response = client.call(Req{.goal = 1U}, 10U);
     assert(response.error_code() == flowrt::ServiceError::Unavailable);
-    auto frame_client =
-        flowrt::iox2::Iox2FrameServiceClient<FrameMsg, FrameMsg, 8, 8>::unavailable("svc", "no sdk");
+    auto frame_client = flowrt::iox2::Iox2FrameServiceClient<FrameMsg, FrameMsg, 8, 8>::unavailable(
+        "svc", "no sdk");
     assert(frame_client.health().state == flowrt::BackendHealthState::Unsupported);
     const auto frame_response =
         frame_client.call(FrameMsg{.payload = std::vector<std::uint8_t>{1U}}, 10U);

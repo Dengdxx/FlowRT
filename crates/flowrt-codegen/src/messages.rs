@@ -1445,7 +1445,11 @@ fn rust_frame_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
     );
     output.push_str("        let mut tail = Vec::<u8>::new();\n");
     for field in &ty.fields {
-        output.push_str(&rust_frame_prepare_tail_field(contract, field));
+        output.push_str(&rust_frame_prepare_tail_field(
+            contract,
+            ty.generated_name.as_str(),
+            field,
+        ));
     }
     output.push_str(
         "        if output.len() != self.encoded_frame_size() {\n            return Err(flowrt::WireCodecError::wrong_size(self.encoded_frame_size(), output.len()));\n        }\n        let mut cursor = 0usize;\n",
@@ -1505,38 +1509,59 @@ fn rust_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
     }
 }
 
-fn rust_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
+fn rust_frame_prepare_tail_field(
+    contract: &ContractIr,
+    type_name: &str,
+    field: &FieldIr,
+) -> String {
+    let mut check = rust_bounded_variable_field_check(type_name, field);
     match &field.ty {
-        TypeExpr::VarBytes { .. } => format!(
+        TypeExpr::VarBytes { .. } => {
+            check.push_str(&format!(
             "        let {name}_span = flowrt::append_tail_block(&mut tail, self.{name}.as_slice())?;\n",
             name = field.name
-        ),
-        TypeExpr::VarString { .. } => format!(
+            ));
+            check
+        }
+        TypeExpr::VarString { .. } => {
+            check.push_str(&format!(
             "        let {name}_span = flowrt::append_tail_block(&mut tail, self.{name}.as_bytes())?;\n",
             name = field.name
-        ),
+            ));
+            check
+        }
         TypeExpr::VarSequence { element, .. } => {
             let element_size = rust_wire_size(contract, element);
-            let mut code = format!(
+            check.push_str(&format!(
                 "        let mut {name}_tail = Vec::<u8>::with_capacity(self.{name}.len() * {element_size});\n        for element in &self.{name} {{\n            let start = {name}_tail.len();\n            {name}_tail.resize(start + {element_size}, 0);\n",
                 name = field.name
-            );
-            code.push_str("            let mut cursor = start;\n");
-            code.push_str(&rust_wire_encode_expr(
+            ));
+            check.push_str("            let mut cursor = start;\n");
+            check.push_str(&rust_wire_encode_expr(
                 element,
                 "*element",
                 &format!("{}_tail", field.name),
                 12,
             ));
-            code.push_str("            let _ = cursor;\n");
-            code.push_str(&format!(
+            check.push_str("            let _ = cursor;\n");
+            check.push_str(&format!(
                 "        }}\n        let {name}_span = flowrt::append_tail_block(&mut tail, &{name}_tail)?;\n",
                 name = field.name
             ));
-            code
+            check
         }
         _ => String::new(),
     }
+}
+
+fn rust_bounded_variable_field_check(type_name: &str, field: &FieldIr) -> String {
+    let Some(max_len) = bounded_variable_max_len(&field.ty) else {
+        return String::new();
+    };
+    format!(
+        "        if self.{name}.len() > {max_len} {{\n            return Err(flowrt::WireCodecError::invalid_frame(\"field {type_name}.{name} exceeds max {max_len}\"));\n        }}\n",
+        name = field.name
+    )
 }
 
 fn rust_frame_encode_header_field(field: &FieldIr) -> String {
@@ -1805,7 +1830,11 @@ fn cpp_frame_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
         "    void encode_frame(std::span<std::uint8_t> output) const {\n        std::vector<std::uint8_t> tail;\n",
     );
     for field in &ty.fields {
-        output.push_str(&cpp_frame_prepare_tail_field(contract, field));
+        output.push_str(&cpp_frame_prepare_tail_field(
+            contract,
+            ty.generated_name.as_str(),
+            field,
+        ));
     }
     output.push_str(
         "        flowrt::ensure_wire_size(encoded_frame_size(), output.size());\n        std::size_t cursor = 0;\n",
@@ -1856,23 +1885,30 @@ fn cpp_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
     output
 }
 
-fn cpp_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
+fn cpp_frame_prepare_tail_field(contract: &ContractIr, type_name: &str, field: &FieldIr) -> String {
+    let mut check = cpp_bounded_variable_field_check(type_name, field);
     match &field.ty {
-        TypeExpr::VarBytes { .. } => format!(
+        TypeExpr::VarBytes { .. } => {
+            check.push_str(&format!(
             "        const auto {name}_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{{{name}.data(), {name}.size()}});\n",
             name = field.name
-        ),
-        TypeExpr::VarString { .. } => format!(
+            ));
+            check
+        }
+        TypeExpr::VarString { .. } => {
+            check.push_str(&format!(
             "        const auto {name}_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{{reinterpret_cast<const std::uint8_t*>({name}.data()), {name}.size()}});\n",
             name = field.name
-        ),
+            ));
+            check
+        }
         TypeExpr::VarSequence { element, .. } => {
             let element_size = rust_wire_size(contract, element);
-            let mut code = format!(
+            check.push_str(&format!(
                 "        std::vector<std::uint8_t> {name}_tail;\n        {name}_tail.resize({name}.size() * {element_size});\n        std::size_t {name}_cursor = 0;\n        for (const auto& element : {name}) {{\n            std::size_t cursor = {name}_cursor;\n",
                 name = field.name
-            );
-            code.push_str(&cpp_wire_encode_expr(
+            ));
+            check.push_str(&cpp_wire_encode_expr(
                 contract,
                 element,
                 "element",
@@ -1882,13 +1918,32 @@ fn cpp_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Strin
                 ),
                 12,
             ));
-            code.push_str(&format!(
+            check.push_str(&format!(
                 "            {name}_cursor += {element_size};\n        }}\n        const auto {name}_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{{{name}_tail.data(), {name}_tail.size()}});\n",
                 name = field.name
             ));
-            code
+            check
         }
         _ => String::new(),
+    }
+}
+
+fn cpp_bounded_variable_field_check(type_name: &str, field: &FieldIr) -> String {
+    let Some(max_len) = bounded_variable_max_len(&field.ty) else {
+        return String::new();
+    };
+    format!(
+        "        if ({name}.size() > {max_len}U) {{\n            throw flowrt::WireCodecError(\"field {type_name}.{name} exceeds max {max_len}\");\n        }}\n",
+        name = field.name
+    )
+}
+
+fn bounded_variable_max_len(expr: &TypeExpr) -> Option<u32> {
+    match expr {
+        TypeExpr::VarBytes { max_len }
+        | TypeExpr::VarString { max_len, .. }
+        | TypeExpr::VarSequence { max_len, .. } => *max_len,
+        _ => None,
     }
 }
 

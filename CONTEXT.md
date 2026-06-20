@@ -26,7 +26,7 @@ data 和可推导 frame 上界的 `bytes<max=N>`、`string<max=N>`、`sequence<T
 service。dataflow、Service 和 Operation 都按 edge 解析 backend：省略 `backend` 继承
 profile/default backend；profile 默认 `iox2` 遇到无界 payload edge 时自动 fallback 到
 `zenoh`；显式 `backend = "iox2"` 遇到无界 payload 时由 validator fail-fast。有界 frame
-publish/call 超出推导上界时返回错误，不截断。
+publish/call 超出字段上界时返回包含字段名与上界的错误，不截断。
 
 上一发布线为 `v0.24.0 Fault Matrix Completion`：把 v0.23.3 已落地的 global tick、
 fault injection kind、route health、standby failover 和 graph health 组合成可运行、

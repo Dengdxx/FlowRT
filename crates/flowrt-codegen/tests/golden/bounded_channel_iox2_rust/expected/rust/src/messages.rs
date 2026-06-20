@@ -28,8 +28,17 @@ impl flowrt::FrameCodec for Packet {
 
     fn encode_frame(&self, output: &mut [u8]) -> Result<(), flowrt::WireCodecError> {
         let mut tail = Vec::<u8>::new();
+        if self.payload.len() > 8 {
+            return Err(flowrt::WireCodecError::invalid_frame("field Packet.payload exceeds max 8"));
+        }
         let payload_span = flowrt::append_tail_block(&mut tail, self.payload.as_slice())?;
+        if self.label.len() > 12 {
+            return Err(flowrt::WireCodecError::invalid_frame("field Packet.label exceeds max 12"));
+        }
         let label_span = flowrt::append_tail_block(&mut tail, self.label.as_bytes())?;
+        if self.samples.len() > 4 {
+            return Err(flowrt::WireCodecError::invalid_frame("field Packet.samples exceeds max 4"));
+        }
         let mut samples_tail = Vec::<u8>::with_capacity(self.samples.len() * 4);
         for element in &self.samples {
             let start = samples_tail.len();

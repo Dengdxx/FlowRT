@@ -25,7 +25,13 @@ struct PlanRequest {
 
     void encode_frame(std::span<std::uint8_t> output) const {
         std::vector<std::uint8_t> tail;
+        if (label.size() > 8U) {
+            throw flowrt::WireCodecError("field PlanRequest.label exceeds max 8");
+        }
         const auto label_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(label.data()), label.size()});
+        if (samples.size() > 4U) {
+            throw flowrt::WireCodecError("field PlanRequest.samples exceeds max 4");
+        }
         std::vector<std::uint8_t> samples_tail;
         samples_tail.resize(samples.size() * 4);
         std::size_t samples_cursor = 0;
@@ -92,6 +98,9 @@ struct PlanResponse {
 
     void encode_frame(std::span<std::uint8_t> output) const {
         std::vector<std::uint8_t> tail;
+        if (detail.size() > 12U) {
+            throw flowrt::WireCodecError("field PlanResponse.detail exceeds max 12");
+        }
         const auto detail_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(detail.data()), detail.size()});
         flowrt::ensure_wire_size(encoded_frame_size(), output.size());
         std::size_t cursor = 0;
