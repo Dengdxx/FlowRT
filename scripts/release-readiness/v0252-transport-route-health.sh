@@ -7,7 +7,6 @@ check_v0252_transport_route_health_readiness() {
     local smoke_script="$repo_root/scripts/test-v0252-transport-route-health-smoke.sh"
     local context_file="$repo_root/CONTEXT.md"
     local changelog_file="$repo_root/CHANGELOG.md"
-    local backend_doc="$repo_root/docs/backend-contract.md"
     local cli_doc="$repo_root/docs/cli.md"
 
     if [[ ! -f "$ci_file" ]]; then
@@ -52,8 +51,10 @@ check_v0252_transport_route_health_readiness() {
         "v0.25.2 Transport Route Health" "$context_file"
     require_file_text "CHANGELOG 记录 v0.25.2 release 段" \
         "## v0.25.2 - 2026-06-21" "$changelog_file"
-    require_file_text "backend 文档记录 transport publish failure counter 投影" \
-        "transport publish 失败会保留 backend health / last error" "$backend_doc"
+    require_file_text "CONTEXT 记录 transport publish failure counter 投影" \
+        "route overflow policy 投影到统一 route counters" "$context_file"
+    require_file_text "CONTEXT 记录 transport publish backend health 诊断" \
+        "backend health / last error 诊断" "$context_file"
     require_file_text "CLI 文档记录 route counter 投影口径" \
         'transport publish 失败会同时保留 `last_error`' "$cli_doc"
 }
