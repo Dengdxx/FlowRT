@@ -19,8 +19,6 @@ check_v0250_iox2_service_operation_readiness() {
             "runner: ubuntu-latest" "$ci_file"
         require_ci_text "v0.25.0 CI 覆盖 arm64 runner" \
             "runner: ubuntu-24.04-arm" "$ci_file"
-        require_ci_text "v0.25.0 CI 安装 linux-amd64 Rust target" \
-            "targets: x86_64-unknown-linux-gnu" "$ci_file"
         require_ci_text_count_at_least "package/release evidence 依赖 v0.25.0 focused gate" \
             "- v0250-iox2-service-operation-smoke" "$ci_file" 2
     fi
@@ -48,6 +46,8 @@ check_v0250_iox2_service_operation_readiness() {
             "examples/iox2_service_demo/rsdl/robot.rsdl" "$smoke_script"
         require_file_text "v0.25.0 smoke 可强制真实 iox2 SDK build/run" \
             "FLOWRT_V0250_REQUIRE_IOX2_SDK" "$smoke_script"
+        require_file_text "v0.25.0 arm64 smoke 使用本机 linux-arm64 target 执行真实 run" \
+            "platform = \"linux-arm64\"" "$smoke_script"
     else
         fail "v0.25.0 focused smoke 脚本不存在或不可执行: $smoke_script"
     fi

@@ -167,6 +167,12 @@ if [[ "${FLOWRT_V0250_REQUIRE_IOX2_SDK:-0}" == "1" ]]; then
     mkdir -p "$real_demo"
     cp -R examples/iox2_service_demo/app "$real_demo/app"
     cp -R examples/iox2_service_demo/rsdl "$real_demo/rsdl"
+    case "$(uname -m)" in
+        aarch64|arm64)
+            run sed -i 's/platform = "linux-amd64"/platform = "linux-arm64"/' \
+                "$real_demo/rsdl/robot.rsdl"
+            ;;
+    esac
     build_out="$real_demo/flowrt"
     run run_flowrt deps "$real_demo/rsdl/robot.rsdl" --backend iox2 --build-mode debug
     run run_flowrt build "$real_demo/rsdl/robot.rsdl" --out-dir "$build_out" --build-mode debug
