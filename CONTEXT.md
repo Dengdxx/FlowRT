@@ -28,6 +28,46 @@ profile/default backend；profile 默认 `iox2` 遇到无界 payload edge 时自
 `zenoh`；显式 `backend = "iox2"` 遇到无界 payload 时由 validator fail-fast。有界 frame
 publish/call 超出字段上界时返回包含字段名与上界的错误，不截断。
 
+### 已确认后续边界
+
+以下边界是 2026-06-20 核对 `CONTEXT.md`、`CHANGELOG.md`、入库 docs 与当前代码后确认的
+事实，用于避免后续 agent 把已完成的子集误判为未做，或把仍未实现的能力写成可用。
+
+- 跨进程 / 分布式确定性：`global_tick` 基座、跨进程 FIFO feedback 在 `global_tick`
+  profile 下放行、跨 process fault injection 的 `global_tick` 守门已经落地；无
+  `global_tick` 时仍没有通用跨进程 determinism。严格 z⁻¹（恒 1 拍、tick-0 present
+  初值）仍只对同进程反馈成立；跨进程 latest feedback 是 seeded latest-snapshot，
+  跨进程 fault injection determinism 还需要更完整矩阵扩展。
+- 时间模型：`realtime`、`simulated_replay`、runtime-native deterministic replay 和
+  sensor event-time 已落地；`external_stepped` 仍由 validator 拒绝。PTP、NTP、跨机
+  clock drift 处理和 cross-host exact sync 仍不是 backend 内部假设，留待后续语义建模。
+- 多传感器同步：当前是 `[[sync]]` + `flowrt::Synchronizer` 的 latest-aligned
+  approx-window v1，并采用 DropLate 迟到处理；ROS2 ApproximateTime 式全局最优匹配、
+  late-sample policy 变体和跨机 drift 处理仍未实现。
+- C ABI / 语言 binding：C v0 已支持 native fixed-size component、callback table adapter、
+  `app/c` 接入路径和 params readonly snapshot（primitive/array/table 的 borrowed JSON
+  view）。C 侧 `on_params_update` 写接口、string param、service、operation、variable
+  frame、`io_boundary`、`external`、`pkg_config`、动态加载、完整 C runtime wrapper 和
+  Python binding 仍不开放。
+- Message ABI：maps、recursive structures 和 language-specific ownership types 仍不支持。
+  空消息需区分口径：显式 `empty = true` 已支持零长度 wire payload；未声明
+  `empty = true` 的隐式空 message struct 仍由 validator 拒绝。
+- 反馈环 init：literal init 仍限全 primitive 字段消息；嵌套字段和数组字段初值留待后续。
+- Operation 控制面：generated Operation runtime 已支持 inproc、zenoh，并在本版本接入
+  iox2；`flowrt op list/status/cancel` 是本机 introspection 控制面。`flowrt op start`、
+  跨机 Operation CLI 控制面和 replay 驱动 Operation 执行仍不属于当前范围。
+- 测试覆盖：codegen golden、focused smoke 和部分真实 runtime smoke 已覆盖 transport
+  接线，但依赖 iox2/zenoh SDK 的 generated transport shell 不等同于 inproc-only 编译网的
+  全面真编译覆盖；新增 transport 分支仍需要按依赖可用性补 smoke 或显式 fail-fast 证据。
+- 故障注入：`status_error`、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
+  和 `backend_drop` 已进入 test-only deterministic injection / fault matrix 路径；生产随机
+  / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。
+- 收口残留：route health / reconnect 已统一进入 status facts，但 `iox2` / `zenoh` route
+  queue-full backpressure / overflow 仍比 inproc FIFO 粗；`clang-tidy` gate 是低噪声首版，
+  高噪声 ABI/POD/generic generated capture 不适配项仍关闭；FrameDescriptor
+  `record_payload = true` 仅支持 `payload_capture = "boundary"`，外部 payload provider
+  仍是后续语义。
+
 上一发布线为 `v0.24.0 Fault Matrix Completion`：把 v0.23.3 已落地的 global tick、
 fault injection kind、route health、standby failover 和 graph health 组合成可运行、
 可校验、可发布把关的矩阵证据。`flowrt fault-matrix check/run` 是 test-only CLI fixture，
