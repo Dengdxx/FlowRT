@@ -32,7 +32,7 @@ jobs:
           mapfile -t run_ids < <(
             gh api \
               "/repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${target_sha}&status=success&per_page=100" \
-              --jq '.workflow_runs[] | select(.path == ".github/workflows/ci.yml") | .id'
+              --jq '.workflow_runs[] | select(.path == ".github/workflows/release-candidate.yml") | .id'
           )
 
           for run_id in "${run_ids[@]}"; do

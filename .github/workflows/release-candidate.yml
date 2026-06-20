@@ -1,0 +1,2001 @@
+name: Release Candidate
+
+on:
+  push:
+    branches:
+      - "dev/v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  guard-generated:
+    name: Guard Generated Files
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 确认忽略产物未入库
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tracked=$(
+            git -c safe.directory="$GITHUB_WORKSPACE" ls-files -- \
+              docs/architecture-plan.md \
+              docs/backend-contract.md \
+              docs/contract-ir-v0.1.md \
+              docs/message-abi-v0.1.md \
+              docs/rsdl-v0.1.md \
+              'flowrt/**' \
+              'examples/*/flowrt/**'
+          )
+
+          if [[ -n "$tracked" ]]; then
+            echo "以下本地规格或 FlowRT 生成物已被 git tracked，必须移出索引："
+            echo "$tracked"
+            exit 1
+          fi
+
+          echo "未发现被 tracked 的本地规格或 FlowRT 生成物。"
+
+  v0141-architecture-smoke:
+    name: v0.14.1 Architecture Guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: v0.14.1 architecture guard
+        shell: bash
+        run: |
+          bash -n scripts/check-architecture-size.sh scripts/test-v0141-architecture-smoke.sh
+          scripts/test-v0141-architecture-smoke.sh
+
+  v0150-architecture-convergence-smoke:
+    name: v0.15.0 Architecture Convergence Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 architecture guard 依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: v0.15.0 architecture convergence smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.15.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0151-ci-release-evidence-smoke:
+    name: v0.15.1 CI Release Evidence Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.15.1 CI release evidence smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.15.1)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0152-scheduler-clock-smoke:
+    name: v0.15.2 Scheduler Clock Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.15.2 scheduler clock smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.15.2)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0160-clock-model-smoke:
+    name: v0.16.0 Clock Model Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.16.0 clock model smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.16.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0170-deterministic-replay-smoke:
+    name: v0.17.0 Deterministic Replay Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.17.0 deterministic replay smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.17.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0171-cpp-replay-parity-smoke:
+    name: v0.17.1 C++ Replay Parity Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.17.1 C++ replay parity smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.17.1)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0180-event-time-smoke:
+    name: v0.18.0 Sensor Event-Time Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.18.0 event-time smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.18.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  codegen-compile-net:
+    name: Codegen 编译网
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: codegen 编译网
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.18.1)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0190-multisensor-sync-smoke:
+    name: v0.19.0 Multi-Sensor Sync Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.19.0 multi-sensor sync smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.19.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0200-feedback-loop-smoke:
+    name: v0.20.0 Feedback Loop Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.20.0 feedback loop smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.20.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0201-feedback-loop-v2-smoke:
+    name: v0.20.1 Feedback Loop v2 Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.20.1 feedback loop v2 smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.20.1)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0210-lifecycle-state-machine-smoke:
+    name: v0.21.0 Lifecycle State Machine Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.21.0 lifecycle state machine smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.21.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0211-fault-isolation-restart-smoke:
+    name: v0.21.1 Fault Isolation Restart Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.21.1 fault isolation restart smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.21.1)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0212-degrade-smoke:
+    name: v0.21.2 Degrade Data Semantics Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.21.2 degrade data semantics smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.21.2)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0213-graph-health-smoke:
+    name: v0.21.3 Graph Health Aggregation Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.21.3 graph health aggregation smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.21.3)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0214-cross-process-feedback-smoke:
+    name: v0.21.4 Cross-Process Feedback Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.21.4 cross-process feedback smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.21.4)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0220-fault-injection-determinism-smoke:
+    name: v0.22.0 Fault Injection Determinism Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.22.0 fault injection determinism smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.22.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0221-reserved-keywords-smoke:
+    name: v0.22.1 Reserved Keyword Naming Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.22.1 reserved keyword naming smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.22.1)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0230-zenoh-service-smoke:
+    name: v0.23.0 Zenoh Service Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.23.0 zenoh service smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.23.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0231-route-health-smoke:
+    name: v0.23.1 Route Health Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.23.1 route health smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.23.1)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0232-cpp-clang-tidy-smoke:
+    name: v0.23.2 C++ clang-tidy Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 C++ lint 工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy cmake ninja-build g++
+
+      - name: v0.23.2 C++ clang-tidy smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.23.2)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0233-scope-closure-smoke:
+    name: v0.23.3 Scope Closure Smoke
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.23.3 focused smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.23.3)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0240-fault-matrix-smoke:
+    name: v0.24.0 Fault Matrix Smoke
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.24.0 fault matrix smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.24.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0250-iox2-service-operation-smoke:
+    name: v0.25.0 iox2 Service Operation Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 iceoryx2 构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: v0.25.0 iox2 service/operation smoke
+        shell: bash
+        env:
+          FLOWRT_V0250_REQUIRE_IOX2_SDK: "1"
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.25.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  rust-fmt:
+    name: Rust Fmt (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: Rust 格式检查
+        run: cargo fmt --check
+
+  rust-test:
+    name: Rust Test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: Rust 测试
+        run: cargo test --workspace -j1
+
+  rust-clippy:
+    name: Rust Clippy (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: Rust Clippy
+        run: cargo clippy --workspace --all-targets --all-features -j1 -- -D warnings
+
+  cpp-runtime:
+    name: C++ Runtime (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统构建工具
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++
+
+      - name: 确认工具链版本
+        run: |
+          cmake --version
+          ninja --version
+          g++ --version
+
+      - name: C++ runtime 配置
+        run: cmake -S runtime/cpp -B build/cpp -G Ninja
+
+      - name: C++ runtime 构建
+        run: cmake --build build/cpp -j1
+
+      - name: C++ runtime 测试
+        run: ctest --test-dir build/cpp --output-on-failure
+
+  v050-runtime-smoke:
+    name: v0.5.0 Runtime Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: Supervisor readiness 和资源提示测试
+        run: |
+          cargo test -p flowrt-cli build_runtime_tests -j1
+          cargo test -p flowrt-codegen launch -j1
+          cargo test -p flowrt supervisor -j1
+
+      - name: 远程参数和 status/hz 测试
+        run: |
+          cargo test -p flowrt-cli command_tests -j1
+          cargo test -p flowrt-cli echo_params_tests -j1
+          cargo test -p flowrt-cli selfdesc_status_hz_tests -j1
+          cargo test -p flowrt-codegen params -j1
+          cargo test -p flowrt introspection -j1
+
+      - name: Scheduler health 测试
+        run: |
+          cargo test -p flowrt-codegen tasks -j1
+          cargo test -p flowrt executor -j1
+
+  v060-runtime-smoke:
+    name: v0.6.0 Runtime Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: Operation RSDL/IR/validator/codegen 测试
+        run: |
+          cargo test -p flowrt-rsdl operation -j1
+          cargo test -p flowrt-ir operation -j1
+          cargo test -p flowrt-validate operation -j1
+          cargo test -p flowrt-codegen operation -j1
+
+      - name: Operation runtime/CLI/status 测试
+        run: |
+          cargo test -p flowrt operation -j1
+          cargo test -p flowrt-cli operation -j1
+          cargo test -p flowrt-cli selfdesc_status_hz_tests -j1
+
+      - name: Record format/runtime/CLI 测试
+        run: |
+          cargo test -p flowrt-record -j1
+          cargo test -p flowrt-cli record -j1
+          cargo test -p flowrt introspection -j1
+
+  v070-runtime-smoke:
+    name: v0.7.0 External/Deploy Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: external RSDL/IR/validator/codegen 测试
+        run: |
+          cargo test -p flowrt-rsdl external_process -j1
+          cargo test -p flowrt-ir external_ -j1
+          cargo test -p flowrt-validate external_ -j1
+          cargo test -p flowrt-codegen external_process -j1
+
+      - name: external supervisor 和 bundle/deploy 测试
+        run: |
+          cargo test -p flowrt --lib external_ -j1
+          cargo test -p flowrt-cli bundle -j1
+          cargo test -p flowrt-cli deploy -j1
+
+  v080-runtime-smoke:
+    name: v0.8.0 Integration Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: v0.8.0 RSDL/IR/validator 测试
+        run: |
+          cargo test -p flowrt-rsdl io_boundary -j1
+          cargo test -p flowrt-rsdl ros2 -j1
+          cargo test -p flowrt-ir frame_descriptor -j1
+          cargo test -p flowrt-ir ros2 -j1
+          cargo test -p flowrt-validate io_boundary -j1
+          cargo test -p flowrt-validate ros2 -j1
+
+      - name: v0.8.0 codegen 测试
+        run: |
+          cargo test -p flowrt-codegen message -j1
+          cargo test -p flowrt-codegen launch -j1
+          cargo test -p flowrt-codegen frame_descriptor -j1
+          cargo test -p flowrt-codegen ros2_bridge -j1
+          cargo test -p flowrt-codegen introspection -j1
+
+      - name: v0.8.0 runtime/CLI/record 测试
+        run: |
+          cargo test -p flowrt frame_descriptor -j1
+          cargo test -p flowrt introspection -j1
+          cargo test -p flowrt-record descriptor -j1
+          cargo test -p flowrt-cli bundle -j1
+          cargo test -p flowrt-cli deploy -j1
+          cargo test -p flowrt-cli selfdesc_status_hz_tests -j1
+
+  v081-runtime-smoke:
+    name: v0.8.1 FrameDescriptor Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: v0.8.1 FrameDescriptor codegen/CLI/record 测试
+        run: |
+          cargo test -p flowrt-codegen frame_descriptor_demo_example_codegen_smoke -j1
+          cargo test -p flowrt-cli echo_formats_standard_frame_descriptor_payload_structurally -j1
+          cargo test -p flowrt-cli live_status_summary_enriches_io_boundary_resource_descriptor_schema -j1
+          cargo test -p flowrt-cli record_writes_mcap_from_fake_runtime -j1
+
+      - name: v0.8.1 FrameDescriptor microbench
+        run: |
+          FLOWRT_BENCH_ITERS=8 FLOWRT_BENCH_PAYLOAD_BYTES=1024 scripts/bench-frame-descriptor.sh
+
+  v090-island-smoke:
+    name: v0.9.0 Island Demo Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 缓存 FlowRT island deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v090-island-${{ matrix.arch }}
+          key: flowrt-v090-island-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/test-v090-island-demo.sh', 'examples/island_demo/**') }}
+
+      - name: v0.9.0 island demo smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v090-island-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          scripts/test-v090-island-demo.sh
+
+  v091-island-tooling-smoke:
+    name: v0.9.1 Island Migration Tooling Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: v0.9.1 island CLI focused tests
+        run: |
+          cargo test -p flowrt-cli params_set_file -j1
+          cargo test -p flowrt-cli pub_ -j1
+          cargo test -p flowrt-cli echo_multiple_channels -j1
+          cargo test -p flowrt-rsdl empty -j1
+          cargo test -p flowrt-ir empty -j1
+          cargo test -p flowrt-validate empty -j1
+          cargo test -p flowrt-codegen empty -j1
+
+      - name: 缓存 FlowRT v0.9.1 island deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v091-island-${{ matrix.arch }}
+          key: flowrt-v091-island-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/test-v091-variable-frame-island-demo.sh', 'examples/variable_frame_island_demo/**') }}
+
+      - name: v0.9.1 variable frame island demo smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v091-island-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          scripts/test-v091-variable-frame-island-demo.sh
+
+  v092-island-offline-validation-smoke:
+    name: v0.9.2 Island Offline Validation Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: v0.9.2 island offline validation focused tests
+        run: |
+          cargo test -p flowrt-cli check -j1
+          cargo test -p flowrt-cli replay -j1
+          cargo test -p flowrt-cli echo -j1
+          cargo test -p flowrt-cli cargo_internal_names_include_contract_hash_without_changing_public_names -j1
+          cargo test -p flowrt-codegen island -j1
+
+      - name: 缓存 FlowRT v0.9.2 island deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v092-island-${{ matrix.arch }}
+          key: flowrt-v092-island-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'crates/flowrt-cli/src/main.rs', 'scripts/test-v092-island-replay-demo.sh') }}
+
+      - name: v0.9.2 island replay demo smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v092-island-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          scripts/test-v092-island-replay-demo.sh
+
+  v0102-concurrency-smoke:
+    name: v0.10.2 Concurrency Hardening Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统构建工具
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 缓存 FlowRT v0.10.2 concurrency deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v0102-concurrency-${{ matrix.arch }}
+          key: flowrt-v0102-concurrency-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'runtime/cpp/**', 'crates/flowrt-codegen/src/tests/tasks.rs', 'scripts/test-v0102-concurrency-smoke.sh') }}
+
+      - name: v0.10.2 concurrency smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v0102-concurrency-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          FLOWRT_BUILD_JOBS=1 scripts/test-v0102-concurrency-smoke.sh
+
+  v0120-authoring-smoke:
+    name: v0.12.0 Authoring Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统构建工具
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ pkg-config
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 缓存 FlowRT v0.12.0 authoring deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v0120-authoring-${{ matrix.arch }}
+          key: flowrt-v0120-authoring-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'runtime/cpp/**', 'crates/flowrt-cli/src/main.rs', 'crates/flowrt-cli/src/app_add/**', 'crates/flowrt-codegen/src/app_api.rs', 'crates/flowrt-codegen/src/explain.rs', 'scripts/test-v0120-authoring-smoke.sh', 'examples/import_demo/**', 'examples/cpp_counter_demo/**', 'examples/c_counter_demo/**') }}
+
+      - name: v0.12.0 authoring smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v0120-authoring-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          scripts/test-v0120-authoring-smoke.sh
+
+  v0130-runtime-completion-smoke:
+    name: v0.13.0 Robot Runtime Completion Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统构建工具
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ pkg-config
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 缓存 FlowRT v0.13.0 runtime completion deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v0130-runtime-${{ matrix.arch }}
+          key: flowrt-v0130-runtime-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/**', 'runtime/cpp/**', 'crates/flowrt-cli/src/**', 'crates/flowrt-codegen/src/**', 'crates/flowrt-ir/src/**', 'crates/flowrt-validate/src/**', 'scripts/test-v0130-runtime-completion-smoke.sh') }}
+
+      - name: v0.13.0 robot runtime completion smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v0130-runtime-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          scripts/test-v0130-runtime-completion-smoke.sh
+
+  v0140-realtime-scheduler-smoke:
+    name: v0.14.0 Realtime Scheduler Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 缓存 FlowRT v0.14.0 realtime scheduler deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v0140-realtime-${{ matrix.arch }}
+          key: flowrt-v0140-realtime-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/**', 'runtime/cpp/**', 'crates/flowrt-cli/src/**', 'crates/flowrt-codegen/src/**', 'scripts/test-v0140-realtime-scheduler-smoke.sh') }}
+
+      - name: v0.14.0 realtime scheduler smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v0140-realtime-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          scripts/test-v0140-realtime-scheduler-smoke.sh
+
+  v083-toolchain-smoke:
+    name: v0.8.3 Cross Toolchain Smoke
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统交叉编译工具
+        run: |
+          apt-get update
+          apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            pkg-config \
+            dpkg-dev
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-amd64-cross
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 准备 linux-arm64 Rust target 和本机工具链
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-unknown-linux-gnu
+          rustup target list --installed | grep -Fx aarch64-unknown-linux-gnu
+          command -v aarch64-linux-gnu-gcc
+          command -v aarch64-linux-gnu-g++
+          command -v pkg-config
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-g++ --version
+          pkg-config --version
+
+      - name: v0.8.3 flowrt deps/build --target focused tests
+        run: |
+          cargo test -p flowrt-cli toolchain_tests -j1
+          cargo test -p flowrt-cli build_runtime_tests -j1
+          cargo test -p flowrt-cli command_tests -j1
+          cargo test -p flowrt-cli cmake_ -j1
+
+  cpp-zenoh-runtime:
+    name: C++ Zenoh Runtime (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
+    container:
+      image: ros:jazzy-ros-base-noble
+    needs:
+      - package
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+
+      - name: 安装系统构建工具
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git
+
+      - name: 安装 flowrt deb
+        shell: bash
+        run: |
+          set -euo pipefail
+          dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
+          {
+            echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
+            echo "CMAKE_PREFIX_PATH=/opt/flowrt/${version}"
+            echo "LD_LIBRARY_PATH=/opt/flowrt/${version}/lib"
+          } >> "$GITHUB_ENV"
+
+      - name: C++ runtime zenoh 测试
+        run: |
+          cmake -S runtime/cpp -B build/cpp-zenoh -G Ninja -DFLOWRT_CPP_ENABLE_ZENOH_TESTS=ON
+          cmake --build build/cpp-zenoh -j1
+          ctest --test-dir build/cpp-zenoh --output-on-failure
+
+  package:
+    name: Debian Package (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
+    container:
+      image: ros:jazzy-ros-base-noble
+    needs:
+      - guard-generated
+      - v0141-architecture-smoke
+      - v0150-architecture-convergence-smoke
+      - v0151-ci-release-evidence-smoke
+      - v0152-scheduler-clock-smoke
+      - v0160-clock-model-smoke
+      - v0170-deterministic-replay-smoke
+      - v0171-cpp-replay-parity-smoke
+      - rust-test
+      - cpp-runtime
+      - v050-runtime-smoke
+      - v060-runtime-smoke
+      - v070-runtime-smoke
+      - v080-runtime-smoke
+      - v081-runtime-smoke
+      - v090-island-smoke
+      - v091-island-tooling-smoke
+      - v092-island-offline-validation-smoke
+      - v0102-concurrency-smoke
+      - v0120-authoring-smoke
+      - v0130-runtime-completion-smoke
+      - v0140-realtime-scheduler-smoke
+      - v0232-cpp-clang-tidy-smoke
+      - v0233-scope-closure-smoke
+      - v0250-iox2-service-operation-smoke
+      - v083-toolchain-smoke
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统构建工具
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git pkg-config file binutils
+
+      - name: 安装 amd64 打包所需 arm64 交叉工具链
+        if: matrix.deb_arch == 'amd64'
+        run: apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 准备 package target Rust std
+        if: matrix.deb_arch == 'amd64'
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.deb_arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 构建并安装 flowrt deb
+        shell: bash
+        run: |
+          scripts/package-deb.sh --output-dir dist --architecture "${{ matrix.deb_arch }}"
+          dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
+          multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+          case "${{ matrix.deb_arch }}" in
+            amd64) platform=linux-amd64; other_platform=linux-arm64 ;;
+            arm64) platform=linux-arm64; other_platform=linux-amd64 ;;
+            *) echo "unsupported deb_arch: ${{ matrix.deb_arch }}" >&2; exit 1 ;;
+          esac
+          test -x /usr/bin/flowrt
+          test -f "/opt/flowrt/${version}/share/flowrt/runtime/rust/Cargo.toml"
+          test -f "/opt/flowrt/${version}/share/flowrt/runtime/rust/src/lib.rs"
+          test -f "/opt/flowrt/${version}/share/flowrt/crates/flowrt-record/Cargo.toml"
+          test -f "/opt/flowrt/${version}/share/flowrt/crates/flowrt-record/src/lib.rs"
+          test -d "/opt/flowrt/${version}/share/cargo/vendor"
+          test -f "/opt/flowrt/${version}/include/flowrt/runtime.hpp"
+          test -f "/opt/flowrt/${version}/lib/${multiarch}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
+          test -f "/opt/flowrt/${version}/lib/${multiarch}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
+          test -f "/opt/flowrt/${version}/lib/cmake/zenohcxx/zenohcxxConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/flowrt-target-sdk.toml"
+          test -f "/opt/flowrt/${version}/targets/${platform}/include/flowrt/runtime.hpp"
+          test -f "/opt/flowrt/${version}/targets/${platform}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/cmake/zenohc/zenohcConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/cmake/zenohcxx/zenohcxxConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/pkgconfig/zenohc.pc"
+          test -f "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+          grep -q 'complete = true' "/opt/flowrt/${version}/targets/${platform}/flowrt-target-sdk.toml"
+          if [[ "${{ matrix.deb_arch }}" == "amd64" ]]; then
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/include/flowrt/runtime.hpp"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/lib/aarch64-linux-gnu/libiceoryx2_cxx.a"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/cmake/zenohc/zenohcConfig.cmake"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/pkgconfig/zenohc.pc"
+            grep -q 'complete = true' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+            grep -q 'host_mirror = false' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+            grep -q 'reason = "cross-target-sdk"' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+          else
+            grep -q 'complete = false' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+          fi
+          command -v flowrt
+          flowrt --version
+          scripts/test-deb-target-sdk-layout.sh dist/flowrt_*_*.deb
+
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-package-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/package-deb.sh', 'scripts/test-deb-installed-user-project.sh') }}
+
+      - name: flowrt deb 用户项目 smoke
+        run: |
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/package-${{ matrix.deb_arch }}}"
+          scripts/test-deb-installed-user-project.sh
+
+      - name: 上传 flowrt Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/flowrt_*_*.deb
+          if-no-files-found: error
+
+  v083-cross-compile-smoke:
+    name: v0.8.3 Installed amd64 to arm64 Smoke
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
+    needs:
+      - package
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 下载 amd64 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-amd64-deb
+          path: dist
+
+      - name: 安装系统交叉编译工具
+        run: |
+          apt-get update
+          apt-get install -y \
+            cmake \
+            ninja-build \
+            g++ \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            pkg-config \
+            dpkg-dev \
+            file \
+            binutils
+          command -v readelf
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 准备 linux-arm64 Rust target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-v083-cross-amd64-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'scripts/test-v083-installed-smoke.sh') }}
+          restore-keys: |
+            flowrt-deps-v083-cross-amd64-
+
+      - name: 安装 flowrt deb 并执行真实交叉构建 smoke
+        run: |
+          dpkg -i dist/flowrt_*_amd64.deb
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/v083-cross-amd64}"
+          scripts/test-v083-installed-smoke.sh
+
+  v086-cross-sdk-smoke:
+    name: v0.8.6 Cross UX SDK Smoke
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
+    needs:
+      - package
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 amd64 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-amd64-deb
+          path: dist
+
+      - name: 安装系统交叉编译工具
+        run: |
+          apt-get update
+          apt-get install -y \
+            cmake \
+            ninja-build \
+            git \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            pkg-config \
+            dpkg-dev \
+            file \
+            binutils
+          command -v readelf
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 准备 linux-arm64 Rust target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: 缓存公开 arm64 SDK overlay
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-public-sdk/v086-arm64
+          key: flowrt-public-arm64-sdk-v086-${{ hashFiles('examples/cross_sdk_deps/CMakeLists.txt') }}
+          restore-keys: |
+            flowrt-public-arm64-sdk-v086-
+
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-v086-cross-sdk-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'examples/cross_sdk_deps/CMakeLists.txt', 'scripts/test-v086-cross-sdk-demos.sh') }}
+          restore-keys: |
+            flowrt-deps-v086-cross-sdk-
+
+      - name: 安装 flowrt deb 并执行公开 SDK 交叉 demo smoke
+        run: |
+          dpkg -i dist/flowrt_*_amd64.deb
+          flowrt --version
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v086-cross-sdk"
+          export FLOWRT_PUBLIC_ARM64_SDK_OVERLAY="$GITHUB_WORKSPACE/.flowrt-public-sdk/v086-arm64"
+          FLOWRT_BUILD_JOBS=1 scripts/test-v086-cross-sdk-demos.sh
+
+  demo-smoke:
+    name: Demo Smoke (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
+    container:
+      image: ros:jazzy-ros-base-noble
+    needs:
+      - package
+      - cpp-zenoh-runtime
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+
+      - name: 安装系统构建工具
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 准备 amd64 demo cross 工具链
+        if: matrix.deb_arch == 'amd64'
+        run: |
+          apt-get update
+          apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu file
+          rustup target add aarch64-unknown-linux-gnu
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.deb_arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 安装 flowrt deb
+        shell: bash
+        run: |
+          dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
+          {
+            echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
+            echo "LD_LIBRARY_PATH=/opt/flowrt/${version}/lib"
+          } >> "$GITHUB_ENV"
+          flowrt --version
+
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-demo-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/test-v060-installed-smoke.sh', 'scripts/test-v070-installed-smoke.sh', 'scripts/test-v080-installed-smoke.sh', 'scripts/test-v081-installed-smoke.sh', 'scripts/test-v083-installed-smoke.sh') }}
+          restore-keys: |
+            flowrt-deps-demo-${{ matrix.deb_arch }}-
+
+      - name: FlowRT demo smoke
+        shell: bash
+        run: |
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/demo-${{ matrix.deb_arch }}}"
+          case "$(dpkg --print-architecture)" in
+            amd64) flowrt_platform="linux-amd64" ;;
+            arm64) flowrt_platform="linux-arm64" ;;
+            *)
+              echo "unsupported demo smoke architecture: $(dpkg --print-architecture)" >&2
+              exit 1
+              ;;
+          esac
+          find examples -path '*/rsdl/*' -type f -name '*.rsdl' -print0 |
+            xargs -0 sed -i -E \
+              "s/platform = \"linux-(amd64|arm64)\"/platform = \"$flowrt_platform\"/g"
+          flowrt deps --backend all --build-mode release
+          flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
+          flowrt run --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+          flowrt launch --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl
+          flowrt build examples/imu_demo/rsdl/robot.rsdl
+          flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
+          flowrt run --run-steps 5 examples/import_demo/rsdl/robot.rsdl --process main
+          flowrt launch --run-steps 5 examples/import_demo/rsdl/robot.rsdl
+          flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl
+          flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
+          flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+          flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+          flowrt run --run-steps 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+          flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
+          FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
+          scripts/test-v060-installed-smoke.sh
+          scripts/test-v070-installed-smoke.sh
+          scripts/test-v080-installed-smoke.sh
+          scripts/test-v081-installed-smoke.sh
+          scripts/test-v083-installed-smoke.sh
+
+  ros2-jazzy-bridge:
+    name: ROS2 Jazzy Bridge (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
+    container:
+      image: ros:jazzy-ros-base-noble
+    needs:
+      - package
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+
+      - name: 安装系统构建工具和 ROS2 zenoh RMW
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git \
+            ros-jazzy-rclcpp \
+            ros-jazzy-rmw-zenoh-cpp \
+            ros-jazzy-std-msgs \
+            ros-jazzy-zenoh-cpp-vendor
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.deb_arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 安装 flowrt deb
+        shell: bash
+        run: |
+          dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
+          {
+            echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
+            echo "LD_LIBRARY_PATH=/opt/flowrt/${version}/lib"
+          } >> "$GITHUB_ENV"
+          flowrt --version
+
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-ros2-jazzy-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'scripts/test-ros2-bridge-installed.sh') }}
+          restore-keys: |
+            flowrt-deps-ros2-jazzy-${{ matrix.deb_arch }}-
+
+      - name: ROS2 Jazzy bridge smoke
+        run: |
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/ros2-jazzy-${{ matrix.deb_arch }}}"
+          scripts/test-ros2-bridge-installed.sh --distro jazzy
+
+  ros2-lyrical-bridge:
+    name: ROS2 Lyrical Bridge (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
+    container:
+      image: ros:lyrical-ros-base-resolute
+    needs:
+      - package
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+
+      - name: 安装系统构建工具和 ROS2 zenoh RMW
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git \
+            ros-lyrical-rclcpp \
+            ros-lyrical-rmw-zenoh-cpp \
+            ros-lyrical-std-msgs \
+            ros-lyrical-zenoh-cpp-vendor
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.deb_arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 安装 flowrt deb
+        shell: bash
+        run: |
+          dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
+          {
+            echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
+            echo "LD_LIBRARY_PATH=/opt/flowrt/${version}/lib"
+          } >> "$GITHUB_ENV"
+          flowrt --version
+
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-ros2-lyrical-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'scripts/test-ros2-bridge-installed.sh') }}
+          restore-keys: |
+            flowrt-deps-ros2-lyrical-${{ matrix.deb_arch }}-
+
+      - name: ROS2 Lyrical bridge smoke
+        run: |
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/ros2-lyrical-${{ matrix.deb_arch }}}"
+          scripts/test-ros2-bridge-installed.sh --distro lyrical
+
+  release-evidence:
+    name: Release Evidence Gate
+    runs-on: ubuntu-latest
+    needs:
+      - guard-generated
+      - v0141-architecture-smoke
+      - v0150-architecture-convergence-smoke
+      - v0151-ci-release-evidence-smoke
+      - v0152-scheduler-clock-smoke
+      - v0160-clock-model-smoke
+      - v0170-deterministic-replay-smoke
+      - v0171-cpp-replay-parity-smoke
+      - rust-fmt
+      - rust-test
+      - rust-clippy
+      - cpp-runtime
+      - v050-runtime-smoke
+      - v060-runtime-smoke
+      - v070-runtime-smoke
+      - v080-runtime-smoke
+      - v081-runtime-smoke
+      - v090-island-smoke
+      - v091-island-tooling-smoke
+      - v092-island-offline-validation-smoke
+      - v0102-concurrency-smoke
+      - v0120-authoring-smoke
+      - v0130-runtime-completion-smoke
+      - v0140-realtime-scheduler-smoke
+      - v0232-cpp-clang-tidy-smoke
+      - v0233-scope-closure-smoke
+      - v0250-iox2-service-operation-smoke
+      - v083-toolchain-smoke
+      - cpp-zenoh-runtime
+      - package
+      - v083-cross-compile-smoke
+      - v086-cross-sdk-smoke
+      - demo-smoke
+      - ros2-jazzy-bridge
+      - ros2-lyrical-bridge
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/v')
+    permissions:
+      contents: read
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 amd64 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-amd64-deb
+          path: dist
+
+      - name: 下载 arm64 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-arm64-deb
+          path: dist
+
+      - name: 校验 release evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ref_version="${GITHUB_REF_NAME##*/}"
+          version="${ref_version#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'release evidence requires dev/vX.Y.Z branch, got %s\n' "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          tag="v${version}"
+
+          scripts/check-release-readiness.sh "$version"
+          scripts/extract-release-notes.sh "$tag" CHANGELOG.md > dist/release-notes.md
+          if [[ ! -s dist/release-notes.md ]]; then
+            printf 'release notes for %s are empty\n' "$tag" >&2
+            exit 1
+          fi
+
+          mapfile -t debs < <(find dist -maxdepth 1 -type f -name 'flowrt_*_*.deb' | sort)
+          if [[ "${#debs[@]}" -ne 2 ]]; then
+            printf 'release evidence expected 2 deb artifacts, found %s\n' "${#debs[@]}" >&2
+            printf '%s\n' "${debs[@]}" >&2
+            exit 1
+          fi
+
+          found_amd64=0
+          found_arm64=0
+          for deb in "${debs[@]}"; do
+            deb_version="$(dpkg-deb -f "$deb" Version)"
+            deb_arch="$(dpkg-deb -f "$deb" Architecture)"
+            if [[ "$deb_version" != "$version" ]]; then
+              printf '%s version %s does not match expected %s\n' "$deb" "$deb_version" "$version" >&2
+              exit 1
+            fi
+            case "$deb_arch" in
+              amd64) found_amd64=1 ;;
+              arm64) found_arm64=1 ;;
+              *)
+                printf '%s has unexpected architecture %s\n' "$deb" "$deb_arch" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          if [[ "$found_amd64" -ne 1 || "$found_arm64" -ne 1 ]]; then
+            printf 'release evidence artifacts must include amd64 and arm64 deb packages\n' >&2
+            exit 1
+          fi
+
+          (cd dist && sha256sum flowrt_*_*.deb > SHA256SUMS)
+          if [[ ! -s dist/SHA256SUMS ]]; then
+            printf 'SHA256SUMS is empty\n' >&2
+            exit 1
+          fi
+
+          cat > dist/release-evidence.json <<EOF
+          {
+            "version": "$version",
+            "tag": "$tag",
+            "sha": "$GITHUB_SHA",
+            "run_id": "$GITHUB_RUN_ID",
+            "workflow": "release-candidate.yml",
+            "job": "Release Evidence Gate",
+            "artifacts": [
+              "flowrt-linux-amd64-deb",
+              "flowrt-linux-arm64-deb"
+            ]
+          }
+          EOF
+
+          printf 'release evidence passed: version=%s sha=%s run_id=%s\n' \
+            "$version" "$GITHUB_SHA" "$GITHUB_RUN_ID"
+
+      - name: 上传 release evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: flowrt-release-evidence
+          path: |
+            dist/release-evidence.json
+            dist/release-notes.md
+            dist/SHA256SUMS
+          if-no-files-found: error

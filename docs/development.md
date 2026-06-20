@@ -235,19 +235,20 @@ package 和 release job 必须依赖该 gate；低资源本地机器可用
 ## 发布流程
 
 FlowRT 的 release notes 来自 `CHANGELOG.md`。正式推送 `v*` tag 前，必须先把待发布
-分支推到 `dev/vX.Y.Z`。发布分支的普通 push CI 会运行完整发布同款矩阵、构建
-amd64/arm64 deb artifact，并在最后运行 `Release Evidence Gate`：该 gate 校验版本、
-release notes、deb 架构、deb 版本和 `SHA256SUMS`，然后上传
-`flowrt-release-evidence` artifact。仓库不再使用手工 `workflow_dispatch` 发布候选入口。
+分支推到 `dev/vX.Y.Z`。发布分支 push 会触发 `release-candidate.yml`，运行完整发布
+同款矩阵、构建 amd64/arm64 deb artifact，并在最后运行 `Release Evidence Gate`：该
+gate 校验版本、release notes、deb 架构、deb 版本和 `SHA256SUMS`，然后上传
+`flowrt-release-evidence` artifact。日常 `ci.yml` 只做快速 push/PR 验证，不产出
+release evidence；仓库不再使用手工 `workflow_dispatch` 发布候选入口。
 
 推送 `v*` tag 后，独立的 `release.yml` 会解析 tag 指向的 commit SHA，并只查询同一
-commit SHA 上已经成功的 push CI。
+commit SHA 上已经成功的 `release-candidate.yml` push run。
 只有该 run 内的 `Release Evidence Gate` 成功，tag release 才会下载同一 run 的 deb 与
 evidence artifact，复核 evidence 的 version/tag/sha、deb 元数据和 `SHA256SUMS`，然后创建
 GitHub Release。tag workflow 不重跑完整矩阵，避免发布 tag 因重复构建再次消耗资源或引入
 新的不确定性。
 
-发布分支 push CI 会等待
+发布分支 release candidate run 会等待
 `guard-generated`、amd64/arm64 Rust fmt/test/clippy、amd64/arm64 C++ runtime、
 amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 v0.6.0 runtime focused smoke、
 amd64/arm64 v0.7.0 external/deploy focused smoke、amd64/arm64 v0.8.0 integration
@@ -357,9 +358,10 @@ helper 兼容路径，release package 和 release job 必须等待该 gate。
 registry 查询 focused smoke，并串联脚本语法检查、`scripts/check-architecture-size.sh`
 和 `scripts/check-architecture-contract.sh`。后者检查 release gate contract、Contract IR
 derived facts 和 runtime observability facts 是否已经进入 validator、codegen、status、
-diagnostics 与 recorder 的生产消费路径。`v0.15.1 CI Release Evidence Smoke` 检查 CI
-只在发布分支 push 上产出 release evidence，tag release 只消费同一 commit SHA 的成功
-evidence，并确认本地 helper 不再手工触发远端 CI。`v0.15.2 Scheduler Clock Smoke`
+diagnostics 与 recorder 的生产消费路径。`v0.15.1 CI Release Evidence Smoke` 检查日常 CI
+不产出 release evidence、release candidate 只在发布分支 push 上产出 evidence、tag release
+只消费同一 commit SHA 的成功 evidence，并确认本地 helper 不再手工触发远端 workflow。
+`v0.15.2 Scheduler Clock Smoke`
 检查 realtime generated scheduler 清空 boundary/replay 样本时间戳但不把它推进
 runtime scheduling time，同时确认 temporary island overlay 继续使用 fixture 时间驱动
 simulated replay clock。
@@ -387,7 +389,7 @@ scripts/check-release-candidate.sh "$version" --wait --ref "dev/v${version}"
 - `CHANGELOG.md` 必须包含对应二级标题，格式为 `## vX.Y.Z - YYYY-MM-DD`。
 - tag 名必须是 `vX.Y.Z`，且版本号必须与根 `Cargo.toml` 的 workspace version 一致。
 - tag 只能指向已经通过同一 commit SHA `Release Evidence Gate` 的提交；不要在发布分支
-  push CI 成功前直接推 tag。
+  release candidate run 成功前直接推 tag。
 - 对应版本段不能为空；CI 会把该段原样作为 GitHub Release 说明。
 - `## 未发布` 只放尚未发布的后续变化；正式发版前把本次条目移入版本段。
 - `v0.15.0` 之后，release evidence 本地预检会先运行 release readiness，再通过

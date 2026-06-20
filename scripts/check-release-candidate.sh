@@ -5,8 +5,8 @@
 #   scripts/check-release-candidate.sh VERSION [--wait] [--ref REF]
 #
 # 默认只运行本地发布就绪检查和 focused smoke。加 --wait 后等待同一提交的
-# push CI，并要求 Release Evidence Gate 成功。该脚本不触发远端 CI；远端
-# evidence 只能由 push 自动产生。
+# release-candidate push run，并要求 Release Evidence Gate 成功。该脚本不触发
+# 远端 workflow；远端 evidence 只能由 push 自动产生。
 
 set -euo pipefail
 
@@ -135,7 +135,7 @@ fi
 
 find_run_id() {
     gh run list \
-        --workflow ci.yml \
+        --workflow release-candidate.yml \
         --event push \
         --branch "$ref" \
         --limit 20 \
@@ -154,7 +154,7 @@ for _ in $(seq 1 30); do
 done
 
 if [[ -z "$run_id" ]]; then
-    fail "未找到 sha=$head_sha 的 push CI run"
+    fail "未找到 sha=$head_sha 的 release-candidate push run"
 fi
 
 run_url="$(gh run view "$run_id" --json url --jq .url)"
@@ -170,6 +170,6 @@ evidence_job_url="$(
         sed -n '1p'
 )"
 if [[ -z "$evidence_job_url" ]]; then
-    fail "push CI 已结束，但未找到成功的 Release Evidence Gate job"
+    fail "release-candidate run 已结束，但未找到成功的 Release Evidence Gate job"
 fi
 info "release evidence gate 通过: $evidence_job_url"

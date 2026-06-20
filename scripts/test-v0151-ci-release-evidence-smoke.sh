@@ -36,6 +36,7 @@ forbid_text() {
 }
 
 ci_file=".github/workflows/ci.yml"
+release_candidate_file=".github/workflows/release-candidate.yml"
 release_file=".github/workflows/release.yml"
 
 echo "v0.15.1 CI release evidence smoke: script syntax"
@@ -45,25 +46,34 @@ bash -n \
     scripts/release-readiness/v0151-ci-release-evidence.sh \
     scripts/test-v0151-ci-release-evidence-smoke.sh
 
-echo "v0.15.1 CI release evidence smoke: CI contract"
-need_text "CI 包含 v0.15.1 focused job" "v0151-ci-release-evidence-smoke:" "$ci_file"
-need_text "CI 通过 registry 运行 v0.15.1 focused smoke" "release-gate focused-smoke 0.15.1" "$ci_file"
-need_text "CI 限制 push branches" "branches:" "$ci_file"
-need_text "CI 自动产出 Release Evidence Gate" "Release Evidence Gate" "$ci_file"
-need_text "CI 上传 release evidence artifact" "flowrt-release-evidence" "$ci_file"
-forbid_text "CI 不再暴露 workflow_dispatch RC" "workflow_dispatch:" "$ci_file"
-forbid_text "CI 不再内联 GitHub Release job" "name: GitHub Release" "$ci_file"
+echo "v0.15.1 CI release evidence smoke: fast CI contract"
+need_text "日常 CI 存在" "name: CI" "$ci_file"
+need_text "日常 CI 监听 push" "push:" "$ci_file"
+need_text "日常 CI 监听 PR" "pull_request:" "$ci_file"
+forbid_text "日常 CI 不产出 release evidence" "Release Evidence Gate" "$ci_file"
+forbid_text "日常 CI 不上传 release evidence artifact" "flowrt-release-evidence" "$ci_file"
+
+echo "v0.15.1 CI release evidence smoke: release candidate contract"
+need_text "release candidate workflow 存在" "name: Release Candidate" "$release_candidate_file"
+need_text "release candidate 包含 v0.15.1 focused job" "v0151-ci-release-evidence-smoke:" "$release_candidate_file"
+need_text "release candidate 通过 registry 运行 v0.15.1 focused smoke" "release-gate focused-smoke 0.15.1" "$release_candidate_file"
+need_text "release candidate 限制 dev/v branches" "dev/v*" "$release_candidate_file"
+need_text "release candidate 自动产出 Release Evidence Gate" "Release Evidence Gate" "$release_candidate_file"
+need_text "release candidate 上传 release evidence artifact" "flowrt-release-evidence" "$release_candidate_file"
+forbid_text "release candidate 不再暴露 workflow_dispatch RC" "workflow_dispatch:" "$release_candidate_file"
+forbid_text "release candidate 不再内联 GitHub Release job" "name: GitHub Release" "$release_candidate_file"
 
 echo "v0.15.1 CI release evidence smoke: release workflow contract"
 need_text "release workflow 存在" "name: Release" "$release_file"
 need_text "release workflow 监听 tag" "tags:" "$release_file"
-need_text "release workflow 查询 push CI" "event=push&head_sha=\${target_sha}&status=success" "$release_file"
+need_text "release workflow 查询 push release candidate" "event=push&head_sha=\${target_sha}&status=success" "$release_file"
+need_text "release workflow 查询 release-candidate.yml" ".github/workflows/release-candidate.yml" "$release_file"
 need_text "release workflow 要求 Release Evidence Gate" "Release Evidence Gate\" and .conclusion == \"success\"" "$release_file"
 need_text "release workflow 下载 release evidence artifact" "flowrt-release-evidence" "$release_file"
 
 echo "v0.15.1 CI release evidence smoke: release evidence helper"
-need_text "helper 查询 push CI" "--event push" "scripts/check-release-candidate.sh"
-need_text "helper 等待远端 CI" "gh run watch" "scripts/check-release-candidate.sh"
+need_text "helper 查询 push release candidate" "--workflow release-candidate.yml" "scripts/check-release-candidate.sh"
+need_text "helper 等待远端 release candidate" "gh run watch" "scripts/check-release-candidate.sh"
 forbid_text "helper 不再手工触发 CI" "gh workflow run ci.yml" "scripts/check-release-candidate.sh"
 forbid_text "helper 不再接受手工触发参数" "--dispatch" "scripts/check-release-candidate.sh"
 

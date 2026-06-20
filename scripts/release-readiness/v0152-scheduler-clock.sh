@@ -2,7 +2,7 @@
 # 本文件由 scripts/check-release-readiness.sh source，并复用其 pass/fail helper。
 
 check_v0152_scheduler_clock_readiness() {
-    local ci_file="$repo_root/.github/workflows/ci.yml"
+    local ci_file="$repo_root/.github/workflows/release-candidate.yml"
     local registry_file="$repo_root/scripts/release-gates/registry.toml"
     local smoke_script="$repo_root/scripts/test-v0152-scheduler-clock-smoke.sh"
 
