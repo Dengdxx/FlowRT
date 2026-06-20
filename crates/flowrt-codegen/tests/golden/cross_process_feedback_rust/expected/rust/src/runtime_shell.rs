@@ -189,7 +189,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("controller.cmd_to_plant.cmd", error.to_string());
+                    introspection_state.record_route_transport_error("controller.cmd_to_plant.cmd", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("controller.cmd_to_plant.cmd", Some(tick_time_ms));
@@ -227,7 +227,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("plant.state_to_controller.state", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("plant.state_to_controller.state", error.to_string());
+                    introspection_state.record_route_transport_error("plant.state_to_controller.state", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("plant.state_to_controller.state", Some(tick_time_ms));
@@ -319,7 +319,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("controller.cmd_to_plant.cmd", error.to_string());
+                    introspection_state.record_route_transport_error("controller.cmd_to_plant.cmd", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("controller.cmd_to_plant.cmd", Some(tick_time_ms));
@@ -379,7 +379,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("plant.state_to_controller.state", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("plant.state_to_controller.state", error.to_string());
+                    introspection_state.record_route_transport_error("plant.state_to_controller.state", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("plant.state_to_controller.state", Some(tick_time_ms));
@@ -436,7 +436,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("controller.cmd_to_plant.cmd", error.to_string());
+                    introspection_state.record_route_transport_error("controller.cmd_to_plant.cmd", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("controller.cmd_to_plant.cmd", Some(tick_time_ms));
@@ -528,7 +528,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("controller.cmd_to_plant.cmd", error.to_string());
+                    introspection_state.record_route_transport_error("controller.cmd_to_plant.cmd", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("controller.cmd_to_plant.cmd", Some(tick_time_ms));
@@ -585,7 +585,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("plant.state_to_controller.state", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("plant.state_to_controller.state", error.to_string());
+                    introspection_state.record_route_transport_error("plant.state_to_controller.state", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("plant.state_to_controller.state", Some(tick_time_ms));
@@ -677,7 +677,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("plant.state_to_controller.state", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("plant.state_to_controller.state", error.to_string());
+                    introspection_state.record_route_transport_error("plant.state_to_controller.state", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("plant.state_to_controller.state", Some(tick_time_ms));

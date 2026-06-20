@@ -105,3 +105,7 @@ script = "scripts/test-v0250-iox2-service-operation-smoke.sh"
 [[focused_smoke]]
 version = "0.25.1"
 script = "scripts/test-v0251-transport-evidence-smoke.sh"
+
+[[focused_smoke]]
+version = "0.25.2"
+script = "scripts/test-v0252-transport-route-health-smoke.sh"

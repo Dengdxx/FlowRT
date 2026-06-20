@@ -4,6 +4,21 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.25.2 - 2026-06-21
+
+### 修复
+
+- transport dataflow publish 失败现在会按 route overflow policy 投影到统一 route counters：
+  `drop_oldest` / `drop_newest` 增加 `dropped_samples`，`block` 增加 `backpressure`，
+  `error` 增加 `overflow`，同时保留 backend health / last error 诊断。
+- C++ generated transport dataflow publish 现在与 Rust 对齐，会记录 route backend health、
+  route publish/drop/backpressure/overflow counters 和 transport publish error。
+
+### 测试
+
+- 新增 `v0.25.2 Transport Route Health Smoke` focused gate，覆盖 Rust/C++ introspection
+  policy counter、Rust/C++ transport codegen 接线和 transport dataflow golden 漂移。
+
 ## v0.25.1 - 2026-06-21
 
 ### 修复

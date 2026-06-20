@@ -5,17 +5,19 @@
 
 ## 当前版本背景
 
-当前开发线为 `v0.25.1 Transport Evidence Hardening`：不新增 RSDL、Contract IR 或 runtime
-用户语义，只补强 v0.25.0 新增 transport 路径的真实编译证据和发布门禁。用户侧仍只看到
-FlowRT typed Service / Operation API 和常规 `Vec` / `String` / `std::vector` /
-`std::string` 消息字段；`iox2` / `zenoh` 仍是 FlowRT runtime API 之下的 backend 实现细节。
+当前开发线为 `v0.25.2 Transport Route Health`：不新增 RSDL、Contract IR 或 runtime
+用户语义，只把既有 transport dataflow publish 结果纳入与 inproc FIFO 对齐的 route health
+观测。用户侧仍只看到 FlowRT typed Service / Operation API 和常规 `Vec` / `String` /
+`std::vector` / `std::string` 消息字段；`iox2` / `zenoh` 仍是 FlowRT runtime API 之下的
+backend 实现细节。
 
-当前 workspace 版本为 `0.25.1`。版本源、runtime 版本、Cargo.lock、README 安装示例和
-CHANGELOG v0.25.1 release 段在本发布收尾中同步。`v0.25.1 Transport Evidence Smoke`
-focused gate 在真实 SDK 可用时对 `zenoh_service_demo` 与 `iox2_service_demo` 执行
-`deps + build`，补齐 generated transport app 的真实编译证据；该 gate 覆盖 amd64 /
-arm64 runner，并按 runner 架构改写临时示例 workspace 的 target，避免把交叉构建产物当作
-本机证据。
+当前 workspace 版本为 `0.25.2`。版本源、runtime 版本、Cargo.lock、README 安装示例和
+CHANGELOG v0.25.2 release 段在本发布收尾中同步。transport dataflow publish 失败现在会按
+route overflow policy 投影到统一 route counters：`drop_oldest` / `drop_newest` 增加
+`dropped_samples`，`block` 增加 `backpressure`，`error` 增加 `overflow`，同时保留
+backend health / last error 诊断。C++ generated transport dataflow publish 与 Rust 对齐，
+会记录 route backend health、route publish/drop/backpressure/overflow counters 和 transport
+publish error。
 
 本版本明确长期 invariant：`iox2` 不承载无界变长或指针所有权 payload；fixed-size plain
 data 和可推导 frame 上界的 `bytes<max=N>`、`string<max=N>`、`sequence<T,max=N>` 可走
@@ -26,7 +28,14 @@ profile/default backend；profile 默认 `iox2` 遇到无界 payload edge 时自
 `zenoh`；显式 `backend = "iox2"` 遇到无界 payload 时由 validator fail-fast。有界 frame
 publish/call 超出字段上界时返回包含字段名与上界的错误，不截断。
 
-上一发布线为 `v0.25.0 iox2 Service/Operation Transport`：把 native generated Service
+上一发布线为 `v0.25.1 Transport Evidence Hardening`：不新增 RSDL、Contract IR 或 runtime
+用户语义，只补强 v0.25.0 新增 transport 路径的真实编译证据和发布门禁。`v0.25.1 Transport
+Evidence Smoke` focused gate 在真实 SDK 可用时对 `zenoh_service_demo` 与
+`iox2_service_demo` 执行 `deps + build`，补齐 generated transport app 的真实编译证据；该
+gate 覆盖 amd64 / arm64 runner，并按 runner 架构改写临时示例 workspace 的 target，避免把
+交叉构建产物当作本机证据。
+
+再上一发布线为 `v0.25.0 iox2 Service/Operation Transport`：把 native generated Service
 request/response 与 Operation start/cancel/status control path 接入本机 `iox2`
 transport，并补齐有界 variable frame over iox2。`v0.25.0 Iox2 Service Operation Smoke`
 focused gate 覆盖 `iox2_service_demo`、Service / Operation golden、有界变长 route 切到
@@ -68,9 +77,10 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - 故障注入：`status_error`、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop` 已进入 test-only deterministic injection / fault matrix 路径；生产随机
   / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。
-- 收口残留：route health / reconnect 已统一进入 status facts，但 `iox2` / `zenoh` route
-  queue-full backpressure / overflow 仍比 inproc FIFO 粗；`clang-tidy` gate 是低噪声首版，
-  高噪声 ABI/POD/generic generated capture 不适配项仍关闭；FrameDescriptor
+- 收口残留：route health / reconnect 已统一进入 status facts，`iox2` / `zenoh` transport
+  publish 失败也会按 route overflow policy 进入 drop/backpressure/overflow counters；真实
+  backend SDK 对“queue full”和一般 transport error 的细粒度错误码仍不作为 FlowRT 语义假设。
+  `clang-tidy` gate 是低噪声首版，高噪声 ABI/POD/generic generated capture 不适配项仍关闭；FrameDescriptor
   `record_payload = true` 仅支持 `payload_capture = "boundary"`，外部 payload provider
   仍是后续语义。
 

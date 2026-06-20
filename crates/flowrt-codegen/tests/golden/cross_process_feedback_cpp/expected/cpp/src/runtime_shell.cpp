@@ -329,11 +329,34 @@ flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt
             }
         }
         if (const auto* value = controller_cmd.as_ref()) {
-            if (const auto status = status_from_push_result(bind_0_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {
+            const auto bind_0_result = bind_0_.publish_at(*value, tick_time_ms);
+            introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", bind_0_.health());
+            if (std::holds_alternative<flowrt::ChannelError>(bind_0_result)) {
+                introspection_state.record_route_transport_error("controller.cmd_to_plant.cmd", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_0_result), "publish transport route");
+            } else {
+                switch (std::get<flowrt::ChannelWriteOutcome>(bind_0_result)) {
+                    case flowrt::ChannelWriteOutcome::Accepted:
+                        introspection_state.record_route_publish("controller.cmd_to_plant.cmd", tick_time_ms);
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", this->introspection_probe_bind_0, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedOldest:
+                        introspection_state.record_route_publish("controller.cmd_to_plant.cmd", tick_time_ms);
+                        introspection_state.record_route_drop("controller.cmd_to_plant.cmd");
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", this->introspection_probe_bind_0, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedNewest:
+                        introspection_state.record_route_drop("controller.cmd_to_plant.cmd");
+                        break;
+                    case flowrt::ChannelWriteOutcome::Backpressured:
+                        introspection_state.record_route_backpressure("controller.cmd_to_plant.cmd");
+                        break;
+                }
+            }
+            if (const auto status = status_from_push_result(bind_0_result); status != flowrt::Status::Ok) {
                 return status;
             }
-            scheduler_events.notify_data();
-            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", this->introspection_probe_bind_0, *value, tick_time_ms);
         }
     }
     {
@@ -359,11 +382,34 @@ flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt
             }
         }
         if (const auto* value = plant_state.as_ref()) {
-            if (const auto status = status_from_push_result(bind_1_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {
+            const auto bind_1_result = bind_1_.publish_at(*value, tick_time_ms);
+            introspection_state.record_route_backend_health("plant.state_to_controller.state", bind_1_.health());
+            if (std::holds_alternative<flowrt::ChannelError>(bind_1_result)) {
+                introspection_state.record_route_transport_error("plant.state_to_controller.state", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_1_result), "publish transport route");
+            } else {
+                switch (std::get<flowrt::ChannelWriteOutcome>(bind_1_result)) {
+                    case flowrt::ChannelWriteOutcome::Accepted:
+                        introspection_state.record_route_publish("plant.state_to_controller.state", tick_time_ms);
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", this->introspection_probe_bind_1, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedOldest:
+                        introspection_state.record_route_publish("plant.state_to_controller.state", tick_time_ms);
+                        introspection_state.record_route_drop("plant.state_to_controller.state");
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", this->introspection_probe_bind_1, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedNewest:
+                        introspection_state.record_route_drop("plant.state_to_controller.state");
+                        break;
+                    case flowrt::ChannelWriteOutcome::Backpressured:
+                        introspection_state.record_route_backpressure("plant.state_to_controller.state");
+                        break;
+                }
+            }
+            if (const auto status = status_from_push_result(bind_1_result); status != flowrt::Status::Ok) {
                 return status;
             }
-            scheduler_events.notify_data();
-            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", this->introspection_probe_bind_1, *value, tick_time_ms);
         }
     }
     return flowrt::Status::Ok;
@@ -423,11 +469,34 @@ FlowrtTaskOutcome App::step_task_controller_main(std::size_t tick, flowrt::Conte
             auto flowrt_payload_0 = *value;
             flowrt_output_commits.emplace_back([flowrt_payload_0 = std::move(flowrt_payload_0), tick_time_ms](App& app, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {
                 const auto* value = &flowrt_payload_0;
-            if (const auto status = status_from_push_result(app.bind_0_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {
+            const auto bind_0_result = app.bind_0_.publish_at(*value, tick_time_ms);
+            introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", app.bind_0_.health());
+            if (std::holds_alternative<flowrt::ChannelError>(bind_0_result)) {
+                introspection_state.record_route_transport_error("controller.cmd_to_plant.cmd", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_0_result), "publish transport route");
+            } else {
+                switch (std::get<flowrt::ChannelWriteOutcome>(bind_0_result)) {
+                    case flowrt::ChannelWriteOutcome::Accepted:
+                        introspection_state.record_route_publish("controller.cmd_to_plant.cmd", tick_time_ms);
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", app.introspection_probe_bind_0, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedOldest:
+                        introspection_state.record_route_publish("controller.cmd_to_plant.cmd", tick_time_ms);
+                        introspection_state.record_route_drop("controller.cmd_to_plant.cmd");
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", app.introspection_probe_bind_0, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedNewest:
+                        introspection_state.record_route_drop("controller.cmd_to_plant.cmd");
+                        break;
+                    case flowrt::ChannelWriteOutcome::Backpressured:
+                        introspection_state.record_route_backpressure("controller.cmd_to_plant.cmd");
+                        break;
+                }
+            }
+            if (const auto status = status_from_push_result(bind_0_result); status != flowrt::Status::Ok) {
                 return status;
             }
-            scheduler_events.notify_data();
-            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", app.introspection_probe_bind_0, *value, tick_time_ms);
                 return flowrt::Status::Ok;
             });
         }
@@ -469,11 +538,34 @@ FlowrtTaskOutcome App::step_task_plant_main(std::size_t tick, flowrt::Context& t
             auto flowrt_payload_0 = *value;
             flowrt_output_commits.emplace_back([flowrt_payload_0 = std::move(flowrt_payload_0), tick_time_ms](App& app, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {
                 const auto* value = &flowrt_payload_0;
-            if (const auto status = status_from_push_result(app.bind_1_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {
+            const auto bind_1_result = app.bind_1_.publish_at(*value, tick_time_ms);
+            introspection_state.record_route_backend_health("plant.state_to_controller.state", app.bind_1_.health());
+            if (std::holds_alternative<flowrt::ChannelError>(bind_1_result)) {
+                introspection_state.record_route_transport_error("plant.state_to_controller.state", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_1_result), "publish transport route");
+            } else {
+                switch (std::get<flowrt::ChannelWriteOutcome>(bind_1_result)) {
+                    case flowrt::ChannelWriteOutcome::Accepted:
+                        introspection_state.record_route_publish("plant.state_to_controller.state", tick_time_ms);
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", app.introspection_probe_bind_1, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedOldest:
+                        introspection_state.record_route_publish("plant.state_to_controller.state", tick_time_ms);
+                        introspection_state.record_route_drop("plant.state_to_controller.state");
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", app.introspection_probe_bind_1, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedNewest:
+                        introspection_state.record_route_drop("plant.state_to_controller.state");
+                        break;
+                    case flowrt::ChannelWriteOutcome::Backpressured:
+                        introspection_state.record_route_backpressure("plant.state_to_controller.state");
+                        break;
+                }
+            }
+            if (const auto status = status_from_push_result(bind_1_result); status != flowrt::Status::Ok) {
                 return status;
             }
-            scheduler_events.notify_data();
-            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", app.introspection_probe_bind_1, *value, tick_time_ms);
                 return flowrt::Status::Ok;
             });
         }
@@ -511,11 +603,34 @@ flowrt::Status App::step_process_ctrl_proc(std::size_t tick, flowrt::Context& ti
             }
         }
         if (const auto* value = controller_cmd.as_ref()) {
-            if (const auto status = status_from_push_result(bind_0_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {
+            const auto bind_0_result = bind_0_.publish_at(*value, tick_time_ms);
+            introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", bind_0_.health());
+            if (std::holds_alternative<flowrt::ChannelError>(bind_0_result)) {
+                introspection_state.record_route_transport_error("controller.cmd_to_plant.cmd", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_0_result), "publish transport route");
+            } else {
+                switch (std::get<flowrt::ChannelWriteOutcome>(bind_0_result)) {
+                    case flowrt::ChannelWriteOutcome::Accepted:
+                        introspection_state.record_route_publish("controller.cmd_to_plant.cmd", tick_time_ms);
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", this->introspection_probe_bind_0, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedOldest:
+                        introspection_state.record_route_publish("controller.cmd_to_plant.cmd", tick_time_ms);
+                        introspection_state.record_route_drop("controller.cmd_to_plant.cmd");
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", this->introspection_probe_bind_0, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedNewest:
+                        introspection_state.record_route_drop("controller.cmd_to_plant.cmd");
+                        break;
+                    case flowrt::ChannelWriteOutcome::Backpressured:
+                        introspection_state.record_route_backpressure("controller.cmd_to_plant.cmd");
+                        break;
+                }
+            }
+            if (const auto status = status_from_push_result(bind_0_result); status != flowrt::Status::Ok) {
                 return status;
             }
-            scheduler_events.notify_data();
-            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", this->introspection_probe_bind_0, *value, tick_time_ms);
         }
     }
     return flowrt::Status::Ok;
@@ -575,11 +690,34 @@ FlowrtTaskOutcome App::step_process_ctrl_proc_task_controller_main(std::size_t t
             auto flowrt_payload_0 = *value;
             flowrt_output_commits.emplace_back([flowrt_payload_0 = std::move(flowrt_payload_0), tick_time_ms](App& app, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {
                 const auto* value = &flowrt_payload_0;
-            if (const auto status = status_from_push_result(app.bind_0_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {
+            const auto bind_0_result = app.bind_0_.publish_at(*value, tick_time_ms);
+            introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", app.bind_0_.health());
+            if (std::holds_alternative<flowrt::ChannelError>(bind_0_result)) {
+                introspection_state.record_route_transport_error("controller.cmd_to_plant.cmd", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_0_result), "publish transport route");
+            } else {
+                switch (std::get<flowrt::ChannelWriteOutcome>(bind_0_result)) {
+                    case flowrt::ChannelWriteOutcome::Accepted:
+                        introspection_state.record_route_publish("controller.cmd_to_plant.cmd", tick_time_ms);
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", app.introspection_probe_bind_0, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedOldest:
+                        introspection_state.record_route_publish("controller.cmd_to_plant.cmd", tick_time_ms);
+                        introspection_state.record_route_drop("controller.cmd_to_plant.cmd");
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", app.introspection_probe_bind_0, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedNewest:
+                        introspection_state.record_route_drop("controller.cmd_to_plant.cmd");
+                        break;
+                    case flowrt::ChannelWriteOutcome::Backpressured:
+                        introspection_state.record_route_backpressure("controller.cmd_to_plant.cmd");
+                        break;
+                }
+            }
+            if (const auto status = status_from_push_result(bind_0_result); status != flowrt::Status::Ok) {
                 return status;
             }
-            scheduler_events.notify_data();
-            record_introspection_publish_frame(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", app.introspection_probe_bind_0, *value, tick_time_ms);
                 return flowrt::Status::Ok;
             });
         }
@@ -617,11 +755,34 @@ flowrt::Status App::step_process_plant_proc(std::size_t tick, flowrt::Context& t
             }
         }
         if (const auto* value = plant_state.as_ref()) {
-            if (const auto status = status_from_push_result(bind_1_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {
+            const auto bind_1_result = bind_1_.publish_at(*value, tick_time_ms);
+            introspection_state.record_route_backend_health("plant.state_to_controller.state", bind_1_.health());
+            if (std::holds_alternative<flowrt::ChannelError>(bind_1_result)) {
+                introspection_state.record_route_transport_error("plant.state_to_controller.state", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_1_result), "publish transport route");
+            } else {
+                switch (std::get<flowrt::ChannelWriteOutcome>(bind_1_result)) {
+                    case flowrt::ChannelWriteOutcome::Accepted:
+                        introspection_state.record_route_publish("plant.state_to_controller.state", tick_time_ms);
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", this->introspection_probe_bind_1, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedOldest:
+                        introspection_state.record_route_publish("plant.state_to_controller.state", tick_time_ms);
+                        introspection_state.record_route_drop("plant.state_to_controller.state");
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", this->introspection_probe_bind_1, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedNewest:
+                        introspection_state.record_route_drop("plant.state_to_controller.state");
+                        break;
+                    case flowrt::ChannelWriteOutcome::Backpressured:
+                        introspection_state.record_route_backpressure("plant.state_to_controller.state");
+                        break;
+                }
+            }
+            if (const auto status = status_from_push_result(bind_1_result); status != flowrt::Status::Ok) {
                 return status;
             }
-            scheduler_events.notify_data();
-            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", this->introspection_probe_bind_1, *value, tick_time_ms);
         }
     }
     return flowrt::Status::Ok;
@@ -681,11 +842,34 @@ FlowrtTaskOutcome App::step_process_plant_proc_task_plant_main(std::size_t tick,
             auto flowrt_payload_0 = *value;
             flowrt_output_commits.emplace_back([flowrt_payload_0 = std::move(flowrt_payload_0), tick_time_ms](App& app, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {
                 const auto* value = &flowrt_payload_0;
-            if (const auto status = status_from_push_result(app.bind_1_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {
+            const auto bind_1_result = app.bind_1_.publish_at(*value, tick_time_ms);
+            introspection_state.record_route_backend_health("plant.state_to_controller.state", app.bind_1_.health());
+            if (std::holds_alternative<flowrt::ChannelError>(bind_1_result)) {
+                introspection_state.record_route_transport_error("plant.state_to_controller.state", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_1_result), "publish transport route");
+            } else {
+                switch (std::get<flowrt::ChannelWriteOutcome>(bind_1_result)) {
+                    case flowrt::ChannelWriteOutcome::Accepted:
+                        introspection_state.record_route_publish("plant.state_to_controller.state", tick_time_ms);
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", app.introspection_probe_bind_1, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedOldest:
+                        introspection_state.record_route_publish("plant.state_to_controller.state", tick_time_ms);
+                        introspection_state.record_route_drop("plant.state_to_controller.state");
+                        scheduler_events.notify_data();
+            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", app.introspection_probe_bind_1, *value, tick_time_ms);
+                        break;
+                    case flowrt::ChannelWriteOutcome::DroppedNewest:
+                        introspection_state.record_route_drop("plant.state_to_controller.state");
+                        break;
+                    case flowrt::ChannelWriteOutcome::Backpressured:
+                        introspection_state.record_route_backpressure("plant.state_to_controller.state");
+                        break;
+                }
+            }
+            if (const auto status = status_from_push_result(bind_1_result); status != flowrt::Status::Ok) {
                 return status;
             }
-            scheduler_events.notify_data();
-            record_introspection_publish_frame(introspection_state, "plant.state_to_controller.state", "State", app.introspection_probe_bind_1, *value, tick_time_ms);
                 return flowrt::Status::Ok;
             });
         }

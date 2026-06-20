@@ -1399,6 +1399,11 @@ runtime 或自描述不可用时显示 `thread_affinity=none static_thread_affin
 live status，不把 static schema 与 live schema 合并成一个事实源。`backend_health` 表达
 transport endpoint 当前恢复状态，取值为 `ready`、`degraded`、`reconnecting`、`failed`
 或 `unsupported`；inproc route 默认保持 `ready`。
+对 `iox2` / `zenoh` dataflow route，transport publish 失败会同时保留 `last_error` /
+`backend_health_error`，并按该 route 的 overflow policy 进入统一 counters：
+`drop_oldest` / `drop_newest` 增加 `dropped_samples`，`block` 增加 `backpressure`，
+`error` 增加 `overflow`；backend 不支持当前构建时只更新 backend error，不把缺 SDK 记成
+queue-full。
 
 ```text
 service=planner.plan_to_executor.execute client_instance=planner server_instance=executor ready=true in_flight=2 queued=1 total_requests=100 timeout=3 busy=1 unavailable=0 late_drop=2 socket=/run/user/1000/flowrt/12345.sock

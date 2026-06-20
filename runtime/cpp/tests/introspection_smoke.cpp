@@ -582,11 +582,51 @@ void assert_route_backend_health_derives_diagnostics() {
            std::optional<std::string>{"publish Zenoh sample: session closed"});
 }
 
+void assert_route_transport_error_derives_policy_counters() {
+    flowrt::IntrospectionState state;
+    state.record_route_transport_error("source.packet_to_sink.packet",
+                                       flowrt::OverflowPolicy::Block,
+                                       "publish transport route: queue full");
+    state.record_route_transport_error("source.packet_to_sink.packet",
+                                       flowrt::OverflowPolicy::DropNewest,
+                                       "publish transport route: queue full");
+    state.record_route_transport_error("source.packet_to_sink.packet",
+                                       flowrt::OverflowPolicy::Error,
+                                       "publish transport route: queue full");
+
+    const auto status = state.status();
+    const auto route = std::find_if(
+        status.routes.begin(), status.routes.end(),
+        [](const auto &candidate) { return candidate.name == "source.packet_to_sink.packet"; });
+    assert(route != status.routes.end());
+    assert(route->backpressure_count == 1U);
+    assert(route->dropped_samples == 1U);
+    assert(route->overflow_count == 1U);
+    assert(route->last_error == std::optional<std::string>{"publish transport route: queue full"});
+    assert(route->backend_health_state == "degraded");
+    assert(route->backend_health_error ==
+           std::optional<std::string>{"publish transport route: queue full"});
+
+    state.record_route_transport_error("source.feedback_to_sink.feedback",
+                                       flowrt::OverflowPolicy::Block,
+                                       flowrt::ChannelError::Overflow, "publish transport route");
+    const auto overflow_status = state.status();
+    const auto overflow_route = std::find_if(
+        overflow_status.routes.begin(), overflow_status.routes.end(),
+        [](const auto &candidate) { return candidate.name == "source.feedback_to_sink.feedback"; });
+    assert(overflow_route != overflow_status.routes.end());
+    assert(overflow_route->backpressure_count == 1U);
+    assert(overflow_route->overflow_count == 0U);
+    assert(overflow_route->last_error ==
+           std::optional<std::string>{"publish transport route: overflow"});
+}
+
 }  // namespace
 
 int main() {
     assert_status_json_schema_parity_fixture();
     assert_route_backend_health_derives_diagnostics();
+    assert_route_transport_error_derives_policy_counters();
 
     {
         auto active = std::make_shared<std::atomic_size_t>(0U);

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <flowrt/backend_health.hpp>
+#include <flowrt/channels.hpp>
 #include <flowrt/core.hpp>
 #include <flowrt/introspection/json.hpp>
 #include <flowrt/introspection/probe.hpp>
@@ -110,6 +111,61 @@ class IntrospectionState {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         auto &route = route_entry_locked(std::string{name});
         route.overflow_count += 1U;
+    }
+
+    /**
+     * @brief 记录 transport publish 失败，并按 route overflow policy 投影到统一 counters。
+     */
+    void record_route_transport_error(std::string_view name, OverflowPolicy overflow,
+                                      std::string error) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &route = route_entry_locked(std::string{name});
+        switch (overflow) {
+            case OverflowPolicy::DropOldest:
+            case OverflowPolicy::DropNewest:
+                route.dropped_samples += 1U;
+                break;
+            case OverflowPolicy::Block:
+                route.backpressure_count += 1U;
+                break;
+            case OverflowPolicy::Error:
+                route.overflow_count += 1U;
+                break;
+        }
+        route.last_error = error;
+        if (route.backend_health_state.empty() || route.backend_health_state == "ready") {
+            route.backend_health_state = "degraded";
+            route.backend_health_error = std::move(error);
+            route.backend_reconnect_attempt = 0;
+            route.backend_next_retry_unix_ms = std::nullopt;
+            route.backend_recoverable = true;
+        } else if (!route.backend_health_error) {
+            route.backend_health_error = std::move(error);
+        }
+    }
+
+    /**
+     * @brief 记录 transport channel error；unsupported 只记 backend error，不记队列计数。
+     */
+    void record_route_transport_error(std::string_view name, OverflowPolicy overflow,
+                                      ChannelError error, std::string_view context) const {
+        std::string reason{context};
+        reason += ": ";
+        switch (error) {
+            case ChannelError::Overflow:
+                reason += "overflow";
+                record_route_transport_error(name, overflow, std::move(reason));
+                return;
+            case ChannelError::Transport:
+                reason += "transport";
+                record_route_transport_error(name, overflow, std::move(reason));
+                return;
+            case ChannelError::Unsupported:
+                reason += "unsupported";
+                record_route_error(name, std::move(reason));
+                return;
+        }
+        record_route_error(name, std::move(reason));
     }
 
     /**

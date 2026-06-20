@@ -1155,9 +1155,13 @@ pub(super) fn cpp_runtime_channel_write_inner(
 ) -> String {
     let introspection_record = cpp_introspection_publish_record(bind);
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
+        let route_name = cpp_string_literal(&runtime_channel_name(bind));
+        let overflow = crate::runtime_plan::runtime_overflow_policy_path(bind.overflow);
         return format!(
-            "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n        scheduler_events.notify_data();\n{introspection_record}",
-            field = bind.field_name
+            "        const auto {field}_result = {field}_.publish_at(*value, tick_time_ms);\n        introspection_state.record_route_backend_health({route}, {field}_.health());\n        if (std::holds_alternative<flowrt::ChannelError>({field}_result)) {{\n            introspection_state.record_route_transport_error({route}, {overflow}, std::get<flowrt::ChannelError>({field}_result), \"publish transport route\");\n        }} else {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                    introspection_state.record_route_publish({route}, tick_time_ms);\n                    scheduler_events.notify_data();\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n                    introspection_state.record_route_publish({route}, tick_time_ms);\n                    introspection_state.record_route_drop({route});\n                    scheduler_events.notify_data();\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                    introspection_state.record_route_drop({route});\n                    break;\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    introspection_state.record_route_backpressure({route});\n                    break;\n            }}\n        }}\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n",
+            field = bind.field_name,
+            route = route_name,
+            overflow = overflow,
         );
     }
 

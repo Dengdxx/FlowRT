@@ -484,6 +484,9 @@ backends = ["zenoh"]
     assert!(transport_shell.contains(
         "introspection_state.record_route_backend_health(\"source.packet_to_sink.packet\", __flowrt_route_health);"
     ));
+    assert!(transport_shell.contains(
+        "introspection_state.record_route_transport_error(\"source.packet_to_sink.packet\", flowrt::OverflowPolicy::DropOldest, error.to_string());"
+    ));
 
     let inproc_ir = contract_from_source(
         r#"
@@ -526,6 +529,70 @@ channel = "latest"
     let inproc_bundle = emit_artifacts(&inproc_ir).unwrap();
     let inproc_shell = artifact_content(&inproc_bundle, "rust/src/runtime_shell.rs");
     assert!(!inproc_shell.contains("record_route_backend_health"));
+}
+
+#[test]
+fn backend_route_health_is_recorded_for_cpp_transport_publish() {
+    let transport_ir = contract_from_source(
+        r#"
+[package]
+name = "route_health_cpp_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+value = "u32"
+
+[component.source]
+language = "cpp"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "cpp"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+process = "producer"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+process = "consumer"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["zenoh"]
+"#,
+    );
+    let transport_bundle = emit_artifacts(&transport_ir).unwrap();
+    let transport_shell = artifact_content(&transport_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(transport_shell.contains(
+        "introspection_state.record_route_backend_health(\"source.packet_to_sink.packet\", bind_0_.health());"
+    ));
+    assert!(transport_shell.contains(
+        "introspection_state.record_route_transport_error(\"source.packet_to_sink.packet\", flowrt::OverflowPolicy::DropOldest, std::get<flowrt::ChannelError>(bind_0_result), \"publish transport route\");"
+    ));
+    assert!(transport_shell.contains(
+        "introspection_state.record_route_publish(\"source.packet_to_sink.packet\", tick_time_ms);"
+    ));
 }
 
 #[test]

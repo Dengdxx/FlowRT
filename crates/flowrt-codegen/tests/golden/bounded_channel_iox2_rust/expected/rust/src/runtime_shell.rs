@@ -169,7 +169,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("source.packet_to_sink.packet", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("source.packet_to_sink.packet", error.to_string());
+                    introspection_state.record_route_transport_error("source.packet_to_sink.packet", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("source.packet_to_sink.packet", Some(tick_time_ms));
@@ -314,7 +314,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("source.packet_to_sink.packet", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("source.packet_to_sink.packet", error.to_string());
+                    introspection_state.record_route_transport_error("source.packet_to_sink.packet", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("source.packet_to_sink.packet", Some(tick_time_ms));
@@ -475,7 +475,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("source.packet_to_sink.packet", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("source.packet_to_sink.packet", error.to_string());
+                    introspection_state.record_route_transport_error("source.packet_to_sink.packet", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("source.packet_to_sink.packet", Some(tick_time_ms));
@@ -558,7 +558,7 @@ impl App {
                 drop(__flowrt_route);
                 introspection_state.record_route_backend_health("source.packet_to_sink.packet", __flowrt_route_health);
                 if let Err(error) = __flowrt_publish_result {
-                    introspection_state.record_route_error("source.packet_to_sink.packet", error.to_string());
+                    introspection_state.record_route_transport_error("source.packet_to_sink.packet", flowrt::OverflowPolicy::DropOldest, error.to_string());
                     return flowrt::Status::Error;
                 }
                 introspection_state.record_route_publish("source.packet_to_sink.packet", Some(tick_time_ms));

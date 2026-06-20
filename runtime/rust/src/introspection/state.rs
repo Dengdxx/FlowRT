@@ -8,7 +8,7 @@ use crate::recorder::{
 };
 use crate::{
     BackendHealthSnapshot, BackendHealthState, FrameCodec, FrameDescriptor, FrameLeaseStatus,
-    FramePayloadArtifact, LifecycleState,
+    FramePayloadArtifact, LifecycleState, OverflowPolicy,
 };
 
 use super::facts::{RuntimeObservabilityFacts, input_status_key};
@@ -735,6 +735,39 @@ impl IntrospectionState {
         let mut inner = self.lock_inner();
         let route = route_entry(&mut inner, name.as_ref());
         route.overflow_count = route.overflow_count.saturating_add(1);
+    }
+
+    /// 记录 transport publish 失败，并按 route overflow policy 投影到统一 route counters。
+    pub fn record_route_transport_error(
+        &self,
+        name: impl AsRef<str>,
+        overflow: OverflowPolicy,
+        error: impl Into<String>,
+    ) {
+        let mut inner = self.lock_inner();
+        let route = route_entry(&mut inner, name.as_ref());
+        match overflow {
+            OverflowPolicy::DropOldest | OverflowPolicy::DropNewest => {
+                route.dropped_samples = route.dropped_samples.saturating_add(1);
+            }
+            OverflowPolicy::Block => {
+                route.backpressure_count = route.backpressure_count.saturating_add(1);
+            }
+            OverflowPolicy::Error => {
+                route.overflow_count = route.overflow_count.saturating_add(1);
+            }
+        }
+        let error = error.into();
+        route.last_error = Some(error.clone());
+        if route.backend_health_state.is_empty() || route.backend_health_state == "ready" {
+            route.backend_health_state = BackendHealthState::Degraded.as_str().to_string();
+            route.backend_health_error = Some(error);
+            route.backend_reconnect_attempt = 0;
+            route.backend_next_retry_unix_ms = None;
+            route.backend_recoverable = true;
+        } else if route.backend_health_error.is_none() {
+            route.backend_health_error = Some(error);
+        }
     }
 
     /// 记录 route/backend 最近错误。

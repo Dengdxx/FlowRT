@@ -1876,6 +1876,42 @@ fn route_backend_health_ready_clears_active_error() {
 }
 
 #[test]
+fn route_transport_error_updates_policy_counter_and_backend_error() {
+    let state = IntrospectionState::new();
+
+    state.record_route_transport_error(
+        "source.packet_to_sink.packet",
+        crate::OverflowPolicy::Block,
+        "publish transport route: queue full",
+    );
+    state.record_route_transport_error(
+        "source.packet_to_sink.packet",
+        crate::OverflowPolicy::DropNewest,
+        "publish transport route: queue full",
+    );
+    state.record_route_transport_error(
+        "source.packet_to_sink.packet",
+        crate::OverflowPolicy::Error,
+        "publish transport route: queue full",
+    );
+
+    let status = state.status();
+    let route = status.routes.first().expect("route should be present");
+    assert_eq!(route.backpressure_count, 1);
+    assert_eq!(route.dropped_samples, 1);
+    assert_eq!(route.overflow_count, 1);
+    assert_eq!(
+        route.last_error.as_deref(),
+        Some("publish transport route: queue full")
+    );
+    assert_eq!(route.backend_health_state, "degraded");
+    assert_eq!(
+        route.backend_health_error.as_deref(),
+        Some("publish transport route: queue full")
+    );
+}
+
+#[test]
 fn recorder_captures_diagnostics_events_from_status() {
     let state = IntrospectionState::new();
     state.start_recorder(IntrospectionRecorderStart {
