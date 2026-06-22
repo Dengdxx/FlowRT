@@ -1233,6 +1233,12 @@ pub(crate) fn operation_status_summary_for_sockets(
     name: Option<&str>,
     sockets: Vec<PathBuf>,
 ) -> Result<String> {
+    if let Some(operation_id) = name
+        && looks_like_operation_id(operation_id)
+    {
+        return operation_status_by_id_for_sockets(operation_id, sockets);
+    }
+
     let mut lines = Vec::new();
     for socket in sockets {
         match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
@@ -1266,6 +1272,68 @@ pub(crate) fn operation_status_summary_for_sockets(
     } else {
         Ok(lines.join("\n"))
     }
+}
+
+fn operation_status_by_id_for_sockets(operation_id: &str, sockets: Vec<PathBuf>) -> Result<String> {
+    let mut lines = Vec::new();
+    let mut errors = Vec::new();
+    for socket in sockets {
+        match flowrt::request_operation_status_with_timeout(
+            &socket,
+            operation_id,
+            LOCAL_INTROSPECTION_TIMEOUT,
+        ) {
+            Ok(flowrt::IntrospectionResponse::OperationValue { operation, .. }) => {
+                lines.push(format!(
+                    "operation_id={} {}",
+                    operation_id,
+                    format_operation_status(&operation, Some(&socket))
+                ));
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                errors.push(format!("{}: {message}", socket.display()));
+            }
+            Ok(_) => {
+                errors.push(format!(
+                    "{}: unexpected introspection response",
+                    socket.display()
+                ));
+            }
+            Err(error) => {
+                errors.push(format!("{}: {error}", socket.display()));
+            }
+        }
+    }
+    if lines.is_empty() {
+        if errors.is_empty() {
+            Ok(format!("no live FlowRT operation matches `{operation_id}`"))
+        } else {
+            Ok(format!(
+                "no live FlowRT operation matches `{}`; status errors: {}",
+                operation_id,
+                errors.join("; ")
+            ))
+        }
+    } else {
+        Ok(lines.join("\n"))
+    }
+}
+
+fn looks_like_operation_id(value: &str) -> bool {
+    let mut parts = value.split(':');
+    let Some(operation_key) = parts.next() else {
+        return false;
+    };
+    let Some(client_id) = parts.next() else {
+        return false;
+    };
+    let Some(sequence) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none()
+        && [operation_key, client_id, sequence]
+            .iter()
+            .all(|part| !part.is_empty() && part.parse::<u64>().is_ok())
 }
 
 pub(crate) fn operation_cancel(operation_id: &str, socket: Option<&Path>) -> Result<String> {

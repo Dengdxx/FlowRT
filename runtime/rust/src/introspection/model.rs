@@ -43,6 +43,8 @@ pub enum IntrospectionRequest {
     },
     /// 请求取消当前 runtime 中已知的 Operation invocation。
     OperationCancel { operation_id: String },
+    /// 请求查询当前 runtime 中已知的 Operation invocation。
+    OperationStatus { operation_id: String },
     /// 请求启动当前 runtime 中已知的 Operation endpoint。
     OperationStart {
         operation: String,

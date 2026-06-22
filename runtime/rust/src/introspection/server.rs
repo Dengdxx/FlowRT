@@ -413,6 +413,25 @@ fn handle_connection(
             )?;
             writer.write_all(b"\n")?;
         }
+        IntrospectionRequest::OperationStatus { operation_id } => {
+            let response = match state.status_operation(&operation_id) {
+                Ok(operation) => IntrospectionResponse::OperationValue {
+                    handshake: handshake.clone(),
+                    operation,
+                },
+                Err(message) => IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message,
+                },
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
         IntrospectionRequest::OperationStart {
             operation,
             payload,

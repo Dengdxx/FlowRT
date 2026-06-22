@@ -71,6 +71,8 @@ impl Default for InstanceRuntimeState {
 
 type OperationCancelHandler =
     Arc<dyn Fn(&str) -> std::result::Result<IntrospectionOperationStatus, String> + Send + Sync>;
+type OperationStatusHandler =
+    Arc<dyn Fn(&str) -> std::result::Result<IntrospectionOperationStatus, String> + Send + Sync>;
 type OperationStartHandler = Arc<
     dyn Fn(
             Vec<u8>,
@@ -109,6 +111,7 @@ pub(super) struct IntrospectionStateInner {
     pub(super) services: BTreeMap<String, IntrospectionServiceStatus>,
     pub(super) operations: BTreeMap<String, IntrospectionOperationStatus>,
     operation_start_handlers: BTreeMap<String, OperationStartHandler>,
+    operation_status_handlers: BTreeMap<String, OperationStatusHandler>,
     operation_cancel_handlers: BTreeMap<String, OperationCancelHandler>,
     pub(super) tasks: BTreeMap<String, IntrospectionTaskHealth>,
     pub(super) lanes: BTreeMap<String, IntrospectionLaneHealth>,
@@ -979,6 +982,21 @@ impl IntrospectionState {
             .insert(name, Arc::new(handler));
     }
 
+    /// 注册 operation status control hook。
+    pub fn register_operation_status_handler<F>(&self, name: impl Into<String>, handler: F)
+    where
+        F: Fn(&str) -> std::result::Result<IntrospectionOperationStatus, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let name = name.into();
+        let mut inner = self.lock_inner();
+        inner
+            .operation_status_handlers
+            .insert(name, Arc::new(handler));
+    }
+
     /// 注册 operation start control hook。
     pub fn register_operation_start_handler<F>(&self, name: impl Into<String>, handler: F)
     where
@@ -1199,6 +1217,40 @@ impl IntrospectionState {
             return Ok(operation.clone());
         }
         Err(format!("unknown FlowRT operation `{operation_id}`"))
+    }
+
+    /// 请求查询指定 operation invocation。
+    pub fn status_operation(
+        &self,
+        operation_id: &str,
+    ) -> std::result::Result<IntrospectionOperationStatus, String> {
+        let (handler, cached) = {
+            let inner = self.lock_inner();
+            inner
+                .operations
+                .values()
+                .find(|operation| {
+                    operation
+                        .current_operation_ids
+                        .iter()
+                        .any(|id| id == operation_id)
+                })
+                .map(|operation| {
+                    (
+                        inner
+                            .operation_status_handlers
+                            .get(&operation.name)
+                            .cloned(),
+                        operation.clone(),
+                    )
+                })
+        }
+        .ok_or_else(|| format!("unknown FlowRT operation `{operation_id}`"))?;
+
+        match handler {
+            Some(handler) => handler(operation_id),
+            None => Ok(cached),
+        }
     }
 
     /// 记录 task 调度健康快照。

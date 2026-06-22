@@ -78,9 +78,10 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - 反馈环 init：literal init 仍限全 primitive 字段消息；嵌套字段和数组字段初值留待后续。
 - Operation 控制面：generated Operation runtime 已支持 inproc、zenoh，并在本版本接入
   iox2；`flowrt op list/status/cancel` 是本机 introspection 控制面。未发布版本已接入
-  本机 `flowrt op start` 基座，可用 self-description Message ABI 编码 goal JSON 并经
-  introspection socket 启动 generated Rust Operation。跨机 Operation CLI 控制面、
-  typed result/follow 和 replay 驱动 Operation 执行仍不属于当前范围。
+  本机 `flowrt op start` 基座和 `OperationStatus` by id 请求，可用 self-description
+  Message ABI 编码 goal JSON 并经 introspection socket 启动 generated Rust Operation，
+  也可用 returned `operation_id` 精确查询 live invocation status。跨机 Operation CLI
+  控制面、typed result/follow 和 replay 驱动 Operation 执行仍不属于当前范围。
 - 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke、v0.25.1 的
   `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据，以及
   v0.26.0 的代表性 iox2/zenoh generated dataflow、Service、Operation、bounded variable
@@ -1036,10 +1037,11 @@ Operation 观测路径沿用 FlowRT 自描述和本机 introspection socket：se
 当前 state、owner、deadline、成功/失败/取消/超时/抢占计数、最近事件、最近错误和
 最近状态转换时间；record 输出 state change、progress、result 和 error 事件；
 `flowrt op list/status/cancel` 提供本机观测和 cooperative cancel 控制面。未发布版本把
-本机 `flowrt op start` 接入同一 introspection command-plane：CLI 使用 self-description
-Message ABI 把 goal JSON 编码为 canonical payload，generated Rust shell 注册 start hook
-并复用 typed Operation client 路径启动 invocation。跨机 Operation 控制面、typed
-result/follow 和 replay 驱动执行不属于当前范围。
+本机 `flowrt op start` 和 `OperationStatus` by id 接入同一 introspection command-plane：
+CLI 使用 self-description Message ABI 把 goal JSON 编码为 canonical payload，generated
+Rust shell 注册 start/status hook，并复用 typed Operation client 与 `OperationControl`
+路径启动和查询 invocation。跨机 Operation 控制面、typed result/follow 和 replay 驱动执行
+不属于当前范围。
 
 `v0.6.0` 的录制系统只做 record，不做 replay。录制使用 MCAP 作为容器，FlowRT 自有
 record envelope 作为 schema，覆盖 channel sample、parameter control-plane event、

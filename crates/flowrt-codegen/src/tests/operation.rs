@@ -255,6 +255,31 @@ fn rust_operation_hidden_task_registers_introspection_start_handler() {
     );
 }
 
+/// 本机 introspection status by id 必须复用 Operation control，而不是只读 cached summary。
+#[test]
+fn rust_operation_hidden_task_registers_introspection_status_handler() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        shell.contains("introspection_state.register_operation_status_handler"),
+        "hidden operation task must register CLI/introspection status handler.\n\n{shell}"
+    );
+    let status_handler = generated_function_block(
+        shell,
+        "introspection_state.register_operation_status_handler(\"controller.plan\"",
+    );
+    assert!(
+        status_handler.contains("flowrt_operation_id_from_string(operation_id)"),
+        "status handler must parse CLI operation id string.\n\n{status_handler}"
+    );
+    assert!(
+        status_handler.contains("control.status(id)"),
+        "status handler must query OperationControl by invocation id.\n\n{status_handler}"
+    );
+}
+
 /// Runtime scheduler step 必须主动驱动 deadline timeout，不能只靠用户 handler 自觉退出。
 #[test]
 fn rust_operation_step_drives_deadline_timeout_and_stale_cancel_errors() {

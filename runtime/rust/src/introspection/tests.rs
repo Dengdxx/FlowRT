@@ -894,6 +894,17 @@ fn status_server_reports_and_cancels_operation_status() {
     );
 
     let IntrospectionResponse::OperationValue { operation, .. } =
+        request_operation_status(server.path(), "111:7:3")
+            .expect("operation status by id request should succeed")
+    else {
+        panic!("operation status by id returned wrong response")
+    };
+    assert_eq!(operation.name, "controller.plan");
+    assert_eq!(operation.running, 1);
+    assert_eq!(operation.current_state.as_deref(), Some("running"));
+    assert_eq!(operation.current_operation_ids, vec!["111:7:3".to_string()]);
+
+    let IntrospectionResponse::OperationValue { operation, .. } =
         request_operation_cancel(server.path(), "111:7:3")
             .expect("operation cancel request should succeed")
     else {

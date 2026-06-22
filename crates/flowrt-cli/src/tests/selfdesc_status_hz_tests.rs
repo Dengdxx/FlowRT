@@ -1629,6 +1629,12 @@ fn operation_cli_status_and_cancel_use_runtime_socket() {
     assert!(status.contains("operation=controller.plan"));
     assert!(status.contains("current_operation_ids=[111:7:3]"));
 
+    let status_by_id =
+        operation_status_summary_for_sockets(Some("111:7:3"), vec![socket.clone()]).unwrap();
+    assert!(status_by_id.contains("operation_id=111:7:3"));
+    assert!(status_by_id.contains("operation=controller.plan"));
+    assert!(status_by_id.contains("state=cancel_requested"));
+
     let canceled = operation_cancel("111:7:3", Some(&socket)).unwrap();
     assert!(canceled.contains("operation=controller.plan"));
     assert!(canceled.contains("operation_id=111:7:3"));

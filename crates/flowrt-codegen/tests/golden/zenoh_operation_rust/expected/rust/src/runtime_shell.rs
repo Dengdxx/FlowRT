@@ -732,6 +732,13 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                         operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
                                     })
                                 });
+                                let operation_status_control = __flowrt_operation_control_0.clone();
+                                introspection_state.register_operation_status_handler("controller.plan", move |operation_id| {
+                                    let id = flowrt_operation_id_from_string(operation_id)?;
+                                    let control = operation_status_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    let snapshot = control.status(id).map_err(|error| error.to_string())?;
+                                    Ok(flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot))
+                                });
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
                                     let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1243,6 +1250,13 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                         operation_id,
                                         operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
                                     })
+                                });
+                                let operation_status_control = __flowrt_operation_control_0.clone();
+                                introspection_state.register_operation_status_handler("controller.plan", move |operation_id| {
+                                    let id = flowrt_operation_id_from_string(operation_id)?;
+                                    let control = operation_status_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    let snapshot = control.status(id).map_err(|error| error.to_string())?;
+                                    Ok(flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot))
                                 });
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
@@ -1804,6 +1818,13 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                         operation_id,
                                         operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
                                     })
+                                });
+                                let operation_status_control = __flowrt_operation_control_0.clone();
+                                introspection_state.register_operation_status_handler("controller.plan", move |operation_id| {
+                                    let id = flowrt_operation_id_from_string(operation_id)?;
+                                    let control = operation_status_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    let snapshot = control.status(id).map_err(|error| error.to_string())?;
+                                    Ok(flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot))
                                 });
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {

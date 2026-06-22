@@ -270,6 +270,34 @@ pub fn request_operation_cancel_with_timeout(
     )
 }
 
+/// 向 introspection socket 请求查询 operation invocation。
+pub fn request_operation_status(
+    path: &Path,
+    operation_id: impl Into<String>,
+) -> std::io::Result<IntrospectionResponse> {
+    request(
+        path,
+        &IntrospectionRequest::OperationStatus {
+            operation_id: operation_id.into(),
+        },
+    )
+}
+
+/// 向 introspection socket 请求查询 operation invocation，并限制 socket 读写等待时间。
+pub fn request_operation_status_with_timeout(
+    path: &Path,
+    operation_id: impl Into<String>,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::OperationStatus {
+            operation_id: operation_id.into(),
+        },
+        timeout,
+    )
+}
+
 /// 向 introspection socket 请求启动 operation endpoint。
 pub fn request_operation_start(
     path: &Path,

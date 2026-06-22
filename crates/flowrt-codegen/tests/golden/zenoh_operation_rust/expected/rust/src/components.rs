@@ -15,6 +15,17 @@ pub(crate) fn flowrt_operation_id_string(id: flowrt::OperationId) -> String {
     format!("{}:{}:{}", id.operation_key, id.client_id, id.sequence)
 }
 
+pub(crate) fn flowrt_operation_id_from_string(value: &str) -> Result<flowrt::OperationId, String> {
+    let mut parts = value.split(':');
+    let operation_key = parts.next().ok_or_else(|| format!("invalid operation id `{value}`"))?.parse::<u64>().map_err(|_| format!("invalid operation id `{value}`"))?;
+    let client_id = parts.next().ok_or_else(|| format!("invalid operation id `{value}`"))?.parse::<u64>().map_err(|_| format!("invalid operation id `{value}`"))?;
+    let sequence = parts.next().ok_or_else(|| format!("invalid operation id `{value}`"))?.parse::<u64>().map_err(|_| format!("invalid operation id `{value}`"))?;
+    if parts.next().is_some() {
+        return Err(format!("invalid operation id `{value}`"));
+    }
+    Ok(flowrt::OperationId::new(operation_key, client_id, sequence))
+}
+
 pub(crate) fn flowrt_operation_status_from_snapshot(name: &str, owner: &str, snapshot: flowrt::OperationStatusSnapshot) -> flowrt::IntrospectionOperationStatus {
     let active = !snapshot.state.is_terminal() && snapshot.state != flowrt::OperationState::Idle;
     flowrt::IntrospectionOperationStatus {
