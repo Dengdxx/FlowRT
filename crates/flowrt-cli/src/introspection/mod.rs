@@ -16,6 +16,8 @@ use flowrt_selfdesc::{
     load_self_description_with_hash as load_selfdesc_with_hash,
 };
 
+use crate::frame_json::encode_boundary_json;
+
 pub(crate) use flowrt_selfdesc::self_description_hash;
 
 mod display;
@@ -566,6 +568,7 @@ fn request_echo_snapshot(
         }
         flowrt::IntrospectionResponse::SelfDescription { .. }
         | flowrt::IntrospectionResponse::ObserveReady { .. }
+        | flowrt::IntrospectionResponse::OperationStarted { .. }
         | flowrt::IntrospectionResponse::OperationValue { .. }
         | flowrt::IntrospectionResponse::BoundaryPublish { .. } => {
             anyhow::bail!(
@@ -1143,6 +1146,76 @@ pub(crate) fn operation_list(image: Option<&Path>, socket: Option<&Path>) -> Res
         }
     };
     Ok(operation_topology_summary(&self_description))
+}
+
+pub(crate) fn operation_start(
+    image: &Path,
+    name: &str,
+    raw_json: &str,
+    socket: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let operation = find_operation_endpoint(&self_description, name)?;
+    let payload = encode_boundary_json(&self_description, name, &operation.goal_type, raw_json)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    match flowrt::request_operation_start_with_timeout(
+        &socket,
+        name,
+        payload,
+        timeout_ms,
+        Some("flowrt.cli".to_string()),
+        LOCAL_INTROSPECTION_TIMEOUT,
+    ) {
+        Ok(flowrt::IntrospectionResponse::OperationStarted { handshake, started }) => {
+            ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+            Ok(format!(
+                "operation_id={} {}",
+                started.operation_id,
+                format_operation_status(&started.operation, Some(&socket))
+            ))
+        }
+        Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+            anyhow::bail!(
+                "failed to start FlowRT operation `{}` on `{}`: {}",
+                name,
+                socket.display(),
+                message
+            )
+        }
+        Ok(_) => {
+            anyhow::bail!(
+                "failed to start FlowRT operation `{}` on `{}`: unexpected introspection response",
+                name,
+                socket.display()
+            )
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "failed to start FlowRT operation `{}` on `{}`: {}",
+                name,
+                socket.display(),
+                error
+            )
+        }
+    }
+}
+
+fn find_operation_endpoint<'a>(
+    self_description: &'a SelfDescription,
+    name: &str,
+) -> Result<&'a SelfDescriptionOperationEndpoint> {
+    let mut matches = self_description
+        .graphs
+        .iter()
+        .flat_map(|graph| graph.operations.iter())
+        .filter(|operation| operation.name == name)
+        .collect::<Vec<_>>();
+    match matches.len() {
+        0 => anyhow::bail!("FlowRT self-description does not contain Operation `{name}`"),
+        1 => Ok(matches.remove(0)),
+        _ => anyhow::bail!("FlowRT self-description contains multiple Operations named `{name}`"),
+    }
 }
 
 pub(crate) fn operation_status_summary(
@@ -1743,6 +1816,15 @@ pub(crate) fn live_status_summary_for_sockets(
                 }
                 lines.push(format!(
                     "stale socket={} error=unexpected parameter response",
+                    socket.display()
+                ));
+            }
+            Ok(flowrt::IntrospectionResponse::OperationStarted { .. }) => {
+                if live_only {
+                    continue;
+                }
+                lines.push(format!(
+                    "stale socket={} error=unexpected operation response",
                     socket.display()
                 ));
             }

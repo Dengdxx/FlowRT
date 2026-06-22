@@ -270,6 +270,46 @@ pub fn request_operation_cancel_with_timeout(
     )
 }
 
+/// 向 introspection socket 请求启动 operation endpoint。
+pub fn request_operation_start(
+    path: &Path,
+    operation: impl Into<String>,
+    payload: Vec<u8>,
+    timeout_ms: Option<u64>,
+    owner: Option<String>,
+) -> std::io::Result<IntrospectionResponse> {
+    request(
+        path,
+        &IntrospectionRequest::OperationStart {
+            operation: operation.into(),
+            payload,
+            timeout_ms,
+            owner,
+        },
+    )
+}
+
+/// 向 introspection socket 请求启动 operation endpoint，并限制 socket 读写等待时间。
+pub fn request_operation_start_with_timeout(
+    path: &Path,
+    operation: impl Into<String>,
+    payload: Vec<u8>,
+    timeout_ms: Option<u64>,
+    owner: Option<String>,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::OperationStart {
+            operation: operation.into(),
+            payload,
+            timeout_ms,
+            owner,
+        },
+        timeout,
+    )
+}
+
 /// 向 introspection socket 请求启动 recorder。
 pub fn request_recorder_start(
     path: &Path,

@@ -1334,6 +1334,42 @@ fn cli_parses_operation_commands() {
     assert_eq!(name.as_deref(), Some("controller.plan"));
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
 
+    let start_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "start",
+        "controller.plan",
+        "--json",
+        "{\"target\":7}",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+        "--timeout-ms",
+        "2500",
+    ])
+    .unwrap();
+    let Command::Op {
+        command:
+            OpCommand::Start {
+                name,
+                json,
+                file,
+                image,
+                socket,
+                timeout_ms,
+            },
+    } = start_cli.command
+    else {
+        panic!("op start should parse into Command::Op")
+    };
+    assert_eq!(name, "controller.plan");
+    assert_eq!(json.as_deref(), Some("{\"target\":7}"));
+    assert_eq!(file, None);
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(timeout_ms, Some(2500));
+
     let cancel_cli = Cli::try_parse_from([
         "flowrt",
         "op",

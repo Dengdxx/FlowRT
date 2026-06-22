@@ -43,6 +43,13 @@ pub enum IntrospectionRequest {
     },
     /// 请求取消当前 runtime 中已知的 Operation invocation。
     OperationCancel { operation_id: String },
+    /// 请求启动当前 runtime 中已知的 Operation endpoint。
+    OperationStart {
+        operation: String,
+        payload: Vec<u8>,
+        timeout_ms: Option<u64>,
+        owner: Option<String>,
+    },
     /// 启动当前 runtime 的按需 recorder。
     RecorderStart {
         output: Option<String>,
@@ -95,6 +102,10 @@ pub enum IntrospectionResponse {
     OperationValue {
         handshake: IntrospectionHandshake,
         operation: IntrospectionOperationStatus,
+    },
+    OperationStarted {
+        handshake: IntrospectionHandshake,
+        started: IntrospectionOperationStartStatus,
     },
     RecorderValue {
         handshake: IntrospectionHandshake,
@@ -632,6 +643,13 @@ pub struct IntrospectionOperationStatus {
     pub last_error: Option<String>,
     /// 最近一次状态转换时间戳（Unix 毫秒）。
     pub last_transition_ms: Option<u64>,
+}
+
+/// Operation start 请求被接受后的 live 状态。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionOperationStartStatus {
+    pub operation_id: String,
+    pub operation: IntrospectionOperationStatus,
 }
 
 /// recorder 运行态状态。

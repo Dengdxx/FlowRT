@@ -1640,6 +1640,110 @@ fn operation_cli_status_and_cancel_use_runtime_socket() {
 }
 
 #[test]
+fn operation_start_encodes_goal_json_and_returns_operation_id() {
+    let root = temp_test_dir("operation-cli-start");
+    let path = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": null
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "PlanGoal",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "target",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_operation_start_handler("controller.plan", |payload, timeout_ms, owner| {
+        assert_eq!(payload, vec![7, 0, 0, 0]);
+        assert_eq!(timeout_ms, Some(2500));
+        assert_eq!(owner.as_deref(), Some("flowrt.cli"));
+        Ok(flowrt::IntrospectionOperationStartStatus {
+            operation_id: "111:7:3".to_string(),
+            operation: flowrt::IntrospectionOperationStatus {
+                name: "controller.plan".to_string(),
+                ready: true,
+                running: 1,
+                queued: 0,
+                current_operation_ids: vec!["111:7:3".to_string()],
+                total_started: 1,
+                succeeded_count: 0,
+                failed_count: 0,
+                canceled_count: 0,
+                timeout_count: 0,
+                preempted_count: 0,
+                current_state: Some("starting".to_string()),
+                current_owner: Some("flowrt.cli".to_string()),
+                current_deadline_ms: Some(2500),
+                last_event: Some("flowrt.operation.state_changed".to_string()),
+                last_error: None,
+                last_transition_ms: Some(12345),
+            },
+        })
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = operation_start(
+        &path,
+        "controller.plan",
+        r#"{"target":7}"#,
+        Some(&socket),
+        Some(2500),
+    )
+    .unwrap();
+
+    assert!(output.contains("operation_id=111:7:3"));
+    assert!(output.contains("operation=controller.plan"));
+    assert!(output.contains("state=starting"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn operation_cancel_without_socket_refuses_ambiguous_id_without_side_effects() {
     let root = temp_test_dir("operation-cli-ambiguous-cancel");
     let socket_a = root.join("main-a.sock");

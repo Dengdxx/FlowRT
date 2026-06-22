@@ -226,6 +226,35 @@ fn rust_operation_start_handler_rejects_second_owner() {
     );
 }
 
+/// 本机 introspection command-plane 必须能启动 Operation，而不是只能 cancel。
+#[test]
+fn rust_operation_hidden_task_registers_introspection_start_handler() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        shell.contains("introspection_state.register_operation_start_handler"),
+        "hidden operation task must register CLI/introspection start handler.\n\n{shell}"
+    );
+    let start_handler = generated_function_block(
+        shell,
+        "introspection_state.register_operation_start_handler(\"controller.plan\"",
+    );
+    assert!(
+        start_handler.contains("<PlanGoal as flowrt::FrameCodec>::decode_frame(&payload)"),
+        "start handler must decode raw CLI goal payload with generated Message ABI.\n\n{start_handler}"
+    );
+    assert!(
+        start_handler.contains("operation_start_client.start(goal, timeout)"),
+        "start handler must reuse generated typed Operation client path.\n\n{start_handler}"
+    );
+    assert!(
+        start_handler.contains("flowrt::IntrospectionOperationStartStatus"),
+        "introspection start handler must return accepted operation id and status.\n\n{start_handler}"
+    );
+}
+
 /// Runtime scheduler step 必须主动驱动 deadline timeout，不能只靠用户 handler 自觉退出。
 #[test]
 fn rust_operation_step_drives_deadline_timeout_and_stale_cancel_errors() {

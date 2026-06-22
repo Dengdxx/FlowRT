@@ -918,6 +918,67 @@ fn status_server_reports_and_cancels_operation_status() {
 }
 
 #[test]
+fn status_server_starts_operation_with_registered_handler() {
+    let root = std::env::temp_dir().join(format!(
+        "flowrt-introspection-operation-start-test-{}",
+        std::process::id()
+    ));
+    let socket = root.join("worker.sock");
+    let handshake = IntrospectionHandshake {
+        protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 42,
+        started_at_unix_ms: 1000,
+        self_description_hash: "abc123".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = IntrospectionState::new();
+    state.register_operation("controller.plan");
+    state.register_operation_start_handler("controller.plan", |payload, timeout_ms, owner| {
+        assert_eq!(payload, vec![7, 0, 0, 0]);
+        assert_eq!(timeout_ms, Some(2500));
+        assert_eq!(owner.as_deref(), Some("flowrt.cli"));
+        Ok(IntrospectionOperationStartStatus {
+            operation_id: "111:7:3".to_string(),
+            operation: IntrospectionOperationStatus {
+                name: "controller.plan".to_string(),
+                ready: true,
+                running: 1,
+                queued: 0,
+                current_operation_ids: vec!["111:7:3".to_string()],
+                total_started: 1,
+                current_state: Some("starting".to_string()),
+                current_owner: Some("flowrt.cli".to_string()),
+                current_deadline_ms: Some(2500),
+                last_event: Some("flowrt.operation.state_changed".to_string()),
+                ..Default::default()
+            },
+        })
+    });
+
+    let server = spawn_status_server_at(socket.clone(), handshake.clone(), state.clone())
+        .expect("server should start");
+
+    let IntrospectionResponse::OperationStarted { started, .. } = request_operation_start(
+        server.path(),
+        "controller.plan",
+        vec![7, 0, 0, 0],
+        Some(2500),
+        Some("flowrt.cli".to_string()),
+    )
+    .expect("operation start request should succeed") else {
+        panic!("operation start returned wrong response")
+    };
+    assert_eq!(started.operation_id, "111:7:3");
+    assert_eq!(started.operation.name, "controller.plan");
+    assert_eq!(started.operation.current_state.as_deref(), Some("starting"));
+
+    drop(server);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn task_health_recording_and_status_snapshot() {
     let state = IntrospectionState::new();
 

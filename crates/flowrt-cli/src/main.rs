@@ -39,10 +39,10 @@ use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd
 use introspection::{
     EchoFormatOptions, EchoSelection, echo_channel, echo_channel_follow, echo_channels,
     echo_channels_follow, live_hz_summary, live_status_json, live_status_summary,
-    load_self_description, operation_cancel, operation_list, operation_status_summary, params_get,
-    params_list, params_set, params_set_from_file, remote_params_get, remote_params_list,
-    remote_params_set, remote_params_set_from_file, self_description_nodes,
-    self_description_summary,
+    load_self_description, operation_cancel, operation_list, operation_start,
+    operation_status_summary, params_get, params_list, params_set, params_set_from_file,
+    remote_params_get, remote_params_list, remote_params_set, remote_params_set_from_file,
+    self_description_nodes, self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
 use replay::replay_fixture;
@@ -667,6 +667,32 @@ enum OpCommand {
         /// 显式指定 runtime introspection socket。
         #[arg(long)]
         socket: Option<PathBuf>,
+    },
+
+    /// 启动 live Operation invocation。
+    Start {
+        /// Operation 名称，格式 `<client_instance>.<client_port>`。
+        name: String,
+
+        /// goal JSON 文本。
+        #[arg(long, conflicts_with = "file", required_unless_present = "file")]
+        json: Option<String>,
+
+        /// goal JSON 文件。
+        #[arg(long, conflicts_with = "json", required_unless_present = "json")]
+        file: Option<PathBuf>,
+
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: Option<PathBuf>,
+
+        /// 显式指定 runtime introspection socket。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        /// Operation start 请求超时毫秒；省略时使用 contract 默认值。
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: Option<u64>,
     },
 
     /// 取消 live Operation invocation。
@@ -1397,6 +1423,26 @@ fn main() -> Result<()> {
                 println!(
                     "{}",
                     operation_status_summary(socket.as_deref(), name.as_deref())?
+                );
+            }
+            OpCommand::Start {
+                name,
+                json,
+                file,
+                image,
+                socket,
+                timeout_ms,
+            } => {
+                let image = require_image_for_local(image.as_deref())?;
+                let raw_json = match (json, file) {
+                    (Some(json), None) => json,
+                    (None, Some(file)) => std::fs::read_to_string(&file)
+                        .with_context(|| format!("failed to read `{}`", file.display()))?,
+                    _ => anyhow::bail!("pass exactly one of `--json` or `--file`"),
+                };
+                println!(
+                    "{}",
+                    operation_start(&image, &name, &raw_json, socket.as_deref(), timeout_ms)?
                 );
             }
             OpCommand::Cancel {

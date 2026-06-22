@@ -644,11 +644,25 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                             let __flowrt_operation_status_server_navigator_plan = app.operation_status_server_navigator_plan.clone();
                             let __flowrt_operation_server_0 = app.navigator.clone();
                             let __flowrt_operation_control_0 = app.operation_control_0.clone();
+                            let __flowrt_operation_start_client_0 = app.operation_client_controller_plan.clone();
                             let introspection_state = introspection_state.clone();
                             let task_name = "__flowrt_operation.controller.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
                             let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(3));
+                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                introspection_state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
+                                    let _ = owner;
+                                    let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&payload).map_err(|error| error.to_string())?;
+                                    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
+                                    let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
+                                    let operation_id = flowrt_operation_id_string(ack.id);
+                                    let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
+                                    Ok(flowrt::IntrospectionOperationStartStatus {
+                                        operation_id,
+                                        operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
+                                    })
+                                });
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
                                     let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1243,11 +1257,25 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let __flowrt_operation_status_server_navigator_plan = app.operation_status_server_navigator_plan.clone();
                             let __flowrt_operation_server_0 = app.navigator.clone();
                             let __flowrt_operation_control_0 = app.operation_control_0.clone();
+                            let __flowrt_operation_start_client_0 = app.operation_client_controller_plan.clone();
                             let introspection_state = introspection_state.clone();
                             let task_name = "__flowrt_operation.controller.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
                             let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(2));
+                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                introspection_state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
+                                    let _ = owner;
+                                    let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&payload).map_err(|error| error.to_string())?;
+                                    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
+                                    let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
+                                    let operation_id = flowrt_operation_id_string(ack.id);
+                                    let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
+                                    Ok(flowrt::IntrospectionOperationStartStatus {
+                                        operation_id,
+                                        operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
+                                    })
+                                });
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
                                     let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1791,11 +1819,25 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let __flowrt_operation_status_server_navigator_plan = app.operation_status_server_navigator_plan.clone();
                             let __flowrt_operation_server_0 = app.navigator.clone();
                             let __flowrt_operation_control_0 = app.operation_control_0.clone();
+                            let __flowrt_operation_start_client_0 = app.operation_client_controller_plan.clone();
                             let introspection_state = introspection_state.clone();
                             let task_name = "__flowrt_operation.controller.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
                             let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(2));
+                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                introspection_state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
+                                    let _ = owner;
+                                    let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&payload).map_err(|error| error.to_string())?;
+                                    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
+                                    let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
+                                    let operation_id = flowrt_operation_id_string(ack.id);
+                                    let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
+                                    Ok(flowrt::IntrospectionOperationStartStatus {
+                                        operation_id,
+                                        operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
+                                    })
+                                });
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
                                     let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

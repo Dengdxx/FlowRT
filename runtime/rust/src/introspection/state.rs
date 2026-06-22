@@ -71,6 +71,15 @@ impl Default for InstanceRuntimeState {
 
 type OperationCancelHandler =
     Arc<dyn Fn(&str) -> std::result::Result<IntrospectionOperationStatus, String> + Send + Sync>;
+type OperationStartHandler = Arc<
+    dyn Fn(
+            Vec<u8>,
+            Option<u64>,
+            Option<String>,
+        ) -> std::result::Result<IntrospectionOperationStartStatus, String>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone, Default)]
 pub struct IntrospectionState {
@@ -99,6 +108,7 @@ pub(super) struct IntrospectionStateInner {
     pub(super) io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
     pub(super) services: BTreeMap<String, IntrospectionServiceStatus>,
     pub(super) operations: BTreeMap<String, IntrospectionOperationStatus>,
+    operation_start_handlers: BTreeMap<String, OperationStartHandler>,
     operation_cancel_handlers: BTreeMap<String, OperationCancelHandler>,
     pub(super) tasks: BTreeMap<String, IntrospectionTaskHealth>,
     pub(super) lanes: BTreeMap<String, IntrospectionLaneHealth>,
@@ -967,6 +977,45 @@ impl IntrospectionState {
         inner
             .operation_cancel_handlers
             .insert(name, Arc::new(handler));
+    }
+
+    /// 注册 operation start control hook。
+    pub fn register_operation_start_handler<F>(&self, name: impl Into<String>, handler: F)
+    where
+        F: Fn(
+                Vec<u8>,
+                Option<u64>,
+                Option<String>,
+            ) -> std::result::Result<IntrospectionOperationStartStatus, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let name = name.into();
+        let mut inner = self.lock_inner();
+        inner
+            .operation_start_handlers
+            .insert(name, Arc::new(handler));
+    }
+
+    /// 请求启动指定 operation endpoint。
+    pub fn start_operation(
+        &self,
+        operation: &str,
+        payload: Vec<u8>,
+        timeout_ms: Option<u64>,
+        owner: Option<String>,
+    ) -> std::result::Result<IntrospectionOperationStartStatus, String> {
+        let handler = {
+            let inner = self.lock_inner();
+            inner.operation_start_handlers.get(operation).cloned()
+        };
+        match handler {
+            Some(handler) => handler(payload, timeout_ms, owner),
+            None => Err(format!(
+                "FlowRT operation `{operation}` does not accept introspection start"
+            )),
+        }
     }
 
     /// 记录 operation 运行态健康状态快照。
