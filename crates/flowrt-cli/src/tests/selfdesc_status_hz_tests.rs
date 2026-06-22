@@ -1827,6 +1827,107 @@ fn operation_result_decodes_payload_json() {
 }
 
 #[test]
+fn operation_follow_decodes_progress_and_result_json() {
+    let root = temp_test_dir("operation-cli-follow");
+    let path = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": 10000
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "PlanFeedback",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "progress",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }, {
+    "type_name": "PlanResult",
+    "size_bytes": 1,
+    "align_bytes": 1,
+    "fields": [{
+      "name": "accepted",
+      "type": "bool",
+      "offset_bytes": 0,
+      "size_bytes": 1,
+      "align_bytes": 1
+    }]
+  }]
+}
+"#;
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_operation_transition(
+        "controller.plan",
+        "111:7:3",
+        "running",
+        Some("controller.plan"),
+        Some(1500),
+    );
+    state.record_operation_progress_payload(
+        "controller.plan",
+        "111:7:3",
+        0,
+        Some(vec![7, 0, 0, 0]),
+    );
+    state.record_operation_result_payload(
+        "controller.plan",
+        "111:7:3",
+        "succeeded",
+        None,
+        Some(vec![1]),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = operation_follow(&path, "111:7:3", Some(&socket), false, None, 5000).unwrap();
+
+    assert!(output.contains("operation_id=111:7:3 state=running"));
+    assert!(output.contains("operation_id=111:7:3 progress_sequence=0 progress={\"progress\":7}"));
+    assert!(output.contains("operation_id=111:7:3 state=succeeded result={\"accepted\":true}"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn operation_cancel_without_socket_refuses_ambiguous_id_without_side_effects() {
     let root = temp_test_dir("operation-cli-ambiguous-cancel");
     let socket_a = root.join("main-a.sock");

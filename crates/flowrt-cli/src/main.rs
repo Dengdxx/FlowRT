@@ -39,11 +39,11 @@ use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd
 use introspection::{
     EchoFormatOptions, EchoSelection, echo_channel, echo_channel_follow, echo_channels,
     echo_channels_follow, live_hz_summary, live_status_json, live_status_summary,
-    load_self_description, operation_cancel, operation_list, operation_result, operation_start,
-    operation_status_summary, params_get, params_list, params_set, params_set_from_file,
-    remote_operation_cancel, remote_operation_start, remote_operation_status, remote_params_get,
-    remote_params_list, remote_params_set, remote_params_set_from_file, self_description_nodes,
-    self_description_summary,
+    load_self_description, operation_cancel, operation_follow, operation_list, operation_result,
+    operation_start, operation_status_summary, params_get, params_list, params_set,
+    params_set_from_file, remote_operation_cancel, remote_operation_start, remote_operation_status,
+    remote_params_get, remote_params_list, remote_params_set, remote_params_set_from_file,
+    self_description_nodes, self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
 use replay::replay_fixture;
@@ -718,6 +718,10 @@ enum OpCommand {
         /// Operation start 请求超时毫秒；省略时使用 contract 默认值。
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         timeout_ms: Option<u64>,
+
+        /// start accepted 后持续输出 progress/state/result，直到 terminal。
+        #[arg(long)]
+        follow: bool,
     },
 
     /// 取消 live Operation invocation。
@@ -748,6 +752,32 @@ enum OpCommand {
 
     /// 读取 live Operation invocation 的 retained result。
     Result {
+        /// `flowrt op start/status` 输出中的 operation id。
+        operation_id: String,
+
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: Option<PathBuf>,
+
+        /// 显式指定 runtime introspection socket。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        /// 精确选择远端 runtime key expression。
+        #[arg(long)]
+        runtime: Option<String>,
+
+        /// 通过 zenoh control-plane 发现远端 runtime。
+        #[arg(long)]
+        remote: bool,
+
+        /// 远程发现和请求超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
+    },
+
+    /// 跟随 live Operation invocation 的 progress/state/result。
+    Follow {
         /// `flowrt op start/status` 输出中的 operation id。
         operation_id: String,
 
@@ -1537,6 +1567,7 @@ fn main() -> Result<()> {
                 runtime,
                 remote,
                 timeout_ms,
+                follow,
             } => {
                 let remote_runtime = control_plane_remote_runtime_arg(
                     "op start",
@@ -1556,21 +1587,46 @@ fn main() -> Result<()> {
                     _ => anyhow::bail!("pass exactly one of `--json` or `--file`"),
                 };
                 if remote {
-                    println!(
-                        "{}",
-                        remote_operation_start(
-                            &image,
-                            &name,
-                            &raw_json,
-                            remote_runtime.as_deref(),
-                            timeout_ms
-                        )?
-                    );
+                    let output = remote_operation_start(
+                        &image,
+                        &name,
+                        &raw_json,
+                        remote_runtime.as_deref(),
+                        timeout_ms,
+                    )?;
+                    println!("{output}");
+                    if follow {
+                        let operation_id = parse_started_operation_id(&output)?;
+                        println!(
+                            "{}",
+                            operation_follow(
+                                &image,
+                                operation_id,
+                                None,
+                                true,
+                                remote_runtime.as_deref(),
+                                5000
+                            )?
+                        );
+                    }
                 } else {
-                    println!(
-                        "{}",
-                        operation_start(&image, &name, &raw_json, socket.as_deref(), timeout_ms)?
-                    );
+                    let output =
+                        operation_start(&image, &name, &raw_json, socket.as_deref(), timeout_ms)?;
+                    println!("{output}");
+                    if follow {
+                        let operation_id = parse_started_operation_id(&output)?;
+                        println!(
+                            "{}",
+                            operation_follow(
+                                &image,
+                                operation_id,
+                                socket.as_deref(),
+                                false,
+                                None,
+                                5000
+                            )?
+                        );
+                    }
                 }
             }
             OpCommand::Cancel {
@@ -1640,6 +1696,37 @@ fn main() -> Result<()> {
                     )?
                 );
             }
+            OpCommand::Follow {
+                operation_id,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            } => {
+                let remote_runtime = control_plane_remote_runtime_arg(
+                    "op follow",
+                    remote,
+                    socket.as_deref(),
+                    runtime.as_deref(),
+                )?;
+                let image = if remote {
+                    require_image_for_remote(image.as_deref())?
+                } else {
+                    require_image_for_local(image.as_deref())?
+                };
+                println!(
+                    "{}",
+                    operation_follow(
+                        &image,
+                        &operation_id,
+                        socket.as_deref(),
+                        remote,
+                        remote_runtime.as_deref(),
+                        timeout_ms
+                    )?
+                );
+            }
         },
         Command::Status { live_only, format } => {
             let output = match format {
@@ -1703,6 +1790,13 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_started_operation_id(output: &str) -> Result<&str> {
+    output
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("operation_id="))
+        .context("operation start output did not contain operation_id")
 }
 
 #[cfg(test)]

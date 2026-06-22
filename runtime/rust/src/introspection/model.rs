@@ -47,6 +47,12 @@ pub enum IntrospectionRequest {
     OperationStatus { operation_id: String },
     /// 请求查询当前 runtime 中保留的 Operation result。
     OperationResult { operation_id: String },
+    /// 请求查询当前 runtime 中的 Operation observation event page。
+    OperationObserve {
+        operation_id: String,
+        after_sequence: u64,
+        limit: Option<usize>,
+    },
     /// 请求启动当前 runtime 中已知的 Operation endpoint。
     OperationStart {
         operation: String,
@@ -114,6 +120,13 @@ pub enum IntrospectionResponse {
     OperationResult {
         handshake: IntrospectionHandshake,
         result: IntrospectionOperationResult,
+    },
+    OperationEvents {
+        handshake: IntrospectionHandshake,
+        operation_id: String,
+        events: Vec<IntrospectionOperationEvent>,
+        next_sequence: u64,
+        terminal: bool,
     },
     RecorderValue {
         handshake: IntrospectionHandshake,
@@ -676,6 +689,25 @@ pub struct IntrospectionOperationResult {
     pub completed_unix_ms: Option<u64>,
     #[serde(default)]
     pub expires_unix_ms: Option<u64>,
+}
+
+/// 单个 Operation observation event。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionOperationEvent {
+    pub sequence: u64,
+    pub kind: String,
+    pub operation_id: String,
+    pub operation: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub progress_sequence: Option<u64>,
+    #[serde(default)]
+    pub payload: Option<Vec<u8>>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub unix_ms: Option<u64>,
 }
 
 /// recorder 运行态状态。

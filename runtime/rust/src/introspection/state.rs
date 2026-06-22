@@ -111,6 +111,7 @@ pub(super) struct IntrospectionStateInner {
     pub(super) services: BTreeMap<String, IntrospectionServiceStatus>,
     pub(super) operations: BTreeMap<String, IntrospectionOperationStatus>,
     operation_results: BTreeMap<String, IntrospectionOperationResult>,
+    operation_events: BTreeMap<String, Vec<IntrospectionOperationEvent>>,
     operation_start_handlers: BTreeMap<String, OperationStartHandler>,
     operation_status_handlers: BTreeMap<String, OperationStatusHandler>,
     operation_cancel_handlers: BTreeMap<String, OperationCancelHandler>,
@@ -119,6 +120,36 @@ pub(super) struct IntrospectionStateInner {
     pub(super) instances: BTreeMap<String, InstanceRuntimeState>,
     pub(super) critical_instances: Vec<String>,
     pub(super) failovers: Vec<IntrospectionFailoverEvent>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_operation_event(
+    inner: &mut IntrospectionStateInner,
+    operation: &str,
+    operation_id: &str,
+    kind: &str,
+    state: Option<String>,
+    progress_sequence: Option<u64>,
+    payload: Option<Vec<u8>>,
+    message: Option<String>,
+    unix_ms: Option<u64>,
+) {
+    let events = inner
+        .operation_events
+        .entry(operation_id.to_string())
+        .or_default();
+    let sequence = events.len() as u64;
+    events.push(IntrospectionOperationEvent {
+        sequence,
+        kind: kind.to_string(),
+        operation_id: operation_id.to_string(),
+        operation: operation.to_string(),
+        state,
+        progress_sequence,
+        payload,
+        message,
+        unix_ms,
+    });
 }
 
 impl IntrospectionState {
@@ -1082,6 +1113,17 @@ impl IntrospectionState {
         let now = unix_time_ms();
         {
             let mut inner = self.lock_inner();
+            push_operation_event(
+                &mut inner,
+                operation,
+                operation_id,
+                "state",
+                Some(state.to_string()),
+                None,
+                None,
+                None,
+                Some(now),
+            );
             let entry = inner.operations.entry(operation.to_string()).or_default();
             entry.name = operation.to_string();
             entry.ready = true;
@@ -1123,8 +1165,31 @@ impl IntrospectionState {
 
     /// 记录 operation progress 事件。
     pub fn record_operation_progress(&self, operation: &str, operation_id: &str, sequence: u64) {
+        self.record_operation_progress_payload(operation, operation_id, sequence, None);
+    }
+
+    /// 记录 operation progress 事件，并保留 typed feedback payload 供 `flowrt op follow` 查询。
+    pub fn record_operation_progress_payload(
+        &self,
+        operation: &str,
+        operation_id: &str,
+        sequence: u64,
+        payload: Option<Vec<u8>>,
+    ) {
+        let now = unix_time_ms();
         {
             let mut inner = self.lock_inner();
+            push_operation_event(
+                &mut inner,
+                operation,
+                operation_id,
+                "progress",
+                None,
+                Some(sequence),
+                payload.clone(),
+                None,
+                Some(now),
+            );
             let entry = inner.operations.entry(operation.to_string()).or_default();
             entry.name = operation.to_string();
             entry.last_event = Some("flowrt.operation.progress".to_string());
@@ -1135,6 +1200,7 @@ impl IntrospectionState {
             serde_json::json!({
                 "operation_id": operation_id,
                 "sequence": sequence,
+                "payload_len": payload.as_ref().map(Vec::len),
             }),
         );
     }
@@ -1165,6 +1231,11 @@ impl IntrospectionState {
             "flowrt.operation.result"
         };
         let now = unix_time_ms();
+        let kind = if error.is_some() || result == "failed" {
+            "error"
+        } else {
+            "result"
+        };
         let result_status = IntrospectionOperationResult {
             operation_id: operation_id.to_string(),
             operation: operation.to_string(),
@@ -1177,6 +1248,17 @@ impl IntrospectionState {
         };
         {
             let mut inner = self.lock_inner();
+            push_operation_event(
+                &mut inner,
+                operation,
+                operation_id,
+                kind,
+                Some(result.to_string()),
+                None,
+                payload.clone(),
+                error.map(str::to_string),
+                Some(now),
+            );
             let entry = inner.operations.entry(operation.to_string()).or_default();
             entry.name = operation.to_string();
             entry.last_event = Some(event.to_string());
@@ -1212,6 +1294,34 @@ impl IntrospectionState {
             .get(operation_id)
             .cloned()
             .ok_or_else(|| format!("unknown FlowRT operation result `{operation_id}`"))
+    }
+
+    /// 查询 Operation observation event page。
+    pub fn observe_operation(
+        &self,
+        operation_id: &str,
+        after_sequence: u64,
+        limit: Option<usize>,
+    ) -> std::result::Result<(Vec<IntrospectionOperationEvent>, u64, bool), String> {
+        let inner = self.lock_inner();
+        let Some(events) = inner.operation_events.get(operation_id) else {
+            return Err(format!("unknown FlowRT operation `{operation_id}`"));
+        };
+        let limit = limit.unwrap_or(64).clamp(1, 1024);
+        let page = events
+            .iter()
+            .filter(|event| event.sequence >= after_sequence)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next_sequence = page
+            .last()
+            .map(|event| event.sequence.saturating_add(1))
+            .unwrap_or(after_sequence);
+        let terminal = events
+            .last()
+            .is_some_and(|event| matches!(event.kind.as_str(), "result" | "error"));
+        Ok((page, next_sequence, terminal))
     }
 
     /// 请求取消指定 operation invocation。

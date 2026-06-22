@@ -226,6 +226,24 @@ fn rust_operation_worker_records_success_result_payload() {
     );
 }
 
+/// Progress feedback 也必须进入 follow event，不能只保留 sequence。
+#[test]
+fn rust_operation_worker_records_progress_payload() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let start_handler = generated_function_block(shell, "let operation_start_handler_0");
+
+    assert!(
+        start_handler.contains("Arc<dyn Fn(flowrt::OperationId, u64, Option<Vec<u8>>)"),
+        "progress hook must accept encoded feedback payload.\n\n{start_handler}"
+    );
+    assert!(
+        start_handler.contains("operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress_with_payload(progress_id, sequence, payload);"),
+        "worker must pass progress payload into OperationControl.\n\n{start_handler}"
+    );
+}
+
 /// 当前 generated Operation runtime 默认 single-owner，第二个 owner 必须被结构化拒绝。
 #[test]
 fn rust_operation_start_handler_rejects_second_owner() {

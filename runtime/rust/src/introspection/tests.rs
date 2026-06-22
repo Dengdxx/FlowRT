@@ -1035,6 +1035,78 @@ fn operation_result_request_returns_retained_payload() {
 }
 
 #[test]
+fn operation_observe_request_returns_ordered_events_and_terminal_flag() {
+    let root = std::env::temp_dir().join(format!(
+        "flowrt-introspection-operation-observe-test-{}",
+        std::process::id()
+    ));
+    let socket = root.join("worker.sock");
+    let handshake = IntrospectionHandshake {
+        protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 42,
+        started_at_unix_ms: 1000,
+        self_description_hash: "abc123".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = IntrospectionState::new();
+    state.record_operation_transition(
+        "controller.plan",
+        "111:7:3",
+        "running",
+        Some("controller.plan"),
+        Some(1500),
+    );
+    state.record_operation_progress_payload(
+        "controller.plan",
+        "111:7:3",
+        0,
+        Some(vec![7, 0, 0, 0]),
+    );
+    state.record_operation_result_payload(
+        "controller.plan",
+        "111:7:3",
+        "succeeded",
+        None,
+        Some(vec![1, 0, 0, 0]),
+    );
+
+    let server =
+        spawn_status_server_at(socket.clone(), handshake, state).expect("server should start");
+
+    let IntrospectionResponse::OperationEvents {
+        operation_id,
+        events,
+        next_sequence,
+        terminal,
+        ..
+    } = request_operation_observe(server.path(), "111:7:3", 0, Some(10))
+        .expect("operation observe request should succeed")
+    else {
+        panic!("operation observe returned wrong response")
+    };
+    assert_eq!(operation_id, "111:7:3");
+    assert!(terminal);
+    assert_eq!(next_sequence, 3);
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].sequence, 0);
+    assert_eq!(events[0].kind, "state");
+    assert_eq!(events[0].state.as_deref(), Some("running"));
+    assert_eq!(events[1].sequence, 1);
+    assert_eq!(events[1].kind, "progress");
+    assert_eq!(events[1].progress_sequence, Some(0));
+    assert_eq!(events[1].payload, Some(vec![7, 0, 0, 0]));
+    assert_eq!(events[2].sequence, 2);
+    assert_eq!(events[2].kind, "result");
+    assert_eq!(events[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(events[2].payload, Some(vec![1, 0, 0, 0]));
+
+    drop(server);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn task_health_recording_and_status_snapshot() {
     let state = IntrospectionState::new();
 

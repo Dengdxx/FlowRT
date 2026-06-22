@@ -17,7 +17,8 @@ pub use client::{
     observe_channel_stream, observe_channel_stream_with_timeout, request_boundary_publish,
     request_boundary_publish_with_timeout, request_channel_snapshot,
     request_channel_snapshot_with_timeout, request_operation_cancel,
-    request_operation_cancel_with_timeout, request_operation_result,
+    request_operation_cancel_with_timeout, request_operation_observe,
+    request_operation_observe_with_timeout, request_operation_result,
     request_operation_result_with_timeout, request_operation_start,
     request_operation_start_with_timeout, request_operation_status,
     request_operation_status_with_timeout, request_param_get, request_param_get_with_timeout,
@@ -33,11 +34,12 @@ pub use model::{
     IntrospectionDiagnostic, IntrospectionDiagnosticMetric, IntrospectionFailoverEvent,
     IntrospectionHandshake, IntrospectionIdentity, IntrospectionInputStatus,
     IntrospectionIoBoundaryResourceStatus, IntrospectionIoBoundaryStatus, IntrospectionLaneHealth,
-    IntrospectionOperationResult, IntrospectionOperationStartStatus, IntrospectionOperationStatus,
-    IntrospectionParamSchema, IntrospectionParamStatus, IntrospectionProcessStatus,
-    IntrospectionRecorderStart, IntrospectionRecorderStatus, IntrospectionRequest,
-    IntrospectionResourceStatus, IntrospectionResponse, IntrospectionRouteStatus,
-    IntrospectionServiceStatus, IntrospectionStatus, IntrospectionTaskHealth,
+    IntrospectionOperationEvent, IntrospectionOperationResult, IntrospectionOperationStartStatus,
+    IntrospectionOperationStatus, IntrospectionParamSchema, IntrospectionParamStatus,
+    IntrospectionProcessStatus, IntrospectionRecorderStart, IntrospectionRecorderStatus,
+    IntrospectionRequest, IntrospectionResourceStatus, IntrospectionResponse,
+    IntrospectionRouteStatus, IntrospectionServiceStatus, IntrospectionStatus,
+    IntrospectionTaskHealth,
 };
 pub use paths::{discover_runtime_sockets, runtime_socket_dir, runtime_socket_path_for_pid};
 pub use probe::{IntrospectionChannelProbe, IntrospectionObserverGuard, IntrospectionProbeRecord};

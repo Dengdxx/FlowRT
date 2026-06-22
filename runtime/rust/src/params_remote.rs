@@ -338,6 +338,23 @@ fn handle_operation_query(
                 },
             }
         }
+        IntrospectionRequest::OperationObserve {
+            operation_id,
+            after_sequence,
+            limit,
+        } => match state.observe_operation(&operation_id, after_sequence, limit) {
+            Ok((events, next_sequence, terminal)) => IntrospectionResponse::OperationEvents {
+                handshake: handshake.clone(),
+                operation_id,
+                events,
+                next_sequence,
+                terminal,
+            },
+            Err(message) => IntrospectionResponse::Error {
+                handshake: handshake.clone(),
+                message,
+            },
+        },
         IntrospectionRequest::OperationStart {
             operation,
             payload,
@@ -513,6 +530,23 @@ pub fn request_remote_operation_result(
 ) -> Result<IntrospectionResponse, ParamsRemoteError> {
     let request = IntrospectionRequest::OperationResult {
         operation_id: operation_id.to_string(),
+    };
+    send_operation_query(session, key_expr, &request, timeout_ms)
+}
+
+/// 向远程 runtime 请求单个 Operation invocation observation events。
+pub fn request_remote_operation_observe(
+    session: &Session,
+    key_expr: &str,
+    operation_id: &str,
+    after_sequence: u64,
+    limit: Option<usize>,
+    timeout_ms: u64,
+) -> Result<IntrospectionResponse, ParamsRemoteError> {
+    let request = IntrospectionRequest::OperationObserve {
+        operation_id: operation_id.to_string(),
+        after_sequence,
+        limit,
     };
     send_operation_query(session, key_expr, &request, timeout_ms)
 }
@@ -1018,5 +1052,51 @@ mod tests {
         assert_eq!(result.operation, "controller.plan");
         assert_eq!(result.state, "succeeded");
         assert_eq!(result.payload, Some(vec![1, 0, 0, 0]));
+    }
+
+    #[test]
+    fn remote_operation_observe_returns_event_page() {
+        let (_zenoh_guard, session) = test_session();
+        let key_expr = operation_key_expr("test_robot", "test_hash", std::process::id());
+        let handshake = make_test_handshake();
+        let state = IntrospectionState::new();
+        state.record_operation_transition(
+            "controller.plan",
+            "111:7:3",
+            "running",
+            Some("controller.plan"),
+            Some(1500),
+        );
+        state.record_operation_progress_payload(
+            "controller.plan",
+            "111:7:3",
+            0,
+            Some(vec![7, 0, 0, 0]),
+        );
+
+        let _server =
+            ZenohOperationServer::open(&session, &key_expr, handshake.clone(), state).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let response =
+            request_remote_operation_observe(&session, &key_expr, "111:7:3", 0, Some(10), 5000)
+                .unwrap();
+        let IntrospectionResponse::OperationEvents {
+            handshake: observed_handshake,
+            operation_id,
+            events,
+            next_sequence,
+            terminal,
+        } = response
+        else {
+            panic!("expected OperationEvents response");
+        };
+        assert_eq!(observed_handshake, handshake);
+        assert_eq!(operation_id, "111:7:3");
+        assert!(!terminal);
+        assert_eq!(next_sequence, 2);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].kind, "progress");
+        assert_eq!(events[1].payload, Some(vec![7, 0, 0, 0]));
     }
 }

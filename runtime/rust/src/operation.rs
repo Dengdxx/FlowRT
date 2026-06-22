@@ -764,6 +764,9 @@ impl<T> OperationProgress<T> {
     }
 }
 
+/// Operation progress 进入 runtime observation log 的 hook。
+pub type OperationProgressHook = dyn Fn(OperationId, u64, Option<Vec<u8>>) + Send + Sync;
+
 /// Operation progress 发布器。
 ///
 /// 生成的 server handler 通过该类型发布 typed feedback。当前 inproc lowering 在 handler
@@ -773,7 +776,7 @@ pub struct OperationProgressPublisher<T> {
     id: OperationId,
     next_sequence: u64,
     events: Vec<OperationProgress<T>>,
-    progress_hook: Option<Arc<dyn Fn(OperationId, u64) + Send + Sync>>,
+    progress_hook: Option<Arc<OperationProgressHook>>,
 }
 
 impl<T: std::fmt::Debug> std::fmt::Debug for OperationProgressPublisher<T> {
@@ -798,27 +801,13 @@ impl<T> OperationProgressPublisher<T> {
     }
 
     /// 构造带 runtime event hook 的 progress 发布器。
-    pub fn with_hook(
-        id: OperationId,
-        progress_hook: Arc<dyn Fn(OperationId, u64) + Send + Sync>,
-    ) -> Self {
+    pub fn with_hook(id: OperationId, progress_hook: Arc<OperationProgressHook>) -> Self {
         Self {
             id,
             next_sequence: 0,
             events: Vec::new(),
             progress_hook: Some(progress_hook),
         }
-    }
-
-    /// 发布一条 progress event。
-    pub fn publish(&mut self, value: T) {
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        if let Some(hook) = &self.progress_hook {
-            hook(self.id, sequence);
-        }
-        self.events
-            .push(OperationProgress::new(self.id, sequence, value));
     }
 
     /// 借用当前已发布事件。
@@ -829,6 +818,23 @@ impl<T> OperationProgressPublisher<T> {
     /// 取走当前已发布事件。
     pub fn drain(&mut self) -> Vec<OperationProgress<T>> {
         std::mem::take(&mut self.events)
+    }
+}
+
+impl<T> OperationProgressPublisher<T>
+where
+    T: FrameCodec,
+{
+    /// 发布一条 progress event。
+    pub fn publish(&mut self, value: T) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        let payload = value.to_frame_vec().ok();
+        if let Some(hook) = &self.progress_hook {
+            hook(self.id, sequence, payload);
+        }
+        self.events
+            .push(OperationProgress::new(self.id, sequence, value));
     }
 }
 
@@ -1279,6 +1285,16 @@ impl OperationControl {
 
     /// 记录 progress publish。
     pub fn publish_progress(&mut self, id: OperationId, sequence: u64) {
+        self.publish_progress_with_payload(id, sequence, None);
+    }
+
+    /// 记录带 typed feedback payload 的 progress publish。
+    pub fn publish_progress_with_payload(
+        &mut self,
+        id: OperationId,
+        sequence: u64,
+        payload: Option<Vec<u8>>,
+    ) {
         if self
             .lifecycle
             .as_ref()
@@ -1293,7 +1309,7 @@ impl OperationControl {
                 kind: OperationRuntimeEventKind::Progress,
                 state: None,
                 sequence: Some(sequence),
-                payload: None,
+                payload,
                 message: None,
             });
         }

@@ -362,8 +362,8 @@ pub(crate) fn emit_rust_operation_new(
                              return;\n\
                          }}\n\
                          let operation_progress_control = operation_worker_control.clone();\n\
-                         let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {{\n\
-                             operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);\n\
+                         let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64, Option<Vec<u8>>) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence, payload| {{\n\
+                             operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress_with_payload(progress_id, sequence, payload);\n\
                          }});\n\
                          let mut progress = flowrt::OperationProgressPublisher::<{feedback_ty}>::with_hook(id, progress_hook);\n\
                          let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
@@ -574,8 +574,8 @@ pub(crate) fn emit_rust_zenoh_operation_endpoints(
                                  return;\n\
                              }}\n\
                              let operation_progress_control = operation_worker_control.clone();\n\
-                             let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {{\n\
-                                 operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);\n\
+                             let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64, Option<Vec<u8>>) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence, payload| {{\n\
+                                 operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress_with_payload(progress_id, sequence, payload);\n\
                              }});\n\
                              let mut progress = flowrt::OperationProgressPublisher::<{feedback_ty}>::with_hook(id, progress_hook);\n\
                              let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
@@ -863,8 +863,8 @@ pub(crate) fn rust_iox2_operation_pending_drain(
          {indent}                    return;\n\
          {indent}                }}\n\
          {indent}                let operation_progress_control = operation_worker_control.clone();\n\
-         {indent}                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {{\n\
-         {indent}                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);\n\
+         {indent}                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64, Option<Vec<u8>>) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence, payload| {{\n\
+         {indent}                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress_with_payload(progress_id, sequence, payload);\n\
          {indent}                }});\n\
          {indent}                let mut progress = flowrt::OperationProgressPublisher::<{feedback_ty}>::with_hook(id, progress_hook);\n\
          {indent}                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\

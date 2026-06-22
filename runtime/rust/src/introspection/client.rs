@@ -326,6 +326,42 @@ pub fn request_operation_result_with_timeout(
     )
 }
 
+/// 向 introspection socket 请求查询 operation observation events。
+pub fn request_operation_observe(
+    path: &Path,
+    operation_id: impl Into<String>,
+    after_sequence: u64,
+    limit: Option<usize>,
+) -> std::io::Result<IntrospectionResponse> {
+    request(
+        path,
+        &IntrospectionRequest::OperationObserve {
+            operation_id: operation_id.into(),
+            after_sequence,
+            limit,
+        },
+    )
+}
+
+/// 向 introspection socket 请求查询 operation observation events，并限制 socket 读写等待时间。
+pub fn request_operation_observe_with_timeout(
+    path: &Path,
+    operation_id: impl Into<String>,
+    after_sequence: u64,
+    limit: Option<usize>,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::OperationObserve {
+            operation_id: operation_id.into(),
+            after_sequence,
+            limit,
+        },
+        timeout,
+    )
+}
+
 /// 向 introspection socket 请求启动 operation endpoint。
 pub fn request_operation_start(
     path: &Path,

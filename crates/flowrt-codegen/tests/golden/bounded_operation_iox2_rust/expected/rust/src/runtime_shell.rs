@@ -741,8 +741,8 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                                     return;
                                                 }
                                                 let operation_progress_control = operation_worker_control.clone();
-                                                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {
-                                                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);
+                                                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64, Option<Vec<u8>>) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence, payload| {
+                                                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress_with_payload(progress_id, sequence, payload);
                                                 });
                                                 let mut progress = flowrt::OperationProgressPublisher::<PlanFeedback>::with_hook(id, progress_hook);
                                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -810,7 +810,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                             }
                                         }
                                         flowrt::OperationRuntimeEventKind::Progress => {
-                                            introspection_state.record_operation_progress("controller.plan", &operation_id, event.sequence.unwrap_or(0));
+                                            introspection_state.record_operation_progress_payload("controller.plan", &operation_id, event.sequence.unwrap_or(0), event.payload);
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
@@ -1384,8 +1384,8 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                                     return;
                                                 }
                                                 let operation_progress_control = operation_worker_control.clone();
-                                                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {
-                                                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);
+                                                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64, Option<Vec<u8>>) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence, payload| {
+                                                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress_with_payload(progress_id, sequence, payload);
                                                 });
                                                 let mut progress = flowrt::OperationProgressPublisher::<PlanFeedback>::with_hook(id, progress_hook);
                                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1453,7 +1453,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                             }
                                         }
                                         flowrt::OperationRuntimeEventKind::Progress => {
-                                            introspection_state.record_operation_progress("controller.plan", &operation_id, event.sequence.unwrap_or(0));
+                                            introspection_state.record_operation_progress_payload("controller.plan", &operation_id, event.sequence.unwrap_or(0), event.payload);
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
@@ -1976,8 +1976,8 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                                     return;
                                                 }
                                                 let operation_progress_control = operation_worker_control.clone();
-                                                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {
-                                                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);
+                                                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64, Option<Vec<u8>>) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence, payload| {
+                                                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress_with_payload(progress_id, sequence, payload);
                                                 });
                                                 let mut progress = flowrt::OperationProgressPublisher::<PlanFeedback>::with_hook(id, progress_hook);
                                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2045,7 +2045,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                             }
                                         }
                                         flowrt::OperationRuntimeEventKind::Progress => {
-                                            introspection_state.record_operation_progress("controller.plan", &operation_id, event.sequence.unwrap_or(0));
+                                            introspection_state.record_operation_progress_payload("controller.plan", &operation_id, event.sequence.unwrap_or(0), event.payload);
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");

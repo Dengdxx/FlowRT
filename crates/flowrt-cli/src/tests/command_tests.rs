@@ -1372,6 +1372,7 @@ fn cli_parses_operation_commands() {
                 runtime,
                 remote,
                 timeout_ms,
+                follow,
             },
     } = start_cli.command
     else {
@@ -1385,6 +1386,7 @@ fn cli_parses_operation_commands() {
     assert_eq!(runtime, None);
     assert!(!remote);
     assert_eq!(timeout_ms, Some(2500));
+    assert!(!follow);
 
     let remote_start_cli = Cli::try_parse_from([
         "flowrt",
@@ -1413,6 +1415,7 @@ fn cli_parses_operation_commands() {
                 runtime,
                 remote,
                 timeout_ms,
+                follow,
             },
     } = remote_start_cli.command
     else {
@@ -1426,6 +1429,7 @@ fn cli_parses_operation_commands() {
     assert_eq!(runtime.as_deref(), Some("flowrt/op/robot/hash1/42"));
     assert!(remote);
     assert_eq!(timeout_ms, Some(2500));
+    assert!(!follow);
 
     let cancel_cli = Cli::try_parse_from([
         "flowrt",
@@ -1481,6 +1485,38 @@ fn cli_parses_operation_commands() {
     } = result_cli.command
     else {
         panic!("op result should parse into Command::Op")
+    };
+    assert_eq!(operation_id, "111:7:3");
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(runtime, None);
+    assert!(!remote);
+    assert_eq!(timeout_ms, 5000);
+
+    let follow_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "follow",
+        "111:7:3",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+    ])
+    .unwrap();
+    let Command::Op {
+        command:
+            OpCommand::Follow {
+                operation_id,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            },
+    } = follow_cli.command
+    else {
+        panic!("op follow should parse into Command::Op")
     };
     assert_eq!(operation_id, "111:7:3");
     assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
