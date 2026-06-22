@@ -41,8 +41,8 @@ use introspection::{
     echo_channels_follow, live_hz_summary, live_status_json, live_status_summary,
     load_self_description, operation_cancel, operation_list, operation_start,
     operation_status_summary, params_get, params_list, params_set, params_set_from_file,
-    remote_operation_cancel, remote_operation_status, remote_params_get, remote_params_list,
-    remote_params_set, remote_params_set_from_file, self_description_nodes,
+    remote_operation_cancel, remote_operation_start, remote_operation_status, remote_params_get,
+    remote_params_list, remote_params_set, remote_params_set_from_file, self_description_nodes,
     self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
@@ -706,6 +706,14 @@ enum OpCommand {
         /// 显式指定 runtime introspection socket。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 精确选择远端 runtime key expression。
+        #[arg(long)]
+        runtime: Option<String>,
+
+        /// 通过 zenoh control-plane 发现远端 runtime。
+        #[arg(long)]
+        remote: bool,
 
         /// Operation start 请求超时毫秒；省略时使用 contract 默认值。
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
@@ -1500,19 +1508,44 @@ fn main() -> Result<()> {
                 file,
                 image,
                 socket,
+                runtime,
+                remote,
                 timeout_ms,
             } => {
-                let image = require_image_for_local(image.as_deref())?;
+                let remote_runtime = control_plane_remote_runtime_arg(
+                    "op start",
+                    remote,
+                    socket.as_deref(),
+                    runtime.as_deref(),
+                )?;
+                let image = if remote {
+                    require_image_for_remote(image.as_deref())?
+                } else {
+                    require_image_for_local(image.as_deref())?
+                };
                 let raw_json = match (json, file) {
                     (Some(json), None) => json,
                     (None, Some(file)) => std::fs::read_to_string(&file)
                         .with_context(|| format!("failed to read `{}`", file.display()))?,
                     _ => anyhow::bail!("pass exactly one of `--json` or `--file`"),
                 };
-                println!(
-                    "{}",
-                    operation_start(&image, &name, &raw_json, socket.as_deref(), timeout_ms)?
-                );
+                if remote {
+                    println!(
+                        "{}",
+                        remote_operation_start(
+                            &image,
+                            &name,
+                            &raw_json,
+                            remote_runtime.as_deref(),
+                            timeout_ms
+                        )?
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        operation_start(&image, &name, &raw_json, socket.as_deref(), timeout_ms)?
+                    );
+                }
             }
             OpCommand::Cancel {
                 operation_id,

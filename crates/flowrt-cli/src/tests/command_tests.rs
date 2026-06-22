@@ -1369,6 +1369,8 @@ fn cli_parses_operation_commands() {
                 file,
                 image,
                 socket,
+                runtime,
+                remote,
                 timeout_ms,
             },
     } = start_cli.command
@@ -1380,6 +1382,49 @@ fn cli_parses_operation_commands() {
     assert_eq!(file, None);
     assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(runtime, None);
+    assert!(!remote);
+    assert_eq!(timeout_ms, Some(2500));
+
+    let remote_start_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "start",
+        "controller.plan",
+        "--json",
+        "{\"target\":7}",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--remote",
+        "--runtime",
+        "flowrt/op/robot/hash1/42",
+        "--timeout-ms",
+        "2500",
+    ])
+    .unwrap();
+    let Command::Op {
+        command:
+            OpCommand::Start {
+                name,
+                json,
+                file,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            },
+    } = remote_start_cli.command
+    else {
+        panic!("remote op start should parse into Command::Op")
+    };
+    assert_eq!(name, "controller.plan");
+    assert_eq!(json.as_deref(), Some("{\"target\":7}"));
+    assert_eq!(file, None);
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(socket, None);
+    assert_eq!(runtime.as_deref(), Some("flowrt/op/robot/hash1/42"));
+    assert!(remote);
     assert_eq!(timeout_ms, Some(2500));
 
     let cancel_cli = Cli::try_parse_from([

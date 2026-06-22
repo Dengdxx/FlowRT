@@ -1201,6 +1201,53 @@ pub(crate) fn operation_start(
     }
 }
 
+pub(crate) fn remote_operation_start(
+    image: &Path,
+    name: &str,
+    raw_json: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let operation = find_operation_endpoint(&self_description, name)?;
+    let payload = encode_boundary_json(&self_description, name, &operation.goal_type, raw_json)?;
+    let request_timeout_ms = 5000;
+    let session = open_zenoh_operation_session()?;
+    let runtime = select_remote_operation_runtime_for_request(
+        &session,
+        &self_description_hash,
+        runtime_key_expr,
+        request_timeout_ms,
+    )?;
+    let response = flowrt::request_remote_operation_start(
+        &session,
+        &runtime.key_expr,
+        name,
+        payload,
+        timeout_ms,
+        Some("flowrt.cli".to_string()),
+        request_timeout_ms,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!("failed to start remote operation `{name}` via `{runtime}`: {error}")
+    })?;
+    match response {
+        flowrt::IntrospectionResponse::OperationStarted { handshake, started } => {
+            ensure_remote_handshake(&handshake, &self_description_hash, &runtime)?;
+            eprintln!("target: {runtime}");
+            Ok(format!(
+                "operation_id={} {}",
+                started.operation_id,
+                format_operation_status(&started.operation, None)
+            ))
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!("failed to start remote operation `{name}` via `{runtime}`: {message}");
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
 fn find_operation_endpoint<'a>(
     self_description: &'a SelfDescription,
     name: &str,

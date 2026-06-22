@@ -559,8 +559,8 @@ pub use operation::{
 pub use params_remote::{
     ParamsRemoteError, ZenohOperationServer, ZenohParamsServer, operation_key_expr,
     params_key_expr, request_remote_operation_cancel, request_remote_operation_overview,
-    request_remote_operation_status, request_remote_param_get, request_remote_param_list,
-    request_remote_param_set,
+    request_remote_operation_start, request_remote_operation_status, request_remote_param_get,
+    request_remote_param_list, request_remote_param_set,
 };
 pub use recorder::{
     RecorderRuntimeMetadata, RecorderStartConfig, RecorderStatus, RecorderTap, RecorderTapOutcome,

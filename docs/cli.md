@@ -41,7 +41,7 @@ flowrt params set <instance.param> <json-value> --image <path> [--socket <path>]
 flowrt params set --file <path/to/params.json> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt op list [--image <path>] [--socket <path>]
 flowrt op status [operation|operation_id] [--socket <path>] [--image <path> --remote] [--runtime <key_expr>] [--timeout-ms <ms>]
-flowrt op start <operation> (--json <goal-json>|--file <goal-json-file>) --image <path> [--socket <path>] [--timeout-ms <ms>]
+flowrt op start <operation> (--json <goal-json>|--file <goal-json-file>) --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt op cancel <operation_id> [--socket <path>] [--image <path> --remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt status [--live-only] [--format <text|json>]
 flowrt hz [channel] [--socket <path>] [--window-ms <ms>]
@@ -1284,6 +1284,7 @@ flowrt op status 111:7:3 --socket /run/user/1000/flowrt/12345.sock
 flowrt op status 111:7:3 --image flowrt/selfdesc/selfdesc.json --remote
 flowrt op status 111:7:3 --image flowrt/selfdesc/selfdesc.json --remote --runtime flowrt/op/robot/hash/12345
 flowrt op start controller.plan --json '{"target":7}' --image flowrt/selfdesc/selfdesc.json --socket /run/user/1000/flowrt/12345.sock --timeout-ms 2500
+flowrt op start controller.plan --json '{"target":7}' --image flowrt/selfdesc/selfdesc.json --remote --runtime flowrt/op/robot/hash/12345 --timeout-ms 2500
 flowrt op cancel 111:7:3 --socket /run/user/1000/flowrt/12345.sock
 flowrt op cancel 111:7:3 --image flowrt/selfdesc/selfdesc.json --remote
 ```
@@ -1352,8 +1353,11 @@ contract 中的默认超时。成功输出 accepted invocation id 和当前 live
 operation_id=111:7:3 operation=controller.plan ready=true state=starting owner=controller.plan deadline_ms=2500 running=1 queued=0 current_operation_ids=[111:7:3] total_started=1 succeeded=0 failed=0 canceled=0 timeout=0 preempted=0 last_event=flowrt.operation.state_changed last_error=none last_transition_ms=1717800000000 socket=...
 ```
 
-当前 `op start` 是本机 Rust generated Operation command-plane 基座；远程 Operation start、
-typed result/follow 和 replay 驱动 Operation 执行会在后续切片接入。
+远程 `op start <operation> --remote` 使用同一 self-description goal 编码路径和
+`flowrt/op/{package}/{selfdesc_hash}/{pid}` targeting 模型。CLI 不暴露 zenoh queryable 或
+session；用户只选择 Operation 与 runtime。当前 `--timeout-ms` 表示 Operation start timeout
+override，不表示 zenoh discovery timeout。typed result/follow 和 replay 驱动 Operation 执行
+会在后续切片接入。
 
 `op cancel <operation_id>` 通过 runtime introspection socket 发送 `operation_cancel` 请求。
 `operation_id` 来自 `op status` 的 `current_operation_ids` 字段。runtime 会把请求交给

@@ -326,6 +326,21 @@ fn handle_operation_query(
                 },
             }
         }
+        IntrospectionRequest::OperationStart {
+            operation,
+            payload,
+            timeout_ms,
+            owner,
+        } => match state.start_operation(&operation, payload, timeout_ms, owner) {
+            Ok(started) => IntrospectionResponse::OperationStarted {
+                handshake: handshake.clone(),
+                started,
+            },
+            Err(message) => IntrospectionResponse::Error {
+                handshake: handshake.clone(),
+                message,
+            },
+        },
         IntrospectionRequest::OperationCancel { operation_id } => {
             match state.cancel_operation(&operation_id) {
                 Ok(operation) => IntrospectionResponse::OperationValue {
@@ -443,6 +458,25 @@ pub fn request_remote_operation_overview(
 ) -> Result<IntrospectionResponse, ParamsRemoteError> {
     let request = IntrospectionRequest::Status;
     send_operation_query(session, key_expr, &request, timeout_ms)
+}
+
+/// 向远程 runtime 请求启动 Operation invocation。
+pub fn request_remote_operation_start(
+    session: &Session,
+    key_expr: &str,
+    operation: &str,
+    payload: Vec<u8>,
+    timeout_ms: Option<u64>,
+    owner: Option<String>,
+    request_timeout_ms: u64,
+) -> Result<IntrospectionResponse, ParamsRemoteError> {
+    let request = IntrospectionRequest::OperationStart {
+        operation: operation.to_string(),
+        payload,
+        timeout_ms,
+        owner,
+    };
+    send_operation_query(session, key_expr, &request, request_timeout_ms)
 }
 
 /// 向远程 runtime 请求单个 Operation invocation 状态。
@@ -830,11 +864,38 @@ mod tests {
     }
 
     #[test]
-    fn remote_operation_status_and_cancel_use_introspection_state() {
+    fn remote_operation_start_status_and_cancel_use_introspection_state() {
         let (_zenoh_guard, session) = test_session();
         let key_expr = operation_key_expr("test_robot", "test_hash", std::process::id());
         let handshake = make_test_handshake();
         let state = IntrospectionState::new();
+        state.register_operation_start_handler("controller.plan", |payload, timeout_ms, owner| {
+            assert_eq!(payload, vec![7, 0, 0, 0]);
+            assert_eq!(timeout_ms, Some(2500));
+            assert_eq!(owner.as_deref(), Some("flowrt.cli"));
+            Ok(crate::introspection::IntrospectionOperationStartStatus {
+                operation_id: "111:7:3".to_string(),
+                operation: crate::introspection::IntrospectionOperationStatus {
+                    name: "controller.plan".to_string(),
+                    ready: true,
+                    running: 1,
+                    queued: 0,
+                    current_operation_ids: vec!["111:7:3".to_string()],
+                    total_started: 1,
+                    succeeded_count: 0,
+                    failed_count: 0,
+                    canceled_count: 0,
+                    timeout_count: 0,
+                    preempted_count: 0,
+                    current_state: Some("starting".to_string()),
+                    current_owner: Some("flowrt.cli".to_string()),
+                    current_deadline_ms: Some(2500),
+                    last_event: Some("flowrt.operation.state_changed".to_string()),
+                    last_error: None,
+                    last_transition_ms: Some(12345),
+                },
+            })
+        });
         state.record_operation_health(crate::introspection::IntrospectionOperationStatus {
             name: "controller.plan".to_string(),
             ready: true,
@@ -858,6 +919,27 @@ mod tests {
         let _server =
             ZenohOperationServer::open(&session, &key_expr, handshake.clone(), state).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let started = request_remote_operation_start(
+            &session,
+            &key_expr,
+            "controller.plan",
+            vec![7, 0, 0, 0],
+            Some(2500),
+            Some("flowrt.cli".to_string()),
+            5000,
+        )
+        .unwrap();
+        let IntrospectionResponse::OperationStarted {
+            handshake: started_handshake,
+            started,
+        } = started
+        else {
+            panic!("expected OperationStarted start response");
+        };
+        assert_eq!(started_handshake, handshake);
+        assert_eq!(started.operation_id, "111:7:3");
+        assert_eq!(started.operation.current_state.as_deref(), Some("starting"));
 
         let status = request_remote_operation_status(&session, &key_expr, "111:7:3", 5000).unwrap();
         let IntrospectionResponse::OperationValue {

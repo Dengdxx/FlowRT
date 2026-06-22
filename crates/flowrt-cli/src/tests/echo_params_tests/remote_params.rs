@@ -7,8 +7,19 @@ fn parse_remote_params_key_expr_extracts_package_hash_and_pid() {
 }
 
 #[test]
+fn parse_remote_operation_key_expr_extracts_package_hash_and_pid() {
+    let result = introspection::parse_remote_operation_key_expr("flowrt/op/robot_demo/abc123/42");
+    assert_eq!(result, Some(("robot_demo", "abc123", "42")));
+}
+
+#[test]
 fn parse_remote_params_key_expr_rejects_invalid_prefix() {
     assert!(introspection::parse_remote_params_key_expr("flowrt/status/robot/abc/1").is_none());
+}
+
+#[test]
+fn parse_remote_operation_key_expr_rejects_invalid_prefix() {
+    assert!(introspection::parse_remote_operation_key_expr("flowrt/params/robot/abc/1").is_none());
 }
 
 #[test]
