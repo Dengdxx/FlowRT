@@ -326,6 +326,18 @@ fn handle_operation_query(
                 },
             }
         }
+        IntrospectionRequest::OperationResult { operation_id } => {
+            match state.result_operation(&operation_id) {
+                Ok(result) => IntrospectionResponse::OperationResult {
+                    handshake: handshake.clone(),
+                    result,
+                },
+                Err(message) => IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message,
+                },
+            }
+        }
         IntrospectionRequest::OperationStart {
             operation,
             payload,
@@ -487,6 +499,19 @@ pub fn request_remote_operation_status(
     timeout_ms: u64,
 ) -> Result<IntrospectionResponse, ParamsRemoteError> {
     let request = IntrospectionRequest::OperationStatus {
+        operation_id: operation_id.to_string(),
+    };
+    send_operation_query(session, key_expr, &request, timeout_ms)
+}
+
+/// 向远程 runtime 请求单个 Operation invocation result。
+pub fn request_remote_operation_result(
+    session: &Session,
+    key_expr: &str,
+    operation_id: &str,
+    timeout_ms: u64,
+) -> Result<IntrospectionResponse, ParamsRemoteError> {
+    let request = IntrospectionRequest::OperationResult {
         operation_id: operation_id.to_string(),
     };
     send_operation_query(session, key_expr, &request, timeout_ms)
@@ -959,5 +984,39 @@ mod tests {
             panic!("expected OperationValue cancel response");
         };
         assert_eq!(operation.current_state.as_deref(), Some("cancel_requested"));
+    }
+
+    #[test]
+    fn remote_operation_result_uses_introspection_state() {
+        let (_zenoh_guard, session) = test_session();
+        let key_expr = operation_key_expr("test_robot", "test_hash", std::process::id());
+        let handshake = make_test_handshake();
+        let state = IntrospectionState::new();
+        state.record_operation_result_payload(
+            "controller.plan",
+            "111:7:3",
+            "succeeded",
+            None,
+            Some(vec![1, 0, 0, 0]),
+        );
+
+        let _server =
+            ZenohOperationServer::open(&session, &key_expr, handshake.clone(), state).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let response =
+            request_remote_operation_result(&session, &key_expr, "111:7:3", 5000).unwrap();
+        let IntrospectionResponse::OperationResult {
+            handshake: result_handshake,
+            result,
+        } = response
+        else {
+            panic!("expected OperationResult response");
+        };
+        assert_eq!(result_handshake, handshake);
+        assert_eq!(result.operation_id, "111:7:3");
+        assert_eq!(result.operation, "controller.plan");
+        assert_eq!(result.state, "succeeded");
+        assert_eq!(result.payload, Some(vec![1, 0, 0, 0]));
     }
 }

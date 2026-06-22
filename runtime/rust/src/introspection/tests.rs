@@ -990,6 +990,51 @@ fn status_server_starts_operation_with_registered_handler() {
 }
 
 #[test]
+fn operation_result_request_returns_retained_payload() {
+    let root = std::env::temp_dir().join(format!(
+        "flowrt-introspection-operation-result-test-{}",
+        std::process::id()
+    ));
+    let socket = root.join("worker.sock");
+    let handshake = IntrospectionHandshake {
+        protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 42,
+        started_at_unix_ms: 1000,
+        self_description_hash: "abc123".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = IntrospectionState::new();
+    state.record_operation_result_payload(
+        "controller.plan",
+        "111:7:3",
+        "succeeded",
+        None,
+        Some(vec![1, 0, 0, 0]),
+    );
+
+    let server =
+        spawn_status_server_at(socket.clone(), handshake, state).expect("server should start");
+
+    let IntrospectionResponse::OperationResult { result, .. } =
+        request_operation_result(server.path(), "111:7:3")
+            .expect("operation result request should succeed")
+    else {
+        panic!("operation result returned wrong response")
+    };
+    assert_eq!(result.operation_id, "111:7:3");
+    assert_eq!(result.operation, "controller.plan");
+    assert_eq!(result.state, "succeeded");
+    assert_eq!(result.result.as_deref(), Some("succeeded"));
+    assert_eq!(result.error, None);
+    assert_eq!(result.payload, Some(vec![1, 0, 0, 0]));
+
+    drop(server);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn task_health_recording_and_status_snapshot() {
     let state = IntrospectionState::new();
 

@@ -84,7 +84,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   控制面已接入 start/status/cancel 基座：generated Rust shell 暴露
   `flowrt/op/<package>/<selfdesc_hash>/<pid>` queryable，CLI 可用 `--remote` 发现匹配
   self-description hash 的 runtime 或用 `--runtime` 精确选择，并可用 self-description
-  Message ABI 编码 goal JSON 启动远端 generated Rust Operation。typed result/follow 和
+  Message ABI 编码 goal JSON 启动远端 generated Rust Operation。`flowrt op result`
+  已可按 invocation id 读取 retained typed result payload，并用 self-description Message ABI
+  解码为 JSON；本机 socket 与远程 zenoh Operation control-plane 均支持。typed follow 和
   replay 驱动 Operation 执行仍不属于当前范围。
 - 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke、v0.25.1 的
   `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据，以及
@@ -1046,8 +1048,11 @@ CLI 使用 self-description Message ABI 把 goal JSON 编码为 canonical payloa
 Rust shell 注册 start/status hook，并复用 typed Operation client 与 `OperationControl`
 路径启动和查询 invocation。远程 zenoh Operation start/status/cancel 已复用同一
 `IntrospectionRequest` / `IntrospectionResponse` 语义，key expression 为
-`flowrt/op/<package>/<selfdesc_hash>/<pid>`；typed result/follow 和 replay 驱动执行不属于
-当前范围。
+`flowrt/op/<package>/<selfdesc_hash>/<pid>`。未发布版本还接入了 `OperationResult`
+introspection 请求：generated Rust worker 不再丢弃 `OperationHandlerResult::Succeeded`
+返回值，而是把 typed result 编码为 canonical Message ABI payload，scheduler hidden task
+投影到 retained introspection result；`flowrt op result <operation_id> --image ...` 本机和
+远程都可按 self-description 解码为 JSON。typed follow 和 replay 驱动执行不属于当前范围。
 
 `v0.6.0` 的录制系统只做 record，不做 replay。录制使用 MCAP 作为容器，FlowRT 自有
 record envelope 作为 schema，覆盖 channel sample、parameter control-plane event、

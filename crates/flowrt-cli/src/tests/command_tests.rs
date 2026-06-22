@@ -1457,6 +1457,38 @@ fn cli_parses_operation_commands() {
     assert!(!remote);
     assert_eq!(timeout_ms, 5000);
 
+    let result_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "result",
+        "111:7:3",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+    ])
+    .unwrap();
+    let Command::Op {
+        command:
+            OpCommand::Result {
+                operation_id,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            },
+    } = result_cli.command
+    else {
+        panic!("op result should parse into Command::Op")
+    };
+    assert_eq!(operation_id, "111:7:3");
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(runtime, None);
+    assert!(!remote);
+    assert_eq!(timeout_ms, 5000);
+
     let remote_status_cli = Cli::try_parse_from([
         "flowrt",
         "op",

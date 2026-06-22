@@ -39,7 +39,7 @@ use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd
 use introspection::{
     EchoFormatOptions, EchoSelection, echo_channel, echo_channel_follow, echo_channels,
     echo_channels_follow, live_hz_summary, live_status_json, live_status_summary,
-    load_self_description, operation_cancel, operation_list, operation_start,
+    load_self_description, operation_cancel, operation_list, operation_result, operation_start,
     operation_status_summary, params_get, params_list, params_set, params_set_from_file,
     remote_operation_cancel, remote_operation_start, remote_operation_status, remote_params_get,
     remote_params_list, remote_params_set, remote_params_set_from_file, self_description_nodes,
@@ -723,6 +723,32 @@ enum OpCommand {
     /// 取消 live Operation invocation。
     Cancel {
         /// `flowrt op status` 输出中的 operation id。
+        operation_id: String,
+
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: Option<PathBuf>,
+
+        /// 显式指定 runtime introspection socket。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        /// 精确选择远端 runtime key expression。
+        #[arg(long)]
+        runtime: Option<String>,
+
+        /// 通过 zenoh control-plane 发现远端 runtime。
+        #[arg(long)]
+        remote: bool,
+
+        /// 远程发现和请求超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
+    },
+
+    /// 读取 live Operation invocation 的 retained result。
+    Result {
+        /// `flowrt op start/status` 输出中的 operation id。
         operation_id: String,
 
         /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
@@ -1582,6 +1608,37 @@ fn main() -> Result<()> {
                     }
                     println!("{}", operation_cancel(&operation_id, socket.as_deref())?);
                 }
+            }
+            OpCommand::Result {
+                operation_id,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            } => {
+                let remote_runtime = control_plane_remote_runtime_arg(
+                    "op result",
+                    remote,
+                    socket.as_deref(),
+                    runtime.as_deref(),
+                )?;
+                let image = if remote {
+                    require_image_for_remote(image.as_deref())?
+                } else {
+                    require_image_for_local(image.as_deref())?
+                };
+                println!(
+                    "{}",
+                    operation_result(
+                        &image,
+                        &operation_id,
+                        socket.as_deref(),
+                        remote,
+                        remote_runtime.as_deref(),
+                        timeout_ms,
+                    )?
+                );
             }
         },
         Command::Status { live_only, format } => {

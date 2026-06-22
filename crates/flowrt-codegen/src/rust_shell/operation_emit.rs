@@ -369,12 +369,15 @@ pub(crate) fn emit_rust_operation_new(
                          let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
                              {operation_handler_call}\n\
                          }}));\n\
-                         let terminal_state = match result {{\n\
-                             Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,\n\
-                             Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => flowrt::OperationState::Failed,\n\
-                             Ok(flowrt::OperationHandlerResult::Canceled) => flowrt::OperationState::Cancelled,\n\
+                         let (terminal_state, result_payload) = match result {{\n\
+                             Ok(flowrt::OperationHandlerResult::Succeeded(value)) => match flowrt::FrameCodec::to_frame_vec(&value) {{\n\
+                                 Ok(payload) => (flowrt::OperationState::Succeeded, Some(payload)),\n\
+                                 Err(_) => (flowrt::OperationState::Failed, None),\n\
+                             }},\n\
+                             Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => (flowrt::OperationState::Failed, None),\n\
+                             Ok(flowrt::OperationHandlerResult::Canceled) => (flowrt::OperationState::Cancelled, None),\n\
                          }};\n\
-                         let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, terminal_state);\n\
+                         let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete_with_payload(id, terminal_state, result_payload);\n\
                      }});\n\
                  if spawn_result.is_err() {{\n\
                      let _ = {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, flowrt::OperationState::Failed);\n\
@@ -578,12 +581,15 @@ pub(crate) fn emit_rust_zenoh_operation_endpoints(
                              let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
                                  {operation_handler_call}\n\
                              }}));\n\
-                             let terminal_state = match result {{\n\
-                                 Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,\n\
-                                 Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => flowrt::OperationState::Failed,\n\
-                                 Ok(flowrt::OperationHandlerResult::Canceled) => flowrt::OperationState::Cancelled,\n\
+                             let (terminal_state, result_payload) = match result {{\n\
+                                 Ok(flowrt::OperationHandlerResult::Succeeded(value)) => match flowrt::FrameCodec::to_frame_vec(&value) {{\n\
+                                     Ok(payload) => (flowrt::OperationState::Succeeded, Some(payload)),\n\
+                                     Err(_) => (flowrt::OperationState::Failed, None),\n\
+                                 }},\n\
+                                 Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => (flowrt::OperationState::Failed, None),\n\
+                                 Ok(flowrt::OperationHandlerResult::Canceled) => (flowrt::OperationState::Cancelled, None),\n\
                              }};\n\
-                             let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, terminal_state);\n\
+                             let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete_with_payload(id, terminal_state, result_payload);\n\
                          }});\n\
                      if spawn_result.is_err() {{\n\
                          let _ = {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, flowrt::OperationState::Failed);\n\
@@ -864,12 +870,15 @@ pub(crate) fn rust_iox2_operation_pending_drain(
          {indent}                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
          {indent}                    {operation_handler_call}\n\
          {indent}                }}));\n\
-         {indent}                let terminal_state = match result {{\n\
-         {indent}                    Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,\n\
-         {indent}                    Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => flowrt::OperationState::Failed,\n\
-         {indent}                    Ok(flowrt::OperationHandlerResult::Canceled) => flowrt::OperationState::Cancelled,\n\
+         {indent}                let (terminal_state, result_payload) = match result {{\n\
+         {indent}                    Ok(flowrt::OperationHandlerResult::Succeeded(value)) => match flowrt::FrameCodec::to_frame_vec(&value) {{\n\
+         {indent}                        Ok(payload) => (flowrt::OperationState::Succeeded, Some(payload)),\n\
+         {indent}                        Err(_) => (flowrt::OperationState::Failed, None),\n\
+         {indent}                    }},\n\
+         {indent}                    Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => (flowrt::OperationState::Failed, None),\n\
+         {indent}                    Ok(flowrt::OperationHandlerResult::Canceled) => (flowrt::OperationState::Cancelled, None),\n\
          {indent}                }};\n\
-         {indent}                let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, terminal_state);\n\
+         {indent}                let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete_with_payload(id, terminal_state, result_payload);\n\
          {indent}            }});\n\
          {indent}        if spawn_result.is_err() {{\n\
          {indent}            let _ = operation_start_control_{index}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, flowrt::OperationState::Failed);\n\

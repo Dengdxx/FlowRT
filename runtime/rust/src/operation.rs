@@ -1006,6 +1006,7 @@ pub struct OperationRuntimeEvent {
     pub kind: OperationRuntimeEventKind,
     pub state: Option<OperationState>,
     pub sequence: Option<u64>,
+    pub payload: Option<Vec<u8>>,
     pub message: Option<&'static str>,
 }
 
@@ -1161,7 +1162,17 @@ impl OperationControl {
         id: OperationId,
         terminal_state: OperationState,
     ) -> Result<(), OperationControlError> {
-        self.complete_at(id, terminal_state, monotonic_time_ms())
+        self.complete_with_payload(id, terminal_state, None)
+    }
+
+    /// 完成 invocation，并附带已编码的 typed result payload。
+    pub fn complete_with_payload(
+        &mut self,
+        id: OperationId,
+        terminal_state: OperationState,
+        payload: Option<Vec<u8>>,
+    ) -> Result<(), OperationControlError> {
+        self.complete_with_payload_at(id, terminal_state, payload, monotonic_time_ms())
     }
 
     /// 完成 invocation，并用显式时间驱动 result retention。
@@ -1169,6 +1180,17 @@ impl OperationControl {
         &mut self,
         id: OperationId,
         terminal_state: OperationState,
+        completed_at_ms: u64,
+    ) -> Result<(), OperationControlError> {
+        self.complete_with_payload_at(id, terminal_state, None, completed_at_ms)
+    }
+
+    /// 完成 invocation，并用显式时间驱动 result retention，同时携带 typed result payload。
+    pub fn complete_with_payload_at(
+        &mut self,
+        id: OperationId,
+        terminal_state: OperationState,
+        payload: Option<Vec<u8>>,
         completed_at_ms: u64,
     ) -> Result<(), OperationControlError> {
         if !terminal_state.is_terminal() {
@@ -1203,7 +1225,7 @@ impl OperationControl {
             lifecycle.transition(terminal_state)?;
             self.health.record_state(terminal_state);
             self.handler_active = false;
-            self.push_result_event(id, terminal_state);
+            self.push_result_event(id, terminal_state, payload);
             self.push_state_event(id, terminal_state);
             let mut snapshot = lifecycle.snapshot();
             snapshot.health = self.health.snapshot();
@@ -1241,7 +1263,7 @@ impl OperationControl {
             entry.expires_at_ms = expires_at_ms;
             let should_remove = entry.expires_at_ms.is_none();
             let _ = entry;
-            self.push_result_event(id, terminal_state);
+            self.push_result_event(id, terminal_state, payload);
             self.push_state_event(id, terminal_state);
             if should_remove {
                 self.retained_results.remove(&id);
@@ -1271,6 +1293,7 @@ impl OperationControl {
                 kind: OperationRuntimeEventKind::Progress,
                 state: None,
                 sequence: Some(sequence),
+                payload: None,
                 message: None,
             });
         }
@@ -1430,11 +1453,17 @@ impl OperationControl {
             kind: OperationRuntimeEventKind::StateChanged,
             state: Some(state),
             sequence: None,
+            payload: None,
             message: None,
         });
     }
 
-    fn push_result_event(&mut self, id: OperationId, terminal_state: OperationState) {
+    fn push_result_event(
+        &mut self,
+        id: OperationId,
+        terminal_state: OperationState,
+        payload: Option<Vec<u8>>,
+    ) {
         let kind = if terminal_state == OperationState::Failed {
             OperationRuntimeEventKind::Error
         } else {
@@ -1445,6 +1474,7 @@ impl OperationControl {
             kind,
             state: Some(terminal_state),
             sequence: None,
+            payload,
             message: None,
         });
     }

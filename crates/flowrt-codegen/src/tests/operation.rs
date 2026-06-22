@@ -204,6 +204,28 @@ fn rust_operation_start_handler_spawns_background_invocation() {
     );
 }
 
+/// 成功的 Operation result 必须进入 runtime event，供 `flowrt op result` 读取。
+#[test]
+fn rust_operation_worker_records_success_result_payload() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let start_handler = generated_function_block(shell, "let operation_start_handler_0");
+
+    assert!(
+        start_handler.contains("OperationHandlerResult::Succeeded(value)"),
+        "worker must bind the typed success value instead of discarding it.\n\n{start_handler}"
+    );
+    assert!(
+        start_handler.contains("flowrt::FrameCodec::to_frame_vec(&value)"),
+        "worker must encode typed result with Message ABI.\n\n{start_handler}"
+    );
+    assert!(
+        start_handler.contains("complete_with_payload(id, terminal_state, result_payload"),
+        "worker must pass encoded result payload into OperationControl.\n\n{start_handler}"
+    );
+}
+
 /// 当前 generated Operation runtime 默认 single-owner，第二个 owner 必须被结构化拒绝。
 #[test]
 fn rust_operation_start_handler_rejects_second_owner() {

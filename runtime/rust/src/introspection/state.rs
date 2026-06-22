@@ -110,6 +110,7 @@ pub(super) struct IntrospectionStateInner {
     pub(super) io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
     pub(super) services: BTreeMap<String, IntrospectionServiceStatus>,
     pub(super) operations: BTreeMap<String, IntrospectionOperationStatus>,
+    operation_results: BTreeMap<String, IntrospectionOperationResult>,
     operation_start_handlers: BTreeMap<String, OperationStartHandler>,
     operation_status_handlers: BTreeMap<String, OperationStatusHandler>,
     operation_cancel_handlers: BTreeMap<String, OperationCancelHandler>,
@@ -1146,10 +1147,33 @@ impl IntrospectionState {
         result: &str,
         error: Option<&str>,
     ) {
+        self.record_operation_result_payload(operation, operation_id, result, error, None);
+    }
+
+    /// 记录 operation result/error 事件，并保留 typed payload 供 `flowrt op result` 查询。
+    pub fn record_operation_result_payload(
+        &self,
+        operation: &str,
+        operation_id: &str,
+        result: &str,
+        error: Option<&str>,
+        payload: Option<Vec<u8>>,
+    ) {
         let event = if error.is_some() || result == "failed" {
             "flowrt.operation.error"
         } else {
             "flowrt.operation.result"
+        };
+        let now = unix_time_ms();
+        let result_status = IntrospectionOperationResult {
+            operation_id: operation_id.to_string(),
+            operation: operation.to_string(),
+            state: result.to_string(),
+            result: error.is_none().then(|| result.to_string()),
+            error: error.map(str::to_string),
+            payload: payload.clone(),
+            completed_unix_ms: Some(now),
+            expires_unix_ms: None,
         };
         {
             let mut inner = self.lock_inner();
@@ -1157,6 +1181,13 @@ impl IntrospectionState {
             entry.name = operation.to_string();
             entry.last_event = Some(event.to_string());
             entry.last_error = error.map(str::to_string);
+            entry.current_state = Some(result.to_string());
+            entry.current_operation_ids.retain(|id| id != operation_id);
+            entry.running = 0;
+            entry.last_transition_ms = Some(now);
+            inner
+                .operation_results
+                .insert(operation_id.to_string(), result_status);
         }
         self.recorder.record_operation_event_json(
             operation,
@@ -1165,8 +1196,22 @@ impl IntrospectionState {
                 "operation_id": operation_id,
                 "result": result,
                 "error": error,
+                "payload_len": payload.as_ref().map(Vec::len),
             }),
         );
+    }
+
+    /// 查询保留的 operation result。
+    pub fn result_operation(
+        &self,
+        operation_id: &str,
+    ) -> std::result::Result<IntrospectionOperationResult, String> {
+        let inner = self.lock_inner();
+        inner
+            .operation_results
+            .get(operation_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown FlowRT operation result `{operation_id}`"))
     }
 
     /// 请求取消指定 operation invocation。

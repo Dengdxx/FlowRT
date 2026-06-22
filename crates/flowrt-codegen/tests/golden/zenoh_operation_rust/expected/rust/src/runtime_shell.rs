@@ -363,6 +363,26 @@ operation_control_0: operation_control_0.clone(),
             introspection_state.clone(),
         )
         .ok();
+        let remote_operation_key_expr = flowrt::operation_key_expr(PACKAGE_NAME, selfdesc::self_description_hash(), std::process::id());
+        let _remote_operation_server = match flowrt::ZenohOperationServer::open_from_environment(
+            &remote_operation_key_expr,
+            flowrt::IntrospectionHandshake {
+                protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+                pid: std::process::id(),
+                started_at_unix_ms: 0,
+                self_description_hash: selfdesc::self_description_hash().to_string(),
+                package: PACKAGE_NAME.to_string(),
+                process: "main".to_string(),
+                runtime: "rust".to_string(),
+            },
+            introspection_state.clone(),
+        ) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                eprintln!("FlowRT: failed to start zenoh operation control-plane {}: {error}", remote_operation_key_expr);
+                None
+            }
+        };
         let mut controller_initialized = false;
         let mut controller_started = false;
         introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
@@ -458,12 +478,15 @@ operation_worker_server
 .unwrap_or_else(|poisoned| poisoned.into_inner())
 .on_plan_operation(&goal_for_worker, cancel.clone(), &mut progress)
 }));
-let terminal_state = match result {
-Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,
-Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => flowrt::OperationState::Failed,
-Ok(flowrt::OperationHandlerResult::Canceled) => flowrt::OperationState::Cancelled,
+let (terminal_state, result_payload) = match result {
+Ok(flowrt::OperationHandlerResult::Succeeded(value)) => match flowrt::FrameCodec::to_frame_vec(&value) {
+Ok(payload) => (flowrt::OperationState::Succeeded, Some(payload)),
+Err(_) => (flowrt::OperationState::Failed, None),
+},
+Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => (flowrt::OperationState::Failed, None),
+Ok(flowrt::OperationHandlerResult::Canceled) => (flowrt::OperationState::Cancelled, None),
 };
-let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, terminal_state);
+let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete_with_payload(id, terminal_state, result_payload);
 });
 if spawn_result.is_err() {
 let _ = operation_start_handler_0_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, flowrt::OperationState::Failed);
@@ -767,7 +790,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
-                                            introspection_state.record_operation_result("controller.plan", &operation_id, result, None);
+                                            introspection_state.record_operation_result_payload("controller.plan", &operation_id, result, None, event.payload);
                                         }
                                         flowrt::OperationRuntimeEventKind::Error => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("failed");
@@ -1067,6 +1090,26 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
             introspection_state.clone(),
         )
         .ok();
+        let remote_operation_key_expr = flowrt::operation_key_expr(PACKAGE_NAME, selfdesc::self_description_hash(), std::process::id());
+        let _remote_operation_server = match flowrt::ZenohOperationServer::open_from_environment(
+            &remote_operation_key_expr,
+            flowrt::IntrospectionHandshake {
+                protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+                pid: std::process::id(),
+                started_at_unix_ms: 0,
+                self_description_hash: selfdesc::self_description_hash().to_string(),
+                package: PACKAGE_NAME.to_string(),
+                process: "client_proc".to_string(),
+                runtime: "rust".to_string(),
+            },
+            introspection_state.clone(),
+        ) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                eprintln!("FlowRT: failed to start zenoh operation control-plane {}: {error}", remote_operation_key_expr);
+                None
+            }
+        };
         let mut controller_initialized = false;
         let mut controller_started = false;
         introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
@@ -1286,7 +1329,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
-                                            introspection_state.record_operation_result("controller.plan", &operation_id, result, None);
+                                            introspection_state.record_operation_result_payload("controller.plan", &operation_id, result, None, event.payload);
                                         }
                                         flowrt::OperationRuntimeEventKind::Error => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("failed");
@@ -1525,6 +1568,26 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
             introspection_state.clone(),
         )
         .ok();
+        let remote_operation_key_expr = flowrt::operation_key_expr(PACKAGE_NAME, selfdesc::self_description_hash(), std::process::id());
+        let _remote_operation_server = match flowrt::ZenohOperationServer::open_from_environment(
+            &remote_operation_key_expr,
+            flowrt::IntrospectionHandshake {
+                protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+                pid: std::process::id(),
+                started_at_unix_ms: 0,
+                self_description_hash: selfdesc::self_description_hash().to_string(),
+                package: PACKAGE_NAME.to_string(),
+                process: "server_proc".to_string(),
+                runtime: "rust".to_string(),
+            },
+            introspection_state.clone(),
+        ) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                eprintln!("FlowRT: failed to start zenoh operation control-plane {}: {error}", remote_operation_key_expr);
+                None
+            }
+        };
         let mut navigator_initialized = false;
         let mut navigator_started = false;
         introspection_state.record_lifecycle_state("navigator", flowrt::LifecycleState::Uninitialized);
@@ -1602,12 +1665,15 @@ operation_worker_server
 .unwrap_or_else(|poisoned| poisoned.into_inner())
 .on_plan_operation(&goal_for_worker, cancel.clone(), &mut progress)
 }));
-let terminal_state = match result {
-Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,
-Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => flowrt::OperationState::Failed,
-Ok(flowrt::OperationHandlerResult::Canceled) => flowrt::OperationState::Cancelled,
+let (terminal_state, result_payload) = match result {
+Ok(flowrt::OperationHandlerResult::Succeeded(value)) => match flowrt::FrameCodec::to_frame_vec(&value) {
+Ok(payload) => (flowrt::OperationState::Succeeded, Some(payload)),
+Err(_) => (flowrt::OperationState::Failed, None),
+},
+Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => (flowrt::OperationState::Failed, None),
+Ok(flowrt::OperationHandlerResult::Canceled) => (flowrt::OperationState::Cancelled, None),
 };
-let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, terminal_state);
+let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete_with_payload(id, terminal_state, result_payload);
 });
 if spawn_result.is_err() {
 let _ = operation_start_handler_0_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, flowrt::OperationState::Failed);
@@ -1854,7 +1920,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
-                                            introspection_state.record_operation_result("controller.plan", &operation_id, result, None);
+                                            introspection_state.record_operation_result_payload("controller.plan", &operation_id, result, None, event.payload);
                                         }
                                         flowrt::OperationRuntimeEventKind::Error => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("failed");

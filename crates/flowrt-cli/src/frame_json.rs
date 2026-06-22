@@ -5,7 +5,7 @@ use flowrt_selfdesc::{
     SelfDescription, SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionMessageAbi,
     SelfDescriptionMessageFrame,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::introspection::message_abi_layout;
 
@@ -39,6 +39,22 @@ pub(crate) fn encode_boundary_json(
     anyhow::bail!(
         "FlowRT self-description does not contain Message ABI or frame layout for boundary input `{endpoint_name}` type `{message_type}`"
     );
+}
+
+pub(crate) fn decode_message_json(
+    self_description: &SelfDescription,
+    message_type: &str,
+    payload: &[u8],
+) -> Result<String> {
+    if let Some(message) = message_abi_layout(&self_description.message_abi, message_type)? {
+        let value = decode_fixed_message_json(&self_description.message_abi, message, payload)?;
+        return serde_json::to_string(&value)
+            .with_context(|| format!("failed to format `{message_type}` JSON"));
+    }
+
+    anyhow::bail!(
+        "FlowRT self-description does not contain Message ABI layout for `{message_type}`"
+    )
 }
 
 pub(crate) fn message_frame_layout<'a>(
@@ -409,6 +425,100 @@ pub(crate) fn encode_fixed_message_json(
     Ok(payload)
 }
 
+fn decode_fixed_message_json(
+    messages: &[SelfDescriptionMessageAbi],
+    message: &SelfDescriptionMessageAbi,
+    payload: &[u8],
+) -> Result<Value> {
+    if payload.len() != message.size_bytes {
+        anyhow::bail!(
+            "payload for `{}` has {} bytes; Message ABI expects {}",
+            message.type_name,
+            payload.len(),
+            message.size_bytes
+        );
+    }
+    if message.fields.is_empty() {
+        if message.empty && message.size_bytes == 0 {
+            return Ok(Value::Object(Map::new()));
+        }
+        anyhow::bail!(
+            "Message ABI layout for `{}` has no fields; JSON decoding requires field metadata",
+            message.type_name
+        );
+    }
+
+    let mut object = Map::new();
+    for field in &message.fields {
+        let start = field.offset_bytes;
+        let end = start
+            .checked_add(field.size_bytes)
+            .with_context(|| format!("field `{}` byte range overflows usize", field.name))?;
+        if start > payload.len() || end > payload.len() {
+            anyhow::bail!(
+                "field `{}` range {}..{} exceeds payload length {}",
+                field.name,
+                start,
+                end,
+                payload.len()
+            );
+        }
+        object.insert(
+            field.name.clone(),
+            decode_fixed_value(messages, &field.ty, &payload[start..end], &field.name)?,
+        );
+    }
+    Ok(Value::Object(object))
+}
+
+fn decode_fixed_value(
+    messages: &[SelfDescriptionMessageAbi],
+    ty: &str,
+    payload: &[u8],
+    path: &str,
+) -> Result<Value> {
+    let ty = ty.trim();
+    if let Some((element, len)) = parse_boundary_fixed_array_type(ty)? {
+        let element_size = boundary_fixed_wire_size(messages, element)?.with_context(|| {
+            format!("field `{path}` uses unsupported fixed array element type `{element}`")
+        })?;
+        let expected = element_size
+            .checked_mul(len)
+            .with_context(|| format!("field `{path}` fixed array byte length overflows usize"))?;
+        if payload.len() != expected {
+            anyhow::bail!(
+                "field `{path}` type `{ty}` expects {expected} bytes but payload has {}",
+                payload.len()
+            );
+        }
+        let values = payload
+            .chunks_exact(element_size)
+            .enumerate()
+            .map(|(index, chunk)| {
+                decode_fixed_value(messages, element, chunk, &format!("{path}[{index}]"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(Value::Array(values));
+    }
+
+    if let Some(expected) = boundary_primitive_size(ty) {
+        if payload.len() != expected {
+            anyhow::bail!(
+                "field `{path}` type `{ty}` expects {expected} bytes but payload has {}",
+                payload.len()
+            );
+        }
+        return decode_primitive_value(ty, payload, path);
+    }
+
+    if let Some(nested) = message_abi_layout(messages, ty)? {
+        return decode_fixed_message_json(messages, nested, payload)
+            .with_context(|| format!("field `{path}` expects nested `{ty}` object"));
+    }
+
+    anyhow::bail!("field `{path}` has unsupported fixed ABI type `{ty}`")
+}
+
 fn encode_fixed_field(
     messages: &[SelfDescriptionMessageAbi],
     payload: &mut [u8],
@@ -609,6 +719,29 @@ pub(crate) fn encode_primitive_value(ty: &str, value: &Value, path: &str) -> Res
         }
         "f64" => json_float(value, path)?.to_le_bytes().to_vec(),
         _ => anyhow::bail!("field `{path}` has unsupported fixed ABI type `{ty}`"),
+    })
+}
+
+fn decode_primitive_value(ty: &str, payload: &[u8], path: &str) -> Result<Value> {
+    Ok(match ty {
+        "bool" => match payload[0] {
+            0 => Value::Bool(false),
+            1 => Value::Bool(true),
+            other => anyhow::bail!("field `{path}` has invalid bool byte {other}"),
+        },
+        "u8" => Value::from(payload[0]),
+        "u16" => Value::from(u16::from_le_bytes(payload.try_into()?)),
+        "u32" => Value::from(u32::from_le_bytes(payload.try_into()?)),
+        "u64" => Value::from(u64::from_le_bytes(payload.try_into()?)),
+        "i8" => Value::from(i8::from_le_bytes(payload.try_into()?)),
+        "i16" => Value::from(i16::from_le_bytes(payload.try_into()?)),
+        "i32" => Value::from(i32::from_le_bytes(payload.try_into()?)),
+        "i64" => Value::from(i64::from_le_bytes(payload.try_into()?)),
+        "f32" => Value::from(f32::from_le_bytes(payload.try_into()?) as f64),
+        "f64" => Value::from(f64::from_le_bytes(payload.try_into()?)),
+        "u128" => Value::String(u128::from_le_bytes(payload.try_into()?).to_string()),
+        "i128" => Value::String(i128::from_le_bytes(payload.try_into()?).to_string()),
+        _ => anyhow::bail!("field `{path}` has unsupported primitive type `{ty}`"),
     })
 }
 
