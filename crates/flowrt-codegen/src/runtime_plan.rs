@@ -924,6 +924,7 @@ pub(crate) fn contract_backend_features(contract: &ContractIr) -> Vec<&'static s
     }
     if contract_uses_backend_with_facts(contract, &facts, "zenoh")
         || contract_has_params_for_language(contract, flowrt_ir::LanguageKind::Rust)
+        || contract_has_operations_for_language(contract, flowrt_ir::LanguageKind::Rust)
     {
         features.push("zenoh");
     }
@@ -977,6 +978,31 @@ pub(crate) fn contract_has_runtime_params_for_language(
                 .params
                 .iter()
                 .any(|param| param.update == flowrt_ir::ParamUpdatePolicy::OnTick)
+    })
+}
+
+pub(crate) fn contract_has_operations_for_language(
+    contract: &ContractIr,
+    language: flowrt_ir::LanguageKind,
+) -> bool {
+    contract.graphs.iter().any(|graph| {
+        graph.operations.iter().any(|operation| {
+            let client_instance = graph
+                .instances
+                .iter()
+                .find(|instance| instance.name == operation.client.instance.name);
+            let server_instance = graph
+                .instances
+                .iter()
+                .find(|instance| instance.name == operation.server.instance.name);
+            [client_instance, server_instance]
+                .into_iter()
+                .any(|instance| {
+                    instance.is_some_and(|instance| {
+                        component_by_name(contract, &instance.component.name).language == language
+                    })
+                })
+        })
     })
 }
 

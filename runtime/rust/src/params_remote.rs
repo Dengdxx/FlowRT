@@ -135,6 +135,86 @@ impl ZenohParamsServer {
     }
 }
 
+/// 远程 Operation queryable 服务端。
+///
+/// 注册到 zenoh session 后，响应远程 Operation status/cancel 请求，复用本机
+/// `IntrospectionState` 的 invocation 查找、handler registry 和 cached state fallback。
+pub struct ZenohOperationServer {
+    key_expr: String,
+    _session: Option<Session>,
+    _queryable: Queryable<()>,
+}
+
+impl ZenohOperationServer {
+    /// 在指定 zenoh session 上注册 Operation queryable。
+    ///
+    /// `key_expr` 应使用 `operation_key_expr()` 生成，包含 package、selfdesc hash 和 PID。
+    pub fn open(
+        session: &Session,
+        key_expr: &str,
+        handshake: IntrospectionHandshake,
+        state: IntrospectionState,
+    ) -> Result<Self, ParamsRemoteError> {
+        let key_expr_owned = key_expr.to_string();
+        let shared_state = Arc::new(state);
+        let shared_handshake = Arc::new(handshake);
+
+        let queryable = session
+            .declare_queryable(key_expr_owned.clone())
+            .callback(move |query: Query| {
+                handle_operation_query(query, &shared_handshake, &shared_state);
+            })
+            .wait()
+            .map_err(|error| {
+                ParamsRemoteError::transport("declare zenoh operation queryable", error)
+            })?;
+
+        Ok(Self {
+            key_expr: key_expr_owned,
+            _session: None,
+            _queryable: queryable,
+        })
+    }
+
+    /// 使用 `FLOWRT_ZENOH_*` 环境变量打开独立 zenoh session 并注册 Operation queryable。
+    pub fn open_from_environment(
+        key_expr: &str,
+        handshake: IntrospectionHandshake,
+        state: IntrospectionState,
+    ) -> Result<Self, ParamsRemoteError> {
+        let session =
+            zenoh::open(crate::zenoh::config_from_environment().map_err(|error| {
+                ParamsRemoteError::new("configure zenoh operation session", error)
+            })?)
+            .wait()
+            .map_err(|error| ParamsRemoteError::transport("open zenoh operation session", error))?;
+        let key_expr_owned = key_expr.to_string();
+        let shared_state = Arc::new(state);
+        let shared_handshake = Arc::new(handshake);
+
+        let queryable = session
+            .declare_queryable(key_expr_owned.clone())
+            .callback(move |query: Query| {
+                handle_operation_query(query, &shared_handshake, &shared_state);
+            })
+            .wait()
+            .map_err(|error| {
+                ParamsRemoteError::transport("declare zenoh operation queryable", error)
+            })?;
+
+        Ok(Self {
+            key_expr: key_expr_owned,
+            _session: Some(session),
+            _queryable: queryable,
+        })
+    }
+
+    /// 返回 queryable 的 key expression。
+    pub fn key_expr(&self) -> &str {
+        &self.key_expr
+    }
+}
+
 fn handle_params_query(
     query: Query,
     handshake: &IntrospectionHandshake,
@@ -200,6 +280,73 @@ fn handle_params_query(
     reply_json(&reply_ke, &response, &query);
 }
 
+fn handle_operation_query(
+    query: Query,
+    handshake: &IntrospectionHandshake,
+    state: &IntrospectionState,
+) {
+    let reply_ke = query.key_expr().clone();
+
+    let Some(payload) = query.payload() else {
+        let response = IntrospectionResponse::Error {
+            handshake: handshake.clone(),
+            message: "empty zenoh operation request payload".to_string(),
+        };
+        reply_json(&reply_ke, &response, &query);
+        return;
+    };
+
+    let raw = payload.to_bytes().to_vec();
+    let request: IntrospectionRequest = match serde_json::from_slice(&raw) {
+        Ok(request) => request,
+        Err(error) => {
+            let response = IntrospectionResponse::Error {
+                handshake: handshake.clone(),
+                message: format!("invalid zenoh operation request JSON: {error}"),
+            };
+            reply_json(&reply_ke, &response, &query);
+            return;
+        }
+    };
+
+    let response = match request {
+        IntrospectionRequest::Status => IntrospectionResponse::Status {
+            handshake: handshake.clone(),
+            status: state.status(),
+        },
+        IntrospectionRequest::OperationStatus { operation_id } => {
+            match state.status_operation(&operation_id) {
+                Ok(operation) => IntrospectionResponse::OperationValue {
+                    handshake: handshake.clone(),
+                    operation,
+                },
+                Err(message) => IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message,
+                },
+            }
+        }
+        IntrospectionRequest::OperationCancel { operation_id } => {
+            match state.cancel_operation(&operation_id) {
+                Ok(operation) => IntrospectionResponse::OperationValue {
+                    handshake: handshake.clone(),
+                    operation,
+                },
+                Err(message) => IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message,
+                },
+            }
+        }
+        _ => IntrospectionResponse::Error {
+            handshake: handshake.clone(),
+            message: "unsupported zenoh operation command; expected status/cancel".to_string(),
+        },
+    };
+
+    reply_json(&reply_ke, &response, &query);
+}
+
 fn reply_json(
     key_expr: &zenoh::key_expr::KeyExpr<'_>,
     response: &IntrospectionResponse,
@@ -242,6 +389,14 @@ pub fn params_key_expr(package: &str, selfdesc_hash: &str, pid: u32) -> String {
     format!("flowrt/params/{package}/{selfdesc_hash}/{pid}")
 }
 
+/// 生成确定性 Operation key expression，包含 package、selfdesc hash 和 PID。
+///
+/// 格式：`flowrt/op/{package}/{selfdesc_hash}/{pid}`
+/// 避免同机多进程或不同应用的 Operation queryable 冲突。
+pub fn operation_key_expr(package: &str, selfdesc_hash: &str, pid: u32) -> String {
+    format!("flowrt/op/{package}/{selfdesc_hash}/{pid}")
+}
+
 /// 向远程 runtime 请求参数列表。
 pub fn request_remote_param_list(
     session: &Session,
@@ -278,6 +433,42 @@ pub fn request_remote_param_set(
         value,
     };
     send_params_query(session, key_expr, &request, timeout_ms)
+}
+
+/// 向远程 runtime 请求 Operation 总览状态。
+pub fn request_remote_operation_overview(
+    session: &Session,
+    key_expr: &str,
+    timeout_ms: u64,
+) -> Result<IntrospectionResponse, ParamsRemoteError> {
+    let request = IntrospectionRequest::Status;
+    send_operation_query(session, key_expr, &request, timeout_ms)
+}
+
+/// 向远程 runtime 请求单个 Operation invocation 状态。
+pub fn request_remote_operation_status(
+    session: &Session,
+    key_expr: &str,
+    operation_id: &str,
+    timeout_ms: u64,
+) -> Result<IntrospectionResponse, ParamsRemoteError> {
+    let request = IntrospectionRequest::OperationStatus {
+        operation_id: operation_id.to_string(),
+    };
+    send_operation_query(session, key_expr, &request, timeout_ms)
+}
+
+/// 向远程 runtime 请求取消单个 Operation invocation。
+pub fn request_remote_operation_cancel(
+    session: &Session,
+    key_expr: &str,
+    operation_id: &str,
+    timeout_ms: u64,
+) -> Result<IntrospectionResponse, ParamsRemoteError> {
+    let request = IntrospectionRequest::OperationCancel {
+        operation_id: operation_id.to_string(),
+    };
+    send_operation_query(session, key_expr, &request, timeout_ms)
 }
 
 fn send_params_query(
@@ -322,6 +513,50 @@ fn send_params_query(
     let raw = sample.payload().to_bytes().to_vec();
     serde_json::from_slice(&raw)
         .map_err(|error| ParamsRemoteError::new("decode zenoh params response", error))
+}
+
+fn send_operation_query(
+    session: &Session,
+    key_expr: &str,
+    request: &IntrospectionRequest,
+    timeout_ms: u64,
+) -> Result<IntrospectionResponse, ParamsRemoteError> {
+    let payload = serde_json::to_vec(request)
+        .map_err(|error| ParamsRemoteError::new("encode zenoh operation request", error))?;
+
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+
+    let receiver = session
+        .get(key_expr)
+        .with(zenoh::handlers::FifoChannel::new(1))
+        .payload(zenoh::bytes::ZBytes::from(payload))
+        .timeout(timeout)
+        .wait()
+        .map_err(|error| ParamsRemoteError::transport("send zenoh operation query", error))?;
+
+    let reply = match receiver.recv_timeout(timeout) {
+        Ok(Some(reply)) => reply,
+        Ok(None) => {
+            return Err(ParamsRemoteError::new(
+                "zenoh operation query",
+                "no reply received from remote runtime",
+            ));
+        }
+        Err(_) => {
+            return Err(ParamsRemoteError::new(
+                "zenoh operation query",
+                "timeout waiting for remote runtime reply",
+            ));
+        }
+    };
+
+    let sample = reply
+        .result()
+        .map_err(|error| ParamsRemoteError::transport("zenoh operation reply", error))?;
+
+    let raw = sample.payload().to_bytes().to_vec();
+    serde_json::from_slice(&raw)
+        .map_err(|error| ParamsRemoteError::new("decode zenoh operation response", error))
 }
 
 #[cfg(test)]
@@ -592,5 +827,55 @@ mod tests {
             panic!("expected Error response for empty payload");
         };
         assert!(message.contains("empty zenoh params request payload"));
+    }
+
+    #[test]
+    fn remote_operation_status_and_cancel_use_introspection_state() {
+        let (_zenoh_guard, session) = test_session();
+        let key_expr = operation_key_expr("test_robot", "test_hash", std::process::id());
+        let handshake = make_test_handshake();
+        let state = IntrospectionState::new();
+        state.record_operation_health(crate::introspection::IntrospectionOperationStatus {
+            name: "controller.plan".to_string(),
+            ready: true,
+            running: 1,
+            queued: 0,
+            current_operation_ids: vec!["111:7:3".to_string()],
+            total_started: 1,
+            succeeded_count: 0,
+            failed_count: 0,
+            canceled_count: 0,
+            timeout_count: 0,
+            preempted_count: 0,
+            current_state: Some("running".to_string()),
+            current_owner: Some("controller.plan".to_string()),
+            current_deadline_ms: Some(1500),
+            last_event: Some("flowrt.operation.state_changed".to_string()),
+            last_error: None,
+            last_transition_ms: Some(12345),
+        });
+
+        let _server =
+            ZenohOperationServer::open(&session, &key_expr, handshake.clone(), state).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let status = request_remote_operation_status(&session, &key_expr, "111:7:3", 5000).unwrap();
+        let IntrospectionResponse::OperationValue {
+            handshake: status_handshake,
+            operation,
+        } = status
+        else {
+            panic!("expected OperationValue status response");
+        };
+        assert_eq!(status_handshake, handshake);
+        assert_eq!(operation.name, "controller.plan");
+        assert_eq!(operation.current_state.as_deref(), Some("running"));
+
+        let canceled =
+            request_remote_operation_cancel(&session, &key_expr, "111:7:3", 5000).unwrap();
+        let IntrospectionResponse::OperationValue { operation, .. } = canceled else {
+            panic!("expected OperationValue cancel response");
+        };
+        assert_eq!(operation.current_state.as_deref(), Some("cancel_requested"));
     }
 }

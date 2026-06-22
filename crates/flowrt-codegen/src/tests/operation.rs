@@ -280,6 +280,28 @@ fn rust_operation_hidden_task_registers_introspection_status_handler() {
     );
 }
 
+/// Rust generated runtime 有 Operation 时必须暴露 zenoh remote op control-plane。
+#[test]
+fn rust_operation_shell_starts_remote_operation_control_plane() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+
+    assert!(
+        shell.contains("flowrt::operation_key_expr(PACKAGE_NAME"),
+        "runtime shell must derive remote operation key expression.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::ZenohOperationServer::open_from_environment"),
+        "runtime shell must start zenoh Operation queryable.\n\n{shell}"
+    );
+    assert!(
+        cargo_manifest.contains("features = [\"zenoh\"]"),
+        "remote Operation control-plane requires zenoh runtime feature.\n\n{cargo_manifest}"
+    );
+}
+
 /// Runtime scheduler step 必须主动驱动 deadline timeout，不能只靠用户 handler 自觉退出。
 #[test]
 fn rust_operation_step_drives_deadline_timeout_and_stale_cancel_errors() {

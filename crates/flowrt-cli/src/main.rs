@@ -41,8 +41,9 @@ use introspection::{
     echo_channels_follow, live_hz_summary, live_status_json, live_status_summary,
     load_self_description, operation_cancel, operation_list, operation_start,
     operation_status_summary, params_get, params_list, params_set, params_set_from_file,
-    remote_params_get, remote_params_list, remote_params_set, remote_params_set_from_file,
-    self_description_nodes, self_description_summary,
+    remote_operation_cancel, remote_operation_status, remote_params_get, remote_params_list,
+    remote_params_set, remote_params_set_from_file, self_description_nodes,
+    self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
 use replay::replay_fixture;
@@ -664,9 +665,25 @@ enum OpCommand {
         /// 可选 Operation 名称，格式 `<client_instance>.<client_port>`。
         name: Option<String>,
 
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: Option<PathBuf>,
+
         /// 显式指定 runtime introspection socket。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 精确选择远端 runtime key expression。
+        #[arg(long)]
+        runtime: Option<String>,
+
+        /// 通过 zenoh control-plane 发现远端 runtime。
+        #[arg(long)]
+        remote: bool,
+
+        /// 远程发现和请求超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
     },
 
     /// 启动 live Operation invocation。
@@ -700,9 +717,25 @@ enum OpCommand {
         /// `flowrt op status` 输出中的 operation id。
         operation_id: String,
 
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: Option<PathBuf>,
+
         /// 显式指定 runtime introspection socket。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 精确选择远端 runtime key expression。
+        #[arg(long)]
+        runtime: Option<String>,
+
+        /// 通过 zenoh control-plane 发现远端 runtime。
+        #[arg(long)]
+        remote: bool,
+
+        /// 远程发现和请求超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
     },
 }
 
@@ -1419,11 +1452,47 @@ fn main() -> Result<()> {
             OpCommand::List { image, socket } => {
                 println!("{}", operation_list(image.as_deref(), socket.as_deref())?);
             }
-            OpCommand::Status { name, socket } => {
-                println!(
-                    "{}",
-                    operation_status_summary(socket.as_deref(), name.as_deref())?
-                );
+            OpCommand::Status {
+                name,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            } => {
+                let remote_runtime = control_plane_remote_runtime_arg(
+                    "op status",
+                    remote,
+                    socket.as_deref(),
+                    runtime.as_deref(),
+                )?;
+                if remote {
+                    let image = require_image_for_remote(image.as_deref())?;
+                    let hash = introspection::self_description_hash_for_image(&image)?;
+                    let operation_id = name
+                        .as_deref()
+                        .context("`flowrt op status --remote` requires `<operation_id>`")?;
+                    println!(
+                        "{}",
+                        remote_operation_status(
+                            &hash,
+                            operation_id,
+                            remote_runtime.as_deref(),
+                            timeout_ms
+                        )?
+                    );
+                } else {
+                    if image.is_some() {
+                        anyhow::bail!(
+                            "`--image` is only used by `flowrt op status --remote`; \
+                             omit it for local live status"
+                        );
+                    }
+                    println!(
+                        "{}",
+                        operation_status_summary(socket.as_deref(), name.as_deref())?
+                    );
+                }
             }
             OpCommand::Start {
                 name,
@@ -1447,9 +1516,39 @@ fn main() -> Result<()> {
             }
             OpCommand::Cancel {
                 operation_id,
+                image,
                 socket,
+                runtime,
+                remote,
+                timeout_ms,
             } => {
-                println!("{}", operation_cancel(&operation_id, socket.as_deref())?);
+                let remote_runtime = control_plane_remote_runtime_arg(
+                    "op cancel",
+                    remote,
+                    socket.as_deref(),
+                    runtime.as_deref(),
+                )?;
+                if remote {
+                    let image = require_image_for_remote(image.as_deref())?;
+                    let hash = introspection::self_description_hash_for_image(&image)?;
+                    println!(
+                        "{}",
+                        remote_operation_cancel(
+                            &hash,
+                            &operation_id,
+                            remote_runtime.as_deref(),
+                            timeout_ms
+                        )?
+                    );
+                } else {
+                    if image.is_some() {
+                        anyhow::bail!(
+                            "`--image` is only used by `flowrt op cancel --remote`; \
+                             omit it for local live cancel"
+                        );
+                    }
+                    println!("{}", operation_cancel(&operation_id, socket.as_deref())?);
+                }
             }
         },
         Command::Status { live_only, format } => {

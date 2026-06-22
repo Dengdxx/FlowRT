@@ -236,6 +236,15 @@ pub(crate) fn params_remote_runtime_arg(
     socket: Option<&Path>,
     runtime: Option<&str>,
 ) -> Result<Option<String>> {
+    control_plane_remote_runtime_arg("params", remote, socket, runtime)
+}
+
+pub(crate) fn control_plane_remote_runtime_arg(
+    command: &str,
+    remote: bool,
+    socket: Option<&Path>,
+    runtime: Option<&str>,
+) -> Result<Option<String>> {
     if remote {
         if socket.is_some() {
             anyhow::bail!(
@@ -248,7 +257,7 @@ pub(crate) fn params_remote_runtime_arg(
         if runtime.is_some() {
             anyhow::bail!(
                 "`--runtime` can only be used with `--remote`; \
-                 use `--socket <path>` for local params"
+                 use `--socket <path>` for local {command}"
             );
         }
         Ok(None)

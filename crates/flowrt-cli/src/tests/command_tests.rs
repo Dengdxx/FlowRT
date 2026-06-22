@@ -1326,13 +1326,25 @@ fn cli_parses_operation_commands() {
     ])
     .unwrap();
     let Command::Op {
-        command: OpCommand::Status { name, socket },
+        command:
+            OpCommand::Status {
+                name,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            },
     } = status_cli.command
     else {
         panic!("op status should parse into Command::Op")
     };
     assert_eq!(name.as_deref(), Some("controller.plan"));
+    assert_eq!(image, None);
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(runtime, None);
+    assert!(!remote);
+    assert_eq!(timeout_ms, 5000);
 
     let start_cli = Cli::try_parse_from([
         "flowrt",
@@ -1380,16 +1392,60 @@ fn cli_parses_operation_commands() {
     ])
     .unwrap();
     let Command::Op {
-        command: OpCommand::Cancel {
-            operation_id,
-            socket,
-        },
+        command:
+            OpCommand::Cancel {
+                operation_id,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            },
     } = cancel_cli.command
     else {
         panic!("op cancel should parse into Command::Op")
     };
     assert_eq!(operation_id, "111:7:3");
+    assert_eq!(image, None);
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(runtime, None);
+    assert!(!remote);
+    assert_eq!(timeout_ms, 5000);
+
+    let remote_status_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "status",
+        "111:7:3",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--remote",
+        "--runtime",
+        "flowrt/op/robot/hash1/42",
+        "--timeout-ms",
+        "2500",
+    ])
+    .unwrap();
+    let Command::Op {
+        command:
+            OpCommand::Status {
+                name,
+                image,
+                socket,
+                runtime,
+                remote,
+                timeout_ms,
+            },
+    } = remote_status_cli.command
+    else {
+        panic!("remote op status should parse into Command::Op")
+    };
+    assert_eq!(name.as_deref(), Some("111:7:3"));
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(socket, None);
+    assert_eq!(runtime.as_deref(), Some("flowrt/op/robot/hash1/42"));
+    assert!(remote);
+    assert_eq!(timeout_ms, 2500);
 }
 
 #[test]

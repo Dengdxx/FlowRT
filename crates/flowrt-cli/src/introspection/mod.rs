@@ -2207,6 +2207,17 @@ pub(crate) fn parse_remote_params_key_expr(key: &str) -> Option<(&str, &str, &st
     Some((package, hash, pid))
 }
 
+/// 解析 `flowrt/op/{package}/{selfdesc_hash}/{pid}` 格式的 key expression。
+pub(crate) fn parse_remote_operation_key_expr(key: &str) -> Option<(&str, &str, &str)> {
+    let rest = key.strip_prefix("flowrt/op/")?;
+    let (package, rest) = rest.split_once('/')?;
+    let (hash, pid) = rest.split_once('/')?;
+    if package.is_empty() || hash.is_empty() || pid.is_empty() || pid.contains('/') {
+        return None;
+    }
+    Some((package, hash, pid))
+}
+
 /// 打开用于远程参数控制面的 zenoh session。
 fn open_zenoh_params_session() -> Result<zenoh::Session> {
     let zenoh_config = flowrt::zenoh::config_from_environment().map_err(|error| {
@@ -2214,6 +2225,16 @@ fn open_zenoh_params_session() -> Result<zenoh::Session> {
     })?;
     zenoh::open(zenoh_config).wait().map_err(|error| {
         anyhow::anyhow!("failed to open zenoh session for params discovery: {error:?}")
+    })
+}
+
+/// 打开用于远程 Operation 控制面的 zenoh session。
+fn open_zenoh_operation_session() -> Result<zenoh::Session> {
+    let zenoh_config = flowrt::zenoh::config_from_environment().map_err(|error| {
+        anyhow::anyhow!("failed to configure zenoh session for operation discovery: {error}")
+    })?;
+    zenoh::open(zenoh_config).wait().map_err(|error| {
+        anyhow::anyhow!("failed to open zenoh session for operation discovery: {error:?}")
     })
 }
 
@@ -2270,6 +2291,77 @@ pub(crate) fn discover_remote_params_runtimes(
         let handshake = match &response {
             flowrt::IntrospectionResponse::ParamList { handshake, .. } => handshake,
             flowrt::IntrospectionResponse::Error { handshake, .. } => handshake,
+            _ => continue,
+        };
+        let entry_package = if entry_package_hint.is_empty() {
+            handshake.package.clone()
+        } else {
+            entry_package_hint
+        };
+        entries.push(RemoteRuntimeEntry {
+            key_expr: key,
+            pid,
+            package: entry_package,
+            process: handshake.process.clone(),
+            runtime: handshake.runtime.clone(),
+            self_description_hash: entry_hash,
+        });
+    }
+
+    Ok(entries)
+}
+
+/// 通过 zenoh 扫描所有远程 Operation 端点，返回匹配 `self_description_hash` 的 runtime。
+pub(crate) fn discover_remote_operation_runtimes(
+    session: &zenoh::Session,
+    self_description_hash: &str,
+    timeout_ms: u64,
+) -> Result<Vec<RemoteRuntimeEntry>> {
+    let request = flowrt::IntrospectionRequest::Status;
+    let payload = serde_json::to_vec(&request).map_err(|error| {
+        anyhow::anyhow!("failed to encode operation discovery request: {error}")
+    })?;
+    let timeout = Duration::from_millis(timeout_ms);
+
+    let receiver = session
+        .get("flowrt/op/**")
+        .with(zenoh::handlers::FifoChannel::new(64))
+        .payload(zenoh::bytes::ZBytes::from(payload))
+        .timeout(timeout)
+        .wait()
+        .map_err(|error| {
+            anyhow::anyhow!("failed to send zenoh operation discovery query: {error:?}")
+        })?;
+
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = Vec::new();
+
+    while let Ok(Some(reply)) = receiver.recv_timeout(timeout) {
+        let Ok(sample) = reply.result() else {
+            continue;
+        };
+        let key = sample.key_expr().to_string();
+        let Some((package, hash, pid_str)) = parse_remote_operation_key_expr(&key) else {
+            continue;
+        };
+        if hash != self_description_hash {
+            continue;
+        }
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        let entry_hash = hash.to_string();
+        let entry_package_hint = package.to_string();
+        let raw = sample.payload().to_bytes().to_vec();
+        let Ok(response) = serde_json::from_slice::<flowrt::IntrospectionResponse>(&raw) else {
+            continue;
+        };
+        let handshake = match &response {
+            flowrt::IntrospectionResponse::Status { handshake, .. }
+            | flowrt::IntrospectionResponse::Error { handshake, .. } => handshake,
             _ => continue,
         };
         let entry_package = if entry_package_hint.is_empty() {
@@ -2438,6 +2530,98 @@ pub(crate) fn remote_params_set_from_file(
     })
 }
 
+/// 请求远程 runtime Operation invocation 状态。
+pub(crate) fn remote_operation_status(
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let session = open_zenoh_operation_session()?;
+    let runtime = select_remote_operation_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
+    let response = flowrt::request_remote_operation_status(
+        &session,
+        &runtime.key_expr,
+        operation_id,
+        timeout_ms,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!("failed to get remote operation `{operation_id}` from `{runtime}`: {error}")
+    })?;
+    match response {
+        flowrt::IntrospectionResponse::OperationValue {
+            handshake,
+            operation,
+        } => {
+            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            eprintln!("target: {runtime}");
+            Ok(format!(
+                "operation_id={} {}",
+                operation_id,
+                format_operation_status(&operation, None)
+            ))
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to get remote operation `{operation_id}` from `{runtime}`: {message}"
+            );
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
+/// 请求远程 runtime 取消 Operation invocation。
+pub(crate) fn remote_operation_cancel(
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let session = open_zenoh_operation_session()?;
+    let runtime = select_remote_operation_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
+    let response = flowrt::request_remote_operation_cancel(
+        &session,
+        &runtime.key_expr,
+        operation_id,
+        timeout_ms,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "failed to cancel remote operation `{operation_id}` via `{runtime}`: {error}"
+        )
+    })?;
+    match response {
+        flowrt::IntrospectionResponse::OperationValue {
+            handshake,
+            operation,
+        } => {
+            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            eprintln!("target: {runtime}");
+            Ok(format!(
+                "operation_id={} {}",
+                operation_id,
+                format_operation_status(&operation, None)
+            ))
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to cancel remote operation `{operation_id}` via `{runtime}`: {message}"
+            );
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
 fn remote_params_set_with_target(
     session: &zenoh::Session,
     self_description_hash: &str,
@@ -2485,6 +2669,24 @@ fn select_remote_runtime_for_request(
     select_remote_runtime(entries, self_description_hash)
 }
 
+fn select_remote_operation_runtime_for_request(
+    session: &zenoh::Session,
+    self_description_hash: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<RemoteRuntimeEntry> {
+    if let Some(key_expr) = runtime_key_expr {
+        return remote_operation_runtime_entry_from_key_expr(
+            session,
+            key_expr,
+            self_description_hash,
+            timeout_ms,
+        );
+    }
+    let entries = discover_remote_operation_runtimes(session, self_description_hash, timeout_ms)?;
+    select_remote_runtime(entries, self_description_hash)
+}
+
 fn remote_runtime_entry_from_key_expr(
     session: &zenoh::Session,
     key_expr: &str,
@@ -2510,6 +2712,50 @@ fn remote_runtime_entry_from_key_expr(
         .map_err(|error| anyhow::anyhow!("failed to query remote runtime `{key_expr}`: {error}"))?;
     let handshake = match response {
         flowrt::IntrospectionResponse::ParamList { handshake, .. }
+        | flowrt::IntrospectionResponse::Error { handshake, .. } => handshake,
+        _ => anyhow::bail!("remote runtime `{key_expr}` returned unexpected response"),
+    };
+    if handshake.self_description_hash != self_description_hash {
+        anyhow::bail!(
+            "remote runtime `{key_expr}` self-description hash `{}` does not match expected `{self_description_hash}`",
+            handshake.self_description_hash
+        );
+    }
+    Ok(RemoteRuntimeEntry {
+        key_expr: key_expr.to_string(),
+        pid,
+        package: package.to_string(),
+        process: handshake.process,
+        runtime: handshake.runtime,
+        self_description_hash: hash.to_string(),
+    })
+}
+
+fn remote_operation_runtime_entry_from_key_expr(
+    session: &zenoh::Session,
+    key_expr: &str,
+    self_description_hash: &str,
+    timeout_ms: u64,
+) -> Result<RemoteRuntimeEntry> {
+    let Some((package, hash, pid_str)) = parse_remote_operation_key_expr(key_expr) else {
+        anyhow::bail!(
+            "invalid remote FlowRT runtime key expression `{key_expr}`; expected `flowrt/op/<package>/<selfdesc_hash>/<pid>`"
+        );
+    };
+    if hash != self_description_hash {
+        anyhow::bail!(
+            "remote FlowRT runtime key expression `{key_expr}` uses self-description hash `{hash}`, expected `{self_description_hash}`"
+        );
+    }
+    let pid = pid_str.parse::<u32>().with_context(|| {
+        format!(
+            "remote FlowRT runtime key expression `{key_expr}` contains invalid pid `{pid_str}`"
+        )
+    })?;
+    let response = flowrt::request_remote_operation_overview(session, key_expr, timeout_ms)
+        .map_err(|error| anyhow::anyhow!("failed to query remote runtime `{key_expr}`: {error}"))?;
+    let handshake = match response {
+        flowrt::IntrospectionResponse::Status { handshake, .. }
         | flowrt::IntrospectionResponse::Error { handshake, .. } => handshake,
         _ => anyhow::bail!("remote runtime `{key_expr}` returned unexpected response"),
     };

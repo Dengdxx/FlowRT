@@ -557,8 +557,10 @@ pub use operation::{
 };
 #[cfg(feature = "zenoh")]
 pub use params_remote::{
-    ParamsRemoteError, ZenohParamsServer, params_key_expr, request_remote_param_get,
-    request_remote_param_list, request_remote_param_set,
+    ParamsRemoteError, ZenohOperationServer, ZenohParamsServer, operation_key_expr,
+    params_key_expr, request_remote_operation_cancel, request_remote_operation_overview,
+    request_remote_operation_status, request_remote_param_get, request_remote_param_list,
+    request_remote_param_set,
 };
 pub use recorder::{
     RecorderRuntimeMetadata, RecorderStartConfig, RecorderStatus, RecorderTap, RecorderTapOutcome,
