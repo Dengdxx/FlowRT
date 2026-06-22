@@ -1439,6 +1439,87 @@ fn recorder_start_captures_channel_sample_and_reports_status() {
 }
 
 #[test]
+fn recorder_captures_operation_start_and_cancel_commands() {
+    let state = IntrospectionState::new();
+    state.start_recorder(IntrospectionRecorderStart {
+        output: Some("memory://operation-commands.mcap".to_string()),
+        filters: vec!["operation:controller.plan".to_string()],
+        queue_depth: Some(8),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime_pid: 42,
+        selfdesc_hash: "abc123".to_string(),
+    });
+    state.register_operation_start_handler("controller.plan", |payload, timeout_ms, owner| {
+        assert_eq!(payload, vec![7, 0, 0, 0]);
+        assert_eq!(timeout_ms, Some(2500));
+        assert_eq!(owner.as_deref(), Some("flowrt.cli"));
+        Ok(IntrospectionOperationStartStatus {
+            operation_id: "111:7:3".to_string(),
+            operation: IntrospectionOperationStatus {
+                name: "controller.plan".to_string(),
+                ready: true,
+                running: 1,
+                current_operation_ids: vec!["111:7:3".to_string()],
+                current_state: Some("starting".to_string()),
+                current_owner: owner,
+                current_deadline_ms: timeout_ms,
+                ..Default::default()
+            },
+        })
+    });
+    state.register_operation_cancel_handler("controller.plan", |operation_id| {
+        assert_eq!(operation_id, "111:7:3");
+        Ok(IntrospectionOperationStatus {
+            name: "controller.plan".to_string(),
+            ready: true,
+            current_state: Some("cancel_requested".to_string()),
+            ..Default::default()
+        })
+    });
+    state.record_operation_transition(
+        "controller.plan",
+        "111:7:3",
+        "running",
+        Some("flowrt.cli"),
+        Some(2500),
+    );
+    let _ = state.drain_recorder_events();
+
+    state
+        .start_operation(
+            "controller.plan",
+            vec![7, 0, 0, 0],
+            Some(2500),
+            Some("flowrt.cli".to_string()),
+        )
+        .expect("operation start should be accepted");
+    state
+        .cancel_operation("111:7:3")
+        .expect("operation cancel should be accepted");
+
+    let events = state.drain_recorder_events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[0].payload_schema,
+        flowrt_record::OPERATION_COMMAND_START_SCHEMA_NAME
+    );
+    assert_eq!(
+        events[1].payload_schema,
+        flowrt_record::OPERATION_COMMAND_CANCEL_SCHEMA_NAME
+    );
+    let start: flowrt_record::OperationStartCommandPayload =
+        serde_json::from_slice(&events[0].payload).unwrap();
+    assert_eq!(start.operation_id, "111:7:3");
+    assert_eq!(start.goal_payload, vec![7, 0, 0, 0]);
+    assert_eq!(start.timeout_ms, Some(2500));
+    assert_eq!(start.owner.as_deref(), Some("flowrt.cli"));
+    let cancel: flowrt_record::OperationCancelCommandPayload =
+        serde_json::from_slice(&events[1].payload).unwrap();
+    assert_eq!(cancel.operation_id, "111:7:3");
+}
+
+#[test]
 fn recorder_marks_variable_channel_frame_payload_encoding() {
     let state = IntrospectionState::new();
     state.start_recorder(IntrospectionRecorderStart {

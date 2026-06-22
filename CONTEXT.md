@@ -88,8 +88,10 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   已可按 invocation id 读取 retained typed result payload，并用 self-description Message ABI
   解码为 JSON；`flowrt op follow` / `flowrt op start --follow` 已可通过 `OperationObserve`
   读取 retained state/progress/result event，并把 typed progress/result payload 解码为 JSON；
-  本机 socket 与远程 zenoh Operation control-plane 均支持。replay 驱动 Operation 执行仍不
-  属于当前范围。
+  本机 socket 与远程 zenoh Operation control-plane 均支持。Operation start/cancel accepted
+  后会进入 recorder command event，`flowrt replay --file <recording.mcap>` 可读取
+  operation command timeline 并重新驱动 start/cancel；progress/result/error 仍只作为
+  observation evidence，不参与重放。
 - 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke、v0.25.1 的
   `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据，以及
   v0.26.0 的代表性 iox2/zenoh generated dataflow、Service、Operation、bounded variable
@@ -1057,8 +1059,11 @@ introspection 请求：generated Rust worker 不再丢弃 `OperationHandlerResul
 远程都可按 self-description 解码为 JSON。typed follow 也已接入 `OperationObserve`
 introspection 请求，runtime 保留 state/progress/result event，generated Rust worker 会把
 progress feedback 编码为 canonical Message ABI payload；`flowrt op follow <operation_id>
---image ...` 与 `flowrt op start --follow` 本机和远程均可持续输出到 terminal。replay 驱动
-执行不属于当前范围。
+--image ...` 与 `flowrt op start --follow` 本机和远程均可持续输出到 terminal。Operation
+start/cancel accepted 后还会记录 `flowrt.operation.command.start.v1` /
+`flowrt.operation.command.cancel.v1`，`flowrt replay --file <recording.mcap>` 会只重放这些
+外部 command event，并把录制 invocation id 映射到回放运行的新 id；progress/result/error
+observation event 不重放，避免双执行。
 
 `v0.6.0` 的录制系统只做 record，不做 replay。录制使用 MCAP 作为容器，FlowRT 自有
 record envelope 作为 schema，覆盖 channel sample、parameter control-plane event、

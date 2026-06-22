@@ -289,6 +289,51 @@ impl ReplayTimelineEntry {
     }
 }
 
+/// Operation start command record payload schema 名称。
+pub const OPERATION_COMMAND_START_SCHEMA_NAME: &str = "flowrt.operation.command.start.v1";
+/// Operation cancel command record payload schema 名称。
+pub const OPERATION_COMMAND_CANCEL_SCHEMA_NAME: &str = "flowrt.operation.command.cancel.v1";
+
+/// 可重放的 Operation command 种类。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationCommandKind {
+    Start,
+    Cancel,
+}
+
+/// `operation.start` command event 的 JSON payload。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationStartCommandPayload {
+    pub operation_id: String,
+    pub goal_payload: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+/// `operation.cancel` command event 的 JSON payload。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationCancelCommandPayload {
+    pub operation_id: String,
+}
+
+/// 从 record 里投影出来、可按时间重放的 Operation command。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationCommandReplayEntry {
+    pub time_ms: u64,
+    pub operation: String,
+    pub command: OperationCommandKind,
+    pub operation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_payload: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
 /// 从 MCAP 字节读出按时间升序的回放时间线（只取 `ChannelSample` 事件）。
 ///
 /// 确定性回放只重放数据样本，按 `(monotonic_ns, sequence)` 稳定排序；毫秒时间用于逻辑时钟
@@ -315,12 +360,70 @@ pub fn read_replay_timeline(data: &[u8]) -> RecordResult<Vec<ReplayTimelineEntry
     Ok(ordered.into_iter().map(|(_, _, entry)| entry).collect())
 }
 
+/// 从 MCAP 字节读出按时间升序的 Operation command 时间线。
+///
+/// 只读取 `flowrt.operation.command.start.v1` 和
+/// `flowrt.operation.command.cancel.v1`，跳过 progress/result/status 等 observation
+/// event，避免 replay 重放内部观测。
+pub fn read_operation_command_timeline(
+    data: &[u8],
+) -> RecordResult<Vec<OperationCommandReplayEntry>> {
+    let mut ordered: Vec<(u64, u64, OperationCommandReplayEntry)> = Vec::new();
+    for message in mcap::MessageStream::new(data)? {
+        let message = message?;
+        let envelope: RecordEnvelope = serde_json::from_slice(&message.data)?;
+        if envelope.event_kind != RecordEventKind::OperationEvent {
+            continue;
+        }
+        let entry = match envelope.payload_schema.as_str() {
+            OPERATION_COMMAND_START_SCHEMA_NAME => {
+                let payload: OperationStartCommandPayload =
+                    serde_json::from_slice(&envelope.payload)?;
+                OperationCommandReplayEntry {
+                    time_ms: envelope.monotonic_ns / 1_000_000,
+                    operation: envelope.entity.name,
+                    command: OperationCommandKind::Start,
+                    operation_id: payload.operation_id,
+                    goal_payload: Some(payload.goal_payload),
+                    timeout_ms: payload.timeout_ms,
+                    owner: payload.owner,
+                }
+            }
+            OPERATION_COMMAND_CANCEL_SCHEMA_NAME => {
+                let payload: OperationCancelCommandPayload =
+                    serde_json::from_slice(&envelope.payload)?;
+                OperationCommandReplayEntry {
+                    time_ms: envelope.monotonic_ns / 1_000_000,
+                    operation: envelope.entity.name,
+                    command: OperationCommandKind::Cancel,
+                    operation_id: payload.operation_id,
+                    goal_payload: None,
+                    timeout_ms: None,
+                    owner: None,
+                }
+            }
+            _ => continue,
+        };
+        ordered.push((entry.time_ms, envelope.sequence, entry));
+    }
+    ordered.sort_by_key(|(time_ms, sequence, _)| (*time_ms, *sequence));
+    Ok(ordered.into_iter().map(|(_, _, entry)| entry).collect())
+}
+
 /// 读取 MCAP 文件并解析回放时间线。
 pub fn read_replay_timeline_from_path(
     path: &std::path::Path,
 ) -> RecordResult<Vec<ReplayTimelineEntry>> {
     let data = std::fs::read(path)?;
     read_replay_timeline(&data)
+}
+
+/// 读取 MCAP 文件并解析 Operation command 时间线。
+pub fn read_operation_command_timeline_from_path(
+    path: &std::path::Path,
+) -> RecordResult<Vec<OperationCommandReplayEntry>> {
+    let data = std::fs::read(path)?;
+    read_operation_command_timeline(&data)
 }
 
 /// 把回放时间线写为 line-delimited JSON（每行一条 [`ReplayTimelineEntry`]）。

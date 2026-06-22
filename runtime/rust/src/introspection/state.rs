@@ -1056,16 +1056,31 @@ impl IntrospectionState {
         timeout_ms: Option<u64>,
         owner: Option<String>,
     ) -> std::result::Result<IntrospectionOperationStartStatus, String> {
+        let record_payload = self
+            .recorder
+            .enabled_for_operation(operation)
+            .then(|| payload.clone());
+        let record_owner = owner.clone();
         let handler = {
             let inner = self.lock_inner();
             inner.operation_start_handlers.get(operation).cloned()
         };
-        match handler {
+        let result = match handler {
             Some(handler) => handler(payload, timeout_ms, owner),
             None => Err(format!(
                 "FlowRT operation `{operation}` does not accept introspection start"
             )),
+        };
+        if let (Ok(started), Some(goal_payload)) = (&result, record_payload) {
+            self.recorder.record_operation_start_command(
+                operation,
+                &started.operation_id,
+                goal_payload,
+                timeout_ms,
+                record_owner,
+            );
         }
+        result
     }
 
     /// 记录 operation 运行态健康状态快照。
@@ -1340,36 +1355,51 @@ impl IntrospectionState {
                     inner
                         .operation_cancel_handlers
                         .get(&operation.name)
-                        .cloned()
+                        .map(|handler| (operation.name.clone(), Arc::clone(handler)))
                 } else {
                     None
                 }
             })
         };
-        if let Some(handler) = handler {
-            return handler(operation_id);
+        if let Some((operation, handler)) = handler {
+            let result = handler(operation_id);
+            if result.is_ok() {
+                self.recorder
+                    .record_operation_cancel_command(&operation, operation_id);
+            }
+            return result;
         }
 
-        let mut inner = self.lock_inner();
-        for operation in inner.operations.values_mut() {
-            let Some(position) = operation
-                .current_operation_ids
-                .iter()
-                .position(|id| id == operation_id)
-            else {
-                continue;
-            };
-            if operation.running == 0 {
-                return Err(format!(
-                    "FlowRT operation `{operation_id}` is already finished"
-                ));
+        let accepted = {
+            let mut inner = self.lock_inner();
+            let mut accepted = None;
+            for operation in inner.operations.values_mut() {
+                let Some(position) = operation
+                    .current_operation_ids
+                    .iter()
+                    .position(|id| id == operation_id)
+                else {
+                    continue;
+                };
+                if operation.running == 0 {
+                    return Err(format!(
+                        "FlowRT operation `{operation_id}` is already finished"
+                    ));
+                }
+                let _ = position;
+                operation.current_state = Some("cancel_requested".to_string());
+                operation.last_event = Some("flowrt.operation.state_changed".to_string());
+                operation.last_error = None;
+                operation.last_transition_ms = Some(unix_time_ms());
+                accepted = Some((operation.name.clone(), operation.clone()));
+                break;
             }
-            let _ = position;
-            operation.current_state = Some("cancel_requested".to_string());
-            operation.last_event = Some("flowrt.operation.state_changed".to_string());
-            operation.last_error = None;
-            operation.last_transition_ms = Some(unix_time_ms());
-            return Ok(operation.clone());
+            accepted
+        };
+        if let Some((operation, status)) = accepted {
+            self.recorder
+                .record_operation_cancel_command(&operation, operation_id);
+            return Ok(status);
         }
         Err(format!("unknown FlowRT operation `{operation_id}`"))
     }

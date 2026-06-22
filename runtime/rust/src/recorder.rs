@@ -12,8 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowrt_record::{
     DESCRIPTOR_RECORD_SCHEMA_NAME, DescriptorPayloadArtifact, DescriptorRecordPayload,
-    DescriptorRecordStatus, PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind,
-    RecordEnvelope, RecordEventKind,
+    DescriptorRecordStatus, OPERATION_COMMAND_CANCEL_SCHEMA_NAME,
+    OPERATION_COMMAND_START_SCHEMA_NAME, OperationCancelCommandPayload,
+    OperationStartCommandPayload, PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity,
+    RecordEntityKind, RecordEnvelope, RecordEventKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -422,6 +424,84 @@ impl RecorderTap {
             payload_schema,
             &payload,
             monotonic_ns,
+        )
+    }
+
+    pub fn record_operation_start_command(
+        &self,
+        name: &str,
+        operation_id: &str,
+        goal_payload: Vec<u8>,
+        timeout_ms: Option<u64>,
+        owner: Option<String>,
+    ) -> RecorderTapOutcome {
+        if !self.enabled_for_operation(name) {
+            return RecorderTapOutcome::default();
+        }
+        let payload = OperationStartCommandPayload {
+            operation_id: operation_id.to_string(),
+            goal_payload,
+            timeout_ms,
+            owner,
+        };
+        let Ok(payload) = serde_json::to_vec(&payload) else {
+            return RecorderTapOutcome {
+                recorded: false,
+                dropped: true,
+            };
+        };
+        let entity = RecordEntity {
+            kind: RecordEntityKind::Operation,
+            name: name.to_string(),
+            instance: instance_from_endpoint(name),
+            task: None,
+            type_name: None,
+        };
+        self.record_bytes(
+            "operation",
+            name,
+            RecordEventKind::OperationEvent,
+            entity,
+            PayloadEncoding::Json,
+            OPERATION_COMMAND_START_SCHEMA_NAME,
+            &payload,
+            None,
+        )
+    }
+
+    pub fn record_operation_cancel_command(
+        &self,
+        name: &str,
+        operation_id: &str,
+    ) -> RecorderTapOutcome {
+        if !self.enabled_for_operation(name) {
+            return RecorderTapOutcome::default();
+        }
+        let payload = OperationCancelCommandPayload {
+            operation_id: operation_id.to_string(),
+        };
+        let Ok(payload) = serde_json::to_vec(&payload) else {
+            return RecorderTapOutcome {
+                recorded: false,
+                dropped: true,
+            };
+        };
+        let entity = RecordEntity {
+            kind: RecordEntityKind::Operation,
+            name: name.to_string(),
+            instance: instance_from_endpoint(name),
+            task: None,
+            type_name: None,
+        };
+        self.record_bytes(
+            "operation",
+            name,
+            RecordEventKind::OperationEvent,
+            entity,
+            PayloadEncoding::Json,
+            OPERATION_COMMAND_CANCEL_SCHEMA_NAME,
+            &payload,
+            None,
         )
     }
 

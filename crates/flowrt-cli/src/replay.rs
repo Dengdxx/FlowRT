@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -11,7 +11,10 @@ use serde_json::Value;
 use crate::boundary_pub::{
     BoundaryPublishTarget, ensure_boundary_publish_endpoint, ensure_island_boundary_publish_mode,
 };
-use crate::introspection::load_self_description_with_hash;
+use crate::introspection::{
+    LOCAL_INTROSPECTION_TIMEOUT, ensure_handshake_hash, load_self_description_with_hash,
+    select_echo_socket,
+};
 
 #[derive(Debug, Clone)]
 struct ReplayEvent {
@@ -56,6 +59,15 @@ pub(crate) fn replay_fixture(
 ) -> Result<String> {
     if speed <= 0.0 || !speed.is_finite() {
         anyhow::bail!("flowrt replay --speed must be a finite positive number");
+    }
+    if is_mcap_path(file) {
+        return replay_operation_commands_from_mcap(
+            file,
+            image,
+            socket,
+            speed,
+            as_fast_as_possible,
+        );
     }
     let mut events = replay_events_from_file(file)?;
     if events.is_empty() {
@@ -123,6 +135,151 @@ pub(crate) fn replay_fixture(
             "paced"
         }
     ))
+}
+
+fn replay_operation_commands_from_mcap(
+    file: &Path,
+    image: &Path,
+    socket: Option<&Path>,
+    speed: f64,
+    as_fast_as_possible: bool,
+) -> Result<String> {
+    let commands =
+        flowrt_record::read_operation_command_timeline_from_path(file).with_context(|| {
+            format!(
+                "failed to read operation command replay `{}`",
+                file.display()
+            )
+        })?;
+    if commands.is_empty() {
+        anyhow::bail!(
+            "flowrt replay `{}` does not contain any Operation command events",
+            file.display()
+        );
+    }
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    for command in &commands {
+        ensure_operation_endpoint(&self_description, &command.operation)?;
+    }
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let start = commands.first().map_or(0, |event| event.time_ms);
+    let end = commands.last().map_or(start, |event| event.time_ms);
+    let replay_started = Instant::now();
+    let mut operations = BTreeSet::new();
+    let mut id_map = BTreeMap::new();
+
+    for command in &commands {
+        if !as_fast_as_possible {
+            pace_replay_event(
+                scaled_delay(command.time_ms.saturating_sub(start), speed),
+                replay_started,
+            );
+        }
+        operations.insert(command.operation.clone());
+        match command.command {
+            flowrt_record::OperationCommandKind::Start => {
+                let payload = command.goal_payload.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "operation start command `{}` is missing goal payload",
+                        command.operation_id
+                    )
+                })?;
+                let response = flowrt::request_operation_start_with_timeout(
+                    &socket,
+                    &command.operation,
+                    payload,
+                    command.timeout_ms,
+                    command.owner.clone(),
+                    LOCAL_INTROSPECTION_TIMEOUT,
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to replay operation start `{}` from `{}`",
+                        command.operation,
+                        file.display()
+                    )
+                })?;
+                match response {
+                    flowrt::IntrospectionResponse::OperationStarted { handshake, started } => {
+                        ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+                        id_map.insert(command.operation_id.clone(), started.operation_id);
+                    }
+                    flowrt::IntrospectionResponse::Error { message, .. } => {
+                        anyhow::bail!(
+                            "runtime rejected replay operation start `{}`: {message}",
+                            command.operation
+                        );
+                    }
+                    _ => anyhow::bail!(
+                        "runtime socket `{}` returned an unexpected operation start response",
+                        socket.display()
+                    ),
+                }
+            }
+            flowrt_record::OperationCommandKind::Cancel => {
+                let actual_id = id_map
+                    .get(&command.operation_id)
+                    .map(String::as_str)
+                    .unwrap_or(&command.operation_id);
+                let response = flowrt::request_operation_cancel_with_timeout(
+                    &socket,
+                    actual_id,
+                    LOCAL_INTROSPECTION_TIMEOUT,
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to replay operation cancel `{}` from `{}`",
+                        command.operation_id,
+                        file.display()
+                    )
+                })?;
+                match response {
+                    flowrt::IntrospectionResponse::OperationValue { handshake, .. } => {
+                        ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+                    }
+                    flowrt::IntrospectionResponse::Error { message, .. } => {
+                        anyhow::bail!(
+                            "runtime rejected replay operation cancel `{}`: {message}",
+                            command.operation_id
+                        );
+                    }
+                    _ => anyhow::bail!(
+                        "runtime socket `{}` returned an unexpected operation cancel response",
+                        socket.display()
+                    ),
+                }
+            }
+        }
+    }
+
+    Ok(format!(
+        "replay source={} operation_commands={} operations={} duration_ms={} speed={} mode={}",
+        file.display(),
+        commands.len(),
+        operations.len(),
+        end,
+        speed,
+        if as_fast_as_possible {
+            "as-fast-as-possible"
+        } else {
+            "paced"
+        }
+    ))
+}
+
+fn ensure_operation_endpoint(
+    self_description: &flowrt_selfdesc::SelfDescription,
+    operation_name: &str,
+) -> Result<()> {
+    if self_description
+        .graphs
+        .iter()
+        .flat_map(|graph| graph.operations.iter())
+        .any(|operation| operation.name == operation_name)
+    {
+        return Ok(());
+    }
+    anyhow::bail!("FlowRT self-description does not contain Operation `{operation_name}`")
 }
 
 fn replay_events_from_file(file: &Path) -> Result<Vec<ReplayEvent>> {
@@ -256,4 +413,10 @@ fn is_jsonl_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+}
+
+fn is_mcap_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mcap"))
 }

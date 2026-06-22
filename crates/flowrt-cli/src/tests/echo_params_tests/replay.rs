@@ -533,6 +533,170 @@ fn replay_rejects_service_and_operation_endpoint_with_boundary_input_error() {
 }
 
 #[test]
+fn replay_mcap_operation_commands_start_and_cancel_invocation() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": null
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "PlanGoal",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "target",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("replay-mcap-operation-commands");
+    let selfdesc = root.join("selfdesc.json");
+    let recording = root.join("run.mcap");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    {
+        let mut writer =
+            flowrt_record::FlowrtMcapWriter::new(std::io::Cursor::new(Vec::new())).unwrap();
+        let channel = writer
+            .register_channel(
+                "flowrt/record/operation_event",
+                flowrt_record::RecordEventKind::OperationEvent,
+            )
+            .unwrap();
+        let entity = flowrt_record::RecordEntity {
+            kind: flowrt_record::RecordEntityKind::Operation,
+            name: "controller.plan".to_string(),
+            instance: Some("controller".to_string()),
+            task: None,
+            type_name: None,
+        };
+        let start_payload = flowrt_record::OperationStartCommandPayload {
+            operation_id: "111:7:3".to_string(),
+            goal_payload: vec![7, 0, 0, 0],
+            timeout_ms: Some(2500),
+            owner: Some("flowrt.cli".to_string()),
+        };
+        let start = flowrt_record::RecordEnvelope {
+            schema_version: flowrt_record::RECORD_SCHEMA_VERSION,
+            event_kind: flowrt_record::RecordEventKind::OperationEvent,
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime_pid: 88,
+            selfdesc_hash: self_description_hash(source.as_bytes()),
+            monotonic_ns: 0,
+            sample_time_ns: None,
+            wall_unix_ns: 0,
+            sequence: 0,
+            entity: entity.clone(),
+            payload_encoding: flowrt_record::PayloadEncoding::Json,
+            payload_schema: flowrt_record::OPERATION_COMMAND_START_SCHEMA_NAME.to_string(),
+            payload: serde_json::to_vec(&start_payload).unwrap(),
+        };
+        let cancel = flowrt_record::RecordEnvelope {
+            payload_schema: flowrt_record::OPERATION_COMMAND_CANCEL_SCHEMA_NAME.to_string(),
+            payload: br#"{"operation_id":"111:7:3"}"#.to_vec(),
+            monotonic_ns: 1_000_000,
+            sequence: 1,
+            ..start.clone()
+        };
+        writer.write_event(channel, &start).unwrap();
+        writer.write_event(channel, &cancel).unwrap();
+        writer.flush().unwrap();
+        let bytes = writer.finish_into_inner().unwrap().into_inner();
+        std::fs::write(&recording, bytes).unwrap();
+    }
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let start_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cancel_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let state_for_start = state.clone();
+    let start_count_for_handler = start_count.clone();
+    state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
+        start_count_for_handler.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(payload, vec![7, 0, 0, 0]);
+        assert_eq!(timeout_ms, Some(2500));
+        assert_eq!(owner.as_deref(), Some("flowrt.cli"));
+        state_for_start.record_operation_transition(
+            "controller.plan",
+            "111:7:3",
+            "running",
+            owner.as_deref(),
+            timeout_ms,
+        );
+        Ok(flowrt::IntrospectionOperationStartStatus {
+            operation_id: "111:7:3".to_string(),
+            operation: flowrt::IntrospectionOperationStatus {
+                name: "controller.plan".to_string(),
+                ready: true,
+                running: 1,
+                current_operation_ids: vec!["111:7:3".to_string()],
+                current_state: Some("running".to_string()),
+                current_owner: owner,
+                current_deadline_ms: timeout_ms,
+                ..Default::default()
+            },
+        })
+    });
+    let cancel_count_for_handler = cancel_count.clone();
+    state.register_operation_cancel_handler("controller.plan", move |operation_id| {
+        cancel_count_for_handler.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(operation_id, "111:7:3");
+        Ok(flowrt::IntrospectionOperationStatus {
+            name: "controller.plan".to_string(),
+            ready: true,
+            current_state: Some("cancel_requested".to_string()),
+            ..Default::default()
+        })
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = replay_fixture(&recording, &selfdesc, Some(&socket), 1.0, true).unwrap();
+
+    assert!(output.contains("operation_commands=2"));
+    assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(cancel_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn replay_reports_bad_jsonl_line_number() {
     let root = temp_test_dir("replay-bad-jsonl");
     let selfdesc = root.join("selfdesc.json");

@@ -3,8 +3,10 @@ use std::io::Cursor;
 
 use flowrt_record::{
     DescriptorPayloadArtifact, DescriptorRecordPayload, DescriptorRecordStatus, FlowrtMcapWriter,
+    OperationCommandKind, OperationCommandReplayEntry, OperationStartCommandPayload,
     PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope,
-    RecordError, RecordEventKind, ReplayTimelineEntry, read_replay_timeline,
+    RecordError, RecordEventKind, ReplayTimelineEntry, read_operation_command_timeline,
+    read_replay_timeline,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -148,6 +150,84 @@ fn read_replay_timeline_uses_sample_time_when_present() -> TestResult {
     assert_eq!(timeline[0].effective_time_ms(), 100);
     assert_eq!(timeline[1].target, "sensor.a");
     assert_eq!(timeline[1].sample_time_ms, Some(200));
+    Ok(())
+}
+
+#[test]
+fn read_operation_command_timeline_extracts_start_and_cancel_only() -> TestResult {
+    let mut writer = FlowrtMcapWriter::new(Cursor::new(Vec::new()))?;
+    let operations = writer.register_channel("operations", RecordEventKind::OperationEvent)?;
+    let diagnostics = writer.register_channel("diagnostics", RecordEventKind::DiagnosticsEvent)?;
+
+    let mut start = sample_envelope(RecordEventKind::OperationEvent);
+    start.monotonic_ns = 20_000_000;
+    start.sequence = 2;
+    start.entity = RecordEntity {
+        kind: RecordEntityKind::Operation,
+        name: "controller.plan".to_string(),
+        instance: Some("controller".to_string()),
+        task: None,
+        type_name: None,
+    };
+    start.payload_encoding = PayloadEncoding::Json;
+    start.payload_schema = "flowrt.operation.command.start.v1".to_string();
+    start.payload = serde_json::to_vec(&OperationStartCommandPayload {
+        operation_id: "111:7:3".to_string(),
+        goal_payload: vec![7, 0, 0, 0],
+        timeout_ms: Some(2500),
+        owner: Some("flowrt.cli".to_string()),
+    })?;
+
+    let mut cancel = sample_envelope(RecordEventKind::OperationEvent);
+    cancel.monotonic_ns = 10_000_000;
+    cancel.sequence = 1;
+    cancel.entity = RecordEntity {
+        kind: RecordEntityKind::Operation,
+        name: "controller.plan".to_string(),
+        instance: Some("controller".to_string()),
+        task: None,
+        type_name: None,
+    };
+    cancel.payload_encoding = PayloadEncoding::Json;
+    cancel.payload_schema = "flowrt.operation.command.cancel.v1".to_string();
+    cancel.payload = br#"{"operation_id":"111:7:3"}"#.to_vec();
+
+    let mut observation = sample_envelope(RecordEventKind::OperationEvent);
+    observation.payload_schema = "flowrt.operation.progress".to_string();
+    let diagnostic = sample_envelope(RecordEventKind::DiagnosticsEvent);
+
+    writer.write_event(operations, &start)?;
+    writer.write_event(operations, &cancel)?;
+    writer.write_event(operations, &observation)?;
+    writer.write_event(diagnostics, &diagnostic)?;
+    writer.flush()?;
+    let bytes = writer.finish_into_inner()?.into_inner();
+
+    let commands = read_operation_command_timeline(&bytes)?;
+
+    assert_eq!(
+        commands,
+        vec![
+            OperationCommandReplayEntry {
+                time_ms: 10,
+                operation: "controller.plan".to_string(),
+                command: OperationCommandKind::Cancel,
+                operation_id: "111:7:3".to_string(),
+                goal_payload: None,
+                timeout_ms: None,
+                owner: None,
+            },
+            OperationCommandReplayEntry {
+                time_ms: 20,
+                operation: "controller.plan".to_string(),
+                command: OperationCommandKind::Start,
+                operation_id: "111:7:3".to_string(),
+                goal_payload: Some(vec![7, 0, 0, 0]),
+                timeout_ms: Some(2500),
+                owner: Some("flowrt.cli".to_string()),
+            },
+        ]
+    );
     Ok(())
 }
 
