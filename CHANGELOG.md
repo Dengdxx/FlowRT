@@ -4,6 +4,27 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## 未发布
+
+### 修复
+
+- 修复 Rust generated self-description 在 JSON 包含非 ASCII 诊断时使用 raw byte string
+  导致编译失败的问题；非 ASCII JSON 改用逐字节转义的 byte string，保持嵌入内容和 hash
+  不变。
+- 修复 `scripts/package-deb.sh` 在 zenoh Debian 包下载失败时继续把空路径传给
+  `dpkg-deb` 的问题；下载或 sha256 校验失败现在会直接中止在真实失败点。
+
+### 测试
+
+- codegen compile net 新增覆盖自检，要求所有生成 Rust/C++ runtime shell 的 golden case
+  均进入真编译列表；默认临时工作目录移到 `target/flowrt-codegen-compile-tmp`，避免大型
+  compile net 占满 `/tmp` tmpfs。
+- compile net 补齐 `graph_latest_fifo`、`service_rust` 和
+  `service_iox2_dynamic_fallback` 的 Rust 真编译覆盖，`v0.26.0` focused smoke 会先运行同一
+  覆盖自检。
+- 补强 Rust/C++ iox2 与 zenoh endpoint 恢复 smoke：本地 session/transport 重建后必须能读回
+  恢复后的新样本，避免只验证 `ready` 和 publish 成功。
+
 ## v0.26.0 - 2026-06-21
 
 ### 修复

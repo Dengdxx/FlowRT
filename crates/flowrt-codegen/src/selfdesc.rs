@@ -1308,6 +1308,23 @@ fn self_description_params(
 }
 
 fn rust_byte_string_literal(value: &str) -> String {
+    if !value.is_ascii() {
+        let mut output = String::from("b\"");
+        for byte in value.bytes() {
+            match byte {
+                b'\n' => output.push_str("\\n"),
+                b'\r' => output.push_str("\\r"),
+                b'\t' => output.push_str("\\t"),
+                b'"' => output.push_str("\\\""),
+                b'\\' => output.push_str("\\\\"),
+                0x20..=0x7e => output.push(byte as char),
+                _ => output.push_str(&format!("\\x{byte:02x}")),
+            }
+        }
+        output.push('"');
+        return output;
+    }
+
     let mut hashes = String::from("#");
     while value.contains(&format!("\"{hashes}")) {
         hashes.push('#');

@@ -12,8 +12,8 @@
 # 复用 golden corpus（crates/flowrt-codegen/tests/golden/<case>/input.rsdl）：同一套契约既被
 # golden 等价锁定输出，又在此真编译。Rust case 的用户实现取 <case>/stub/mod.rs（crate:: 路径）。
 #
-# v1 覆盖 4 个 island case（两语言 × 普通/sample-time，含 0.18.0 出 bug 的 sample-time 分支）。
-# graph/service 等非 island 契约的真编译覆盖待后续扩展（需多组件 stub 与非 island 构建）。
+# 覆盖 golden corpus 中已生成 Rust/C++ runtime shell 的 case。覆盖自检会拒绝新增
+# runtime_shell snapshot 后忘记纳入真编译网，或脚本残留已经删除的 stale case。
 
 set -euo pipefail
 
@@ -21,7 +21,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 corpus="crates/flowrt-codegen/tests/golden"
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/flowrt-codegen-compile.XXXXXX")"
+tmp_root="${TMPDIR:-$repo_root/target/flowrt-codegen-compile-tmp}"
+mkdir -p "$tmp_root"
+work_dir="$(mktemp -d "$tmp_root/flowrt-codegen-compile.XXXXXX")"
 cleanup() {
     if [[ "${FLOWRT_KEEP_SMOKE_WORKDIR:-0}" == "1" ]]; then
         printf 'preserved codegen compile net work dir: %s\n' "$work_dir" >&2
@@ -56,6 +58,8 @@ export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 
 echo "codegen compile net: script syntax"
 run bash -n scripts/test-codegen-compile.sh
+run bash -n scripts/check-codegen-compile-coverage.sh
+run scripts/check-codegen-compile-coverage.sh
 
 prepare_case() {
     local case="$1" proj="$2"
@@ -206,6 +210,7 @@ compile_cpp iox2_operation_cpp
 compile_cpp bounded_operation_iox2_cpp
 compile_rust island_rust_onmsg
 compile_rust sensor_event_time_rust
+compile_rust graph_latest_fifo
 compile_rust sync_fusion_rust
 compile_rust feedback_loop_rust
 compile_rust feedback_v2_rust
@@ -216,9 +221,11 @@ compile_rust fault_injection_restart_rust
 compile_rust fault_injection_degrade_recover_rust
 compile_rust bounded_channel_iox2_rust
 compile_rust cross_process_feedback_rust
+compile_rust service_rust
 compile_rust zenoh_service_rust
 compile_rust iox2_service_rust
 compile_rust bounded_service_iox2_rust
+compile_rust service_iox2_dynamic_fallback
 compile_rust zenoh_operation_rust
 compile_rust iox2_operation_rust
 compile_rust bounded_operation_iox2_rust

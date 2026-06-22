@@ -1873,6 +1873,16 @@ mod tests {
             .expect("publish should reopen a reset iox2 endpoint");
 
         assert_eq!(endpoint.health().state, BackendHealthState::Ready);
+        endpoint
+            .poll_once(Duration::from_millis(1))
+            .expect("reopened iox2 endpoint should poll after recovered publish");
+        assert_eq!(
+            endpoint
+                .receive_latest_at(201)
+                .expect("reopened iox2 endpoint should receive latest view")
+                .as_ref(),
+            Some(&message)
+        );
     }
 
     #[repr(C)]

@@ -63,6 +63,11 @@ int main() {
     assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(recovered));
     assert(endpoint.ready());
     assert(endpoint.health().state == flowrt::BackendHealthState::Ready);
+    auto after_recovery = endpoint.receive_latest_at(121U);
+    assert(!std::holds_alternative<flowrt::ChannelError>(after_recovery));
+    auto latest_after_recovery = std::get<flowrt::Latest<Iox2SmokeSample>>(after_recovery);
+    assert(latest_after_recovery.present());
+    assert(latest_after_recovery.as_ref()->value == 99U);
 #endif
 
     return 0;

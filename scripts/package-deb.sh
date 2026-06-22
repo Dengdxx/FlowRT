@@ -552,7 +552,9 @@ install_zenoh_sdk_for_architecture() {
         "libzenohc-dev_1.9.0_${sdk_architecture}.deb" \
         libzenohcpp-dev_1.9.0_all.deb; do
         require_deb_lock "$deb_name"
-        dpkg-deb -x "$(download_cached "${lock_deb_url[$deb_name]}")" "$zenoh_root"
+        local deb_path
+        deb_path="$(download_cached "${lock_deb_url[$deb_name]}")"
+        dpkg-deb -x "$deb_path" "$zenoh_root"
     done
     if [[ -d "$zenoh_root/usr/include" ]]; then
         install -d "$sdk_root/include"

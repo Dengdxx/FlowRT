@@ -21,6 +21,8 @@ fi
 echo "v0.26.0 transport compile evidence smoke: script syntax"
 run bash -n scripts/test-v0260-transport-compile-evidence-smoke.sh
 run bash -n scripts/test-codegen-compile.sh
+run bash -n scripts/check-codegen-compile-coverage.sh
+run scripts/check-codegen-compile-coverage.sh
 
 echo "v0.26.0 transport compile evidence smoke: codegen compile net"
 run scripts/test-codegen-compile.sh

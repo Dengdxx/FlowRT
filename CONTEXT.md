@@ -5,15 +5,17 @@
 
 ## 当前版本背景
 
-当前开发线为 `v0.26.0 Transport Compile Evidence Matrix`：不新增 RSDL、Contract IR 或
-runtime 用户语义，只把代表性 generated transport shell 纳入真编译证据网。用户侧仍只看到
-FlowRT typed Service / Operation API 和常规 `Vec` / `String` / `std::vector` /
-`std::string` 消息字段；`iox2` / `zenoh` 仍是 FlowRT runtime API 之下的 backend 实现细节。
+当前 `master` 在 `v0.26.0 Transport Compile Evidence Matrix` 发布后继续做未发布硬化：
+不新增 RSDL、Contract IR 或 runtime 用户语义，只补强 generated shell 真编译证据网、
+自描述嵌入生成与离线包 SDK 下载失败路径。用户侧仍只看到 FlowRT typed Service / Operation API 和常规
+`Vec` / `String` / `std::vector` / `std::string` 消息字段；`iox2` / `zenoh` 仍是
+FlowRT runtime API 之下的 backend 实现细节。
 
 当前 workspace 版本为 `0.26.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
-CHANGELOG v0.26.0 release 段在本发布收尾中同步。`scripts/test-codegen-compile.sh` 现在
-覆盖代表性 iox2 / zenoh generated dataflow、Service、Operation 和 bounded variable frame
-Rust/C++ shell 的真实编译。C++ iox2 Service / Operation client handle 改为绑定 shared
+CHANGELOG v0.26.0 release 段已随 tag 同步；后续变更记录在 `## 未发布`。`scripts/test-codegen-compile.sh`
+现在覆盖代表性 iox2 / zenoh generated dataflow、Service、Operation 和 bounded variable
+frame Rust/C++ shell 的真实编译，并先由覆盖自检确认所有带 runtime shell snapshot 的
+golden case 都已入网。C++ iox2 Service / Operation client handle 改为绑定 shared
 transport client，避免把 non-movable `Iox2ServiceClient` / `Iox2FrameServiceClient` 放入
 `std::optional`；C++ zenoh Service / Operation 在缺少 zenoh SDK 时不再引用底层
 `::zenoh::Session` 类型，继续走 runtime fail-fast overload。
@@ -80,18 +82,21 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke、v0.25.1 的
   `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据，以及
   v0.26.0 的代表性 iox2/zenoh generated dataflow、Service、Operation、bounded variable
-  frame Rust/C++ shell 真编译网已覆盖 transport 接线；但这仍不等同于所有 profile、target
-  和真实 SDK run-time 组合的穷尽矩阵，新增 transport 分支仍需要按依赖可用性补 smoke 或
-  显式 fail-fast 证据。
+  frame Rust/C++ shell 真编译网已覆盖 transport 接线。compile net 现在带覆盖自检，要求
+  所有生成 Rust/C++ runtime shell snapshot 的 golden case 都进入真编译列表，并补齐
+  `graph_latest_fifo`、`service_rust` 和 `service_iox2_dynamic_fallback` 的 Rust 编译覆盖；
+  但这仍不等同于所有 profile、target 和真实 SDK run-time 组合的穷尽矩阵，新增 transport
+  分支仍需要按依赖可用性补 smoke 或显式 fail-fast 证据。
 - 故障注入：`status_error`、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop` 已进入 test-only deterministic injection / fault matrix 路径；生产随机
   / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。
 - 收口残留：route health / reconnect 已统一进入 status facts，`iox2` / `zenoh` transport
   publish 失败也会按 route overflow policy 进入 drop/backpressure/overflow counters；真实
   backend SDK 对“queue full”和一般 transport error 的细粒度错误码仍不作为 FlowRT 语义假设。
-  `clang-tidy` gate 是低噪声首版，高噪声 ABI/POD/generic generated capture 不适配项仍关闭；FrameDescriptor
-  `record_payload = true` 仅支持 `payload_capture = "boundary"`，外部 payload provider
-  仍是后续语义。
+  Rust/C++ endpoint smoke 已覆盖 peer endpoint 重启和本地 session/transport 重建后的继续收发。
+  `clang-tidy` gate 是低噪声首版，高噪声 ABI/POD/generic generated capture 不适配项仍关闭；
+  FrameDescriptor `record_payload = true` 仅支持 `payload_capture = "boundary"`，外部 payload
+  provider 仍是后续语义。
 
 上一发布线为 `v0.24.0 Fault Matrix Completion`：把 v0.23.3 已落地的 global tick、
 fault injection kind、route health、standby failover 和 graph health 组合成可运行、

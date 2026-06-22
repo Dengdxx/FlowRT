@@ -91,13 +91,24 @@ int main() {
     assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(recovered_write));
     assert(endpoint.ready());
     assert(endpoint.health().state == flowrt::BackendHealthState::Ready);
+    for (std::size_t attempt = 0; attempt < 100U; ++attempt) {
+        const auto read = endpoint.receive_latest_at(121U);
+        assert(!std::holds_alternative<flowrt::ChannelError>(read));
+        const auto latest = std::get<flowrt::Latest<WireProbe>>(read);
+        if (latest.present() && latest.get()->tag == 3U) {
+            assert(!latest.stale());
+            assert(latest.get()->value == 33U);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
 #endif
 
     const auto invalid_write = endpoint.publish_at(WireProbe{0xFFU, 99U}, 500U);
     assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(invalid_write));
     bool saw_decode_error = false;
     for (std::size_t attempt = 0; attempt < 100U; ++attempt) {
-        const auto read = endpoint.receive_latest_at(108U);
+        const auto read = endpoint.receive_latest_at(126U);
         if (std::holds_alternative<flowrt::ChannelError>(read)) {
             saw_decode_error = true;
             break;
@@ -107,12 +118,12 @@ int main() {
     assert(saw_decode_error);
     assert(endpoint.health().state == flowrt::BackendHealthState::Ready);
 
-    const auto preserved_read = endpoint.receive_latest_at(108U);
+    const auto preserved_read = endpoint.receive_latest_at(126U);
     assert(std::holds_alternative<flowrt::Latest<WireProbe>>(preserved_read));
     const auto preserved = std::get<flowrt::Latest<WireProbe>>(preserved_read);
     assert(preserved.present());
     assert(preserved.stale());
-    assert(preserved.get()->value == 22U);
+    assert(preserved.get()->value == 33U);
 
     return 0;
 }

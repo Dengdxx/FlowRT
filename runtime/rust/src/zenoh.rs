@@ -1692,6 +1692,25 @@ mod tests {
 
         assert!(endpoint.ready());
         assert_eq!(endpoint.health().state, BackendHealthState::Ready);
+
+        let expected = PaddedMessage { tag: 7, value: 70 };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let latest = endpoint
+                .receive_latest_at(701)
+                .expect("reopened zenoh endpoint should receive latest view");
+            if latest.as_ref() == Some(&expected) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "reopened zenoh endpoint did not receive its recovered sample"
+            );
+            endpoint
+                .publish_at(expected, 700)
+                .expect("reopened zenoh endpoint should keep publishing");
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

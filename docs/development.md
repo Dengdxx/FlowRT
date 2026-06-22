@@ -23,14 +23,18 @@ ctest --test-dir build/cpp --output-on-failure
 Codegen transport compile evidence matrix：
 
 ```bash
+scripts/check-codegen-compile-coverage.sh
 scripts/test-codegen-compile.sh
 scripts/test-v0260-transport-compile-evidence-smoke.sh
 ```
 
 codegen golden snapshot 只锁定生成文本漂移，不能证明 generated shell 可被 Rust/C++ 编译器接受。
-`scripts/test-codegen-compile.sh` 复用 golden corpus，对代表性 inproc、iox2、zenoh
-dataflow、Service、Operation 和 bounded variable frame generated shell 做语法或 crate
-真编译。它仍不同于真实 SDK demo build/run：compile net 证明生成物可编译，`zenoh_service_demo`、
+`scripts/check-codegen-compile-coverage.sh` 会先确认所有已生成 Rust/C++ runtime shell 的
+golden case 都进入 compile net，避免新增 snapshot 后只做文本断言。`scripts/test-codegen-compile.sh`
+复用 golden corpus，对 inproc、iox2、zenoh dataflow、Service、Operation 和 bounded
+variable frame generated shell 做语法或 crate 真编译；默认临时工作目录位于
+`target/flowrt-codegen-compile-tmp`，避免大型 Rust compile case 占满 `/tmp` tmpfs。它仍不同于
+真实 SDK demo build/run：compile net 证明生成物可编译，`zenoh_service_demo`、
 `iox2_service_demo` 等安装后或 SDK smoke 才证明依赖解析、链接和运行路径可用。
 
 VSCode / clangd：
