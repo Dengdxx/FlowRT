@@ -1359,7 +1359,7 @@ operation=controller.plan ready=true state=running owner=controller.plan deadlin
 operation_id=111:7:3 operation=controller.plan ready=true state=running owner=controller.plan deadline_ms=1500 running=1 queued=0 current_operation_ids=[111:7:3] total_started=1 succeeded=0 failed=0 canceled=0 timeout=0 preempted=0 last_event=flowrt.operation.state_changed last_error=none last_transition_ms=1717800000000 socket=...
 ```
 
-`op start <operation>` 通过本机 introspection socket 启动 generated Rust Operation。必须传入
+`op start <operation>` 通过本机 introspection socket 启动 generated Rust/C++ Operation。必须传入
 `--image` 指向生成应用二进制或 `selfdesc.json`，CLI 会读取 self-description，校验 runtime
 socket 的 self-description hash，并用 Message ABI 或 canonical frame layout 把 `--json` /
 `--file` 中的 goal JSON 编码成 wire payload。`--timeout-ms` 覆盖 start 请求超时；省略时使用

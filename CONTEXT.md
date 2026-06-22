@@ -91,7 +91,11 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   读取 retained state/progress/result event，并把 typed progress/result payload 解码为 JSON；
   本机 socket 与远程 zenoh Operation control-plane 均支持。C++ Operation runtime 与 generated
   shell 已补齐 typed payload parity：feedback/result 会编码为 canonical Message ABI bytes 并
-  进入 runtime event，generated introspection drain 走 payload-aware progress/result 记录入口。
+  进入 runtime event，generated introspection drain 走 payload-aware progress/result 记录入口；
+  C++ 本机 introspection socket 也支持 `OperationStart`、`OperationStatus`、`OperationResult`
+  和 `OperationObserve` typed control-plane 请求，generated C++ shell 会注册
+  start/status/cancel hook，retained result payload 和 observation event page 可被
+  `flowrt op result/follow` 查询。
   Operation start/cancel accepted 后会进入 recorder command event，`flowrt replay --file
   <recording.mcap>` 可读取 operation command timeline 并重新驱动 start/cancel；
   progress/result/error 仍只作为 observation evidence，不参与重放。
@@ -1056,11 +1060,11 @@ Rust shell 注册 start/status hook，并复用 typed Operation client 与 `Oper
 路径启动和查询 invocation。远程 zenoh Operation start/status/cancel 已复用同一
 `IntrospectionRequest` / `IntrospectionResponse` 语义，key expression 为
 `flowrt/op/<package>/<selfdesc_hash>/<pid>`。未发布版本还接入了 `OperationResult`
-introspection 请求：generated Rust worker 不再丢弃 `OperationHandlerResult::Succeeded`
+introspection 请求：generated Rust/C++ worker 不再丢弃 `OperationHandlerResult::Succeeded`
 返回值，而是把 typed result 编码为 canonical Message ABI payload，scheduler hidden task
 投影到 retained introspection result；`flowrt op result <operation_id> --image ...` 本机和
 远程都可按 self-description 解码为 JSON。typed follow 也已接入 `OperationObserve`
-introspection 请求，runtime 保留 state/progress/result event，generated Rust worker 会把
+introspection 请求，runtime 保留 state/progress/result event，generated Rust/C++ worker 会把
 progress feedback 编码为 canonical Message ABI payload；`flowrt op follow <operation_id>
 --image ...` 与 `flowrt op start --follow` 本机和远程均可持续输出到 terminal。Operation
 start/cancel accepted 后还会记录 `flowrt.operation.command.start.v1` /

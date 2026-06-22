@@ -219,6 +219,43 @@ struct IntrospectionOperationStatus {
 };
 
 /**
+ * @brief Operation start 请求被接受后的 live 状态。
+ */
+struct IntrospectionOperationStartStatus {
+    std::string operation_id;
+    IntrospectionOperationStatus operation;
+};
+
+/**
+ * @brief 单个 Operation invocation 的 retained result。
+ */
+struct IntrospectionOperationResult {
+    std::string operation_id;
+    std::string operation;
+    std::string state;
+    std::optional<std::string> result;
+    std::optional<std::string> error;
+    std::optional<std::vector<std::uint8_t>> payload;
+    std::optional<std::uint64_t> completed_unix_ms;
+    std::optional<std::uint64_t> expires_unix_ms;
+};
+
+/**
+ * @brief 单个 Operation observation event。
+ */
+struct IntrospectionOperationEvent {
+    std::uint64_t sequence = 0;
+    std::string kind;
+    std::string operation_id;
+    std::string operation;
+    std::optional<std::string> state;
+    std::optional<std::uint64_t> progress_sequence;
+    std::optional<std::vector<std::uint8_t>> payload;
+    std::optional<std::string> message;
+    std::optional<std::uint64_t> unix_ms;
+};
+
+/**
  * @brief 单个 task 的调度健康快照。
  *
  * 由 generated shell 在 scheduler step 边界填充，反映 task 级调度质量。

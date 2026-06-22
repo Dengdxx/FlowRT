@@ -89,10 +89,14 @@ enum class IntrospectionRequestKind : std::uint8_t {
     ParamGet = 5,
     ParamSet = 6,
     OperationCancel = 7,
-    RecorderStart = 8,
-    RecorderStop = 9,
-    RecorderDrain = 10,
-    BoundaryPublish = 11,
+    OperationStatus = 8,
+    OperationResult = 9,
+    OperationObserve = 10,
+    OperationStart = 11,
+    RecorderStart = 12,
+    RecorderStop = 13,
+    RecorderDrain = 14,
+    BoundaryPublish = 15,
 };
 
 struct ParsedIntrospectionRequest {
@@ -101,6 +105,12 @@ struct ParsedIntrospectionRequest {
     std::string param_name;
     std::string param_value;
     std::string operation_id;
+    std::string operation_name;
+    std::vector<std::uint8_t> operation_payload;
+    std::optional<std::uint64_t> operation_timeout_ms;
+    std::optional<std::string> operation_owner;
+    std::uint64_t operation_after_sequence = 0;
+    std::optional<std::size_t> operation_limit;
     std::string boundary_endpoint;
     std::vector<std::uint8_t> boundary_payload;
     std::optional<std::uint64_t> boundary_published_at_ms;
@@ -411,6 +421,54 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
         }
         ParsedIntrospectionRequest request{IntrospectionRequestKind::OperationCancel};
         request.operation_id = std::move(operation_id);
+        return request;
+    }
+    if (command == "operation_status") {
+        std::string operation_id;
+        if (!find_json_string_value(line, "operation_id", operation_id)) {
+            return std::nullopt;
+        }
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::OperationStatus};
+        request.operation_id = std::move(operation_id);
+        return request;
+    }
+    if (command == "operation_result") {
+        std::string operation_id;
+        if (!find_json_string_value(line, "operation_id", operation_id)) {
+            return std::nullopt;
+        }
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::OperationResult};
+        request.operation_id = std::move(operation_id);
+        return request;
+    }
+    if (command == "operation_observe") {
+        std::string operation_id;
+        if (!find_json_string_value(line, "operation_id", operation_id)) {
+            return std::nullopt;
+        }
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::OperationObserve};
+        request.operation_id = std::move(operation_id);
+        request.operation_after_sequence = static_cast<std::uint64_t>(
+            find_json_unsigned_value(line, "after_sequence").value_or(0U));
+        request.operation_limit = find_json_unsigned_value(line, "limit");
+        return request;
+    }
+    if (command == "operation_start") {
+        std::string operation;
+        const auto payload = find_json_u8_array_value(line, "payload");
+        if (!find_json_string_value(line, "operation", operation) || !payload.has_value()) {
+            return std::nullopt;
+        }
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::OperationStart};
+        request.operation_name = std::move(operation);
+        request.operation_payload = *payload;
+        if (const auto timeout_ms = find_json_unsigned_value(line, "timeout_ms")) {
+            request.operation_timeout_ms = static_cast<std::uint64_t>(*timeout_ms);
+        }
+        std::string owner;
+        if (find_json_string_value(line, "owner", owner)) {
+            request.operation_owner = std::move(owner);
+        }
         return request;
     }
     if (command == "recorder_start") {

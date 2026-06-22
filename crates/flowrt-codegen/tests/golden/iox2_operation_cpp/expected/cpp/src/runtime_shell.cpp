@@ -52,6 +52,37 @@ std::string flowrt_operation_id_string(flowrt::OperationId id) {
     return std::to_string(id.operation_key) + ":" + std::to_string(id.client_id) + ":" + std::to_string(id.sequence);
 }
 
+std::optional<flowrt::OperationId> flowrt_operation_id_from_string(std::string_view value) {
+    auto parse_part = [](std::string_view part) -> std::optional<std::uint64_t> {
+        if (part.empty()) {
+            return std::nullopt;
+        }
+        const auto owned = std::string{part};
+        char* end = nullptr;
+        errno = 0;
+        const auto parsed = std::strtoull(owned.c_str(), &end, 10);
+        if (errno != 0 || end == owned.c_str() || *end != '\0') {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(parsed);
+    };
+    const auto first = value.find(':');
+    if (first == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto second = value.find(':', first + 1U);
+    if (second == std::string_view::npos || value.find(':', second + 1U) != std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto operation_key = parse_part(value.substr(0, first));
+    const auto client_id = parse_part(value.substr(first + 1U, second - first - 1U));
+    const auto sequence = parse_part(value.substr(second + 1U));
+    if (!operation_key || !client_id || !sequence) {
+        return std::nullopt;
+    }
+    return flowrt::OperationId{.operation_key = *operation_key, .client_id = *client_id, .sequence = *sequence};
+}
+
 flowrt::IntrospectionOperationStatus flowrt_operation_status_from_snapshot(std::string_view name, std::string_view owner, const flowrt::OperationStatusSnapshot& snapshot) {
     const bool active = !flowrt::is_terminal(snapshot.state) && snapshot.state != flowrt::OperationState::Idle;
     flowrt::IntrospectionOperationStatus status;
@@ -547,12 +578,105 @@ flowrt::Status App::step_operation_navigator_plan(std::size_t tick, flowrt::Cont
     (void)tick_context;
     (void)scheduler_events;
     (void)health_map;
+    introspection_state.register_operation_start_handler("controller.plan", [this](std::vector<std::uint8_t> payload, std::optional<std::uint64_t> timeout_ms, std::optional<std::string> owner) -> std::variant<flowrt::IntrospectionOperationStartStatus, std::string> {
+        (void)owner;
+        auto operation_worker_server = this->navigator_;
+        if (!operation_worker_server) {
+            return std::string{"FlowRT operation `"} + std::string{"controller.plan"} + "` worker is unavailable";
+        }
+        auto operation_control = this->operation_control_0_;
+        PlanGoal goal_for_worker;
+        try {
+            goal_for_worker = flowrt::detail::decode_frame<PlanGoal>(std::span<const std::uint8_t>{payload.data(), payload.size()});
+        } catch (...) {
+            return std::string{"invalid FlowRT operation goal payload for `"} + std::string{"controller.plan"} + "`";
+        }
+        const auto operation_owner = flowrt::OperationOwner{.scope_key = flowrt::fnv1a64("controller.plan"), .owner_key = flowrt::fnv1a64("controller.plan")};
+        const auto started = operation_control->start_with_timeout(operation_owner, flowrt::monotonic_time_ms(), std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(timeout_ms.value_or(5000))});
+        if (!started.has_value()) {
+            return std::string{flowrt::to_string(started.error())};
+        }
+        const auto ack = started.value();
+        const auto id = ack.id;
+        try {
+            std::thread([operation_worker_server, operation_control, id, goal_for_worker = std::move(goal_for_worker)]() mutable {
+                while (true) {
+                    const auto status = operation_control->status(id);
+                    if (!status.has_value() || flowrt::is_terminal(status->state)) {
+                        return;
+                    }
+                    if (operation_control->ready_to_run(id)) {
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+                const auto cancel = operation_control->cancel_token_for(id);
+                if (!cancel.has_value()) {
+                    return;
+                }
+                if (const auto error = operation_control->mark_running(id); error != flowrt::OperationControlError::Ok) {
+                    return;
+                }
+                auto progress = flowrt::OperationProgressPublisher<PlanFeedback>{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence, std::optional<std::vector<std::uint8_t>> progress_payload) {
+                    operation_control->publish_progress_with_payload(progress_id, sequence, std::move(progress_payload));
+                }};
+                flowrt::OperationState terminal_state = flowrt::OperationState::Failed;
+                std::optional<std::vector<std::uint8_t>> result_payload;
+                try {
+                    const auto result = operation_worker_server->on_plan_operation(goal_for_worker, *cancel, progress);
+                    switch (result.kind()) {
+                        case flowrt::OperationHandlerResult<PlanResult>::Kind::Succeeded:
+                            if (result.value().has_value()) {
+                                result_payload.emplace(flowrt::detail::encoded_frame_size(*result.value()));
+                                flowrt::detail::encode_frame(*result.value(), std::span<std::uint8_t>{result_payload->data(), result_payload->size()});
+                            }
+                            terminal_state = flowrt::OperationState::Succeeded;
+                            break;
+                        case flowrt::OperationHandlerResult<PlanResult>::Kind::Failed:
+                            terminal_state = flowrt::OperationState::Failed;
+                            break;
+                        case flowrt::OperationHandlerResult<PlanResult>::Kind::Canceled:
+                            terminal_state = flowrt::OperationState::Cancelled;
+                            break;
+                    }
+                } catch (...) {
+                    terminal_state = flowrt::OperationState::Failed;
+                    result_payload = std::nullopt;
+                }
+                (void)operation_control->complete_with_payload(id, terminal_state, std::move(result_payload));
+            }).detach();
+        } catch (...) {
+            (void)operation_control->complete(id, flowrt::OperationState::Failed);
+            return std::string{"handler error"};
+        }
+        const auto status = operation_control->status(id);
+        const auto snapshot = status.has_value() ? status.value() : operation_control->snapshot();
+        return flowrt::IntrospectionOperationStartStatus{
+            .operation_id = flowrt_operation_id_string(id),
+            .operation = flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
+        };
+    });
+    introspection_state.register_operation_status_handler("controller.plan", [this](std::string_view operation_id) -> std::variant<flowrt::IntrospectionOperationStatus, std::string> {
+        const auto id = flowrt_operation_id_from_string(operation_id);
+        if (!id.has_value()) {
+            return std::string{"invalid operation id `"} + std::string{operation_id} + "`";
+        }
+        const auto status = this->operation_control_0_->status(*id);
+        if (!status.has_value()) {
+            return std::string{flowrt::to_string(status.error())};
+        }
+        return flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", status.value());
+    });
     introspection_state.register_operation_cancel_handler("controller.plan", [this](std::string_view operation_id) -> std::variant<flowrt::IntrospectionOperationStatus, std::string> {
+        const auto id = flowrt_operation_id_from_string(operation_id);
+        if (!id.has_value()) {
+            return std::string{"invalid operation id `"} + std::string{operation_id} + "`";
+        }
         const auto snapshot = this->operation_control_0_->snapshot();
         if (flowrt_operation_id_string(snapshot.id) != operation_id) {
             return std::string{"stale operation invocation `"} + std::string{operation_id} + "`; current is `" + flowrt_operation_id_string(snapshot.id) + "`";
         }
-        if (const auto error = this->operation_control_0_->request_cancel(snapshot.id, snapshot.owner); error != flowrt::OperationControlError::Ok) {
+        if (const auto error = this->operation_control_0_->request_cancel(*id, snapshot.owner); error != flowrt::OperationControlError::Ok) {
             return std::string{flowrt::to_string(error)};
         }
         return flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", this->operation_control_0_->snapshot());

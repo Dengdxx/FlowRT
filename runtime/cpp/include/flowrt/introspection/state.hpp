@@ -245,7 +245,7 @@ class IntrospectionState {
             std::move(endpoint), std::move(message_type),
             [&input, endpoint_for_error](std::span<const std::uint8_t> payload,
                                          std::optional<std::uint64_t> timestamp) mutable
-            -> std::variant<std::uint64_t, std::string> {
+                -> std::variant<std::uint64_t, std::string> {
                 try {
                     auto value = detail::decode_frame<T>(payload);
                     return timestamp ? input.inject_at(std::move(value), *timestamp)
@@ -274,7 +274,7 @@ class IntrospectionState {
             std::move(endpoint), std::move(message_type),
             [&input, endpoint_for_error](std::span<const std::uint8_t> payload,
                                          std::optional<std::uint64_t> timestamp) mutable
-            -> std::variant<std::uint64_t, std::string> {
+                -> std::variant<std::uint64_t, std::string> {
                 try {
                     auto value = detail::decode_frame<T>(payload);
                     return timestamp ? input.inject_at(std::move(value), *timestamp)
@@ -836,6 +836,52 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 注册 operation status control hook。
+     */
+    void register_operation_status_handler(
+        std::string name,
+        std::function<std::variant<IntrospectionOperationStatus, std::string>(std::string_view)>
+            handler) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->operation_status_handlers.insert_or_assign(std::move(name), std::move(handler));
+    }
+
+    /**
+     * @brief 注册 operation start control hook。
+     */
+    void register_operation_start_handler(
+        std::string name,
+        std::function<std::variant<IntrospectionOperationStartStatus, std::string>(
+            std::vector<std::uint8_t>, std::optional<std::uint64_t>, std::optional<std::string>)>
+            handler) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->operation_start_handlers.insert_or_assign(std::move(name), std::move(handler));
+    }
+
+    /**
+     * @brief 请求启动指定 operation endpoint。
+     */
+    std::variant<IntrospectionOperationStartStatus, std::string> start_operation(
+        std::string_view operation, std::vector<std::uint8_t> payload,
+        std::optional<std::uint64_t> timeout_ms, std::optional<std::string> owner) const {
+        std::function<std::variant<IntrospectionOperationStartStatus, std::string>(
+            std::vector<std::uint8_t>, std::optional<std::uint64_t>, std::optional<std::string>)>
+            handler;
+        {
+            std::lock_guard<std::mutex> lock(inner_->mutex);
+            if (auto it = inner_->operation_start_handlers.find(std::string{operation});
+                it != inner_->operation_start_handlers.end()) {
+                handler = it->second;
+            }
+        }
+        if (handler) {
+            return handler(std::move(payload), timeout_ms, std::move(owner));
+        }
+        return "FlowRT operation `" + std::string{operation} +
+               "` does not accept introspection start";
+    }
+
+    /**
      * @brief 记录 operation 运行态健康状态快照。
      */
     void record_operation_health(IntrospectionOperationStatus status) const {
@@ -881,6 +927,8 @@ class IntrospectionState {
         const auto id = std::string{operation_id};
         const auto state_name = std::string{state};
         std::lock_guard<std::mutex> lock(inner_->mutex);
+        push_operation_event_locked(inner_, operation_name, id, "state", state_name, std::nullopt,
+                                    std::nullopt, std::nullopt, now);
         auto &entry = inner_->operations[operation_name];
         entry.name = operation_name;
         entry.ready = true;
@@ -929,13 +977,17 @@ class IntrospectionState {
         std::string_view operation, std::string_view operation_id, std::uint64_t sequence,
         const std::optional<std::vector<std::uint8_t>> &payload_bytes) const {
         const auto operation_name = std::string{operation};
+        const auto id = std::string{operation_id};
+        const auto now = detail::unix_time_ms();
         std::lock_guard<std::mutex> lock(inner_->mutex);
+        push_operation_event_locked(inner_, operation_name, id, "progress", std::nullopt, sequence,
+                                    payload_bytes, std::nullopt, now);
         auto &entry = inner_->operations[operation_name];
         entry.name = operation_name;
         entry.last_event = "flowrt.operation.progress";
         const auto payload_json =
-            "{\"operation_id\":" + detail::json_string(operation_id) + ",\"sequence\":" +
-            std::to_string(sequence) + ",\"payload_len\":" +
+            "{\"operation_id\":" + detail::json_string(operation_id) +
+            ",\"sequence\":" + std::to_string(sequence) + ",\"payload_len\":" +
             (payload_bytes ? std::to_string(payload_bytes->size()) : std::string{"null"}) + "}";
         record_event_locked("operation", operation_name, "operation_event", "operation",
                             operation_name, "", "json", "flowrt.operation.progress",
@@ -959,18 +1011,44 @@ class IntrospectionState {
         std::optional<std::string_view> error,
         const std::optional<std::vector<std::uint8_t>> &payload_bytes) const {
         const auto operation_name = std::string{operation};
+        const auto id = std::string{operation_id};
         const auto event = (error.has_value() || result == "failed")
                                ? std::string{"flowrt.operation.error"}
                                : std::string{"flowrt.operation.result"};
+        const auto kind = (error.has_value() || result == "failed") ? std::string{"error"}
+                                                                    : std::string{"result"};
+        const auto now = detail::unix_time_ms();
         std::lock_guard<std::mutex> lock(inner_->mutex);
+        push_operation_event_locked(
+            inner_, operation_name, id, kind, std::string{result}, std::nullopt, payload_bytes,
+            error ? std::optional<std::string>{std::string{*error}} : std::nullopt, now);
         auto &entry = inner_->operations[operation_name];
         entry.name = operation_name;
         entry.last_event = event;
         entry.last_error = error ? std::optional<std::string>{std::string{*error}} : std::nullopt;
+        entry.current_state = std::string{result};
+        entry.current_operation_ids.erase(
+            std::remove(entry.current_operation_ids.begin(), entry.current_operation_ids.end(), id),
+            entry.current_operation_ids.end());
+        entry.running = 0;
+        entry.last_transition_ms = now;
+        inner_->operation_results.insert_or_assign(
+            id, IntrospectionOperationResult{
+                    .operation_id = id,
+                    .operation = operation_name,
+                    .state = std::string{result},
+                    .result = error.has_value() ? std::nullopt
+                                                : std::optional<std::string>{std::string{result}},
+                    .error = error ? std::optional<std::string>{std::string{*error}} : std::nullopt,
+                    .payload = payload_bytes,
+                    .completed_unix_ms = now,
+                    .expires_unix_ms = std::nullopt,
+                });
         const auto payload_json =
             "{\"operation_id\":" + detail::json_string(operation_id) +
-            ",\"result\":" + detail::json_string(result) + ",\"error\":" +
-            (error ? detail::json_string(*error) : std::string{"null"}) + ",\"payload_len\":" +
+            ",\"result\":" + detail::json_string(result) +
+            ",\"error\":" + (error ? detail::json_string(*error) : std::string{"null"}) +
+            ",\"payload_len\":" +
             (payload_bytes ? std::to_string(payload_bytes->size()) : std::string{"null"}) + "}";
         record_event_locked("operation", operation_name, "operation_event", "operation",
                             operation_name, "", "json", event, string_bytes(payload_json),
@@ -1035,6 +1113,89 @@ class IntrospectionState {
             string_bytes("{\"operation_id\":" + detail::json_string(operation_id) + "}"),
             std::nullopt);
         return "unknown FlowRT operation `" + std::string{operation_id} + "`";
+    }
+
+    /**
+     * @brief 请求查询指定 operation invocation。
+     */
+    std::variant<IntrospectionOperationStatus, std::string> status_operation(
+        std::string_view operation_id) const {
+        std::function<std::variant<IntrospectionOperationStatus, std::string>(std::string_view)>
+            handler;
+        std::optional<IntrospectionOperationStatus> cached;
+        {
+            std::lock_guard<std::mutex> lock(inner_->mutex);
+            for (auto &[name, operation] : inner_->operations) {
+                const auto match =
+                    std::find(operation.current_operation_ids.begin(),
+                              operation.current_operation_ids.end(), std::string{operation_id});
+                if (match == operation.current_operation_ids.end()) {
+                    continue;
+                }
+                cached = operation;
+                if (auto handler_it = inner_->operation_status_handlers.find(name);
+                    handler_it != inner_->operation_status_handlers.end()) {
+                    handler = handler_it->second;
+                }
+                break;
+            }
+        }
+        if (!cached.has_value()) {
+            return "unknown FlowRT operation `" + std::string{operation_id} + "`";
+        }
+        if (handler) {
+            return handler(operation_id);
+        }
+        return *cached;
+    }
+
+    /**
+     * @brief 查询保留的 operation result。
+     */
+    std::variant<IntrospectionOperationResult, std::string> result_operation(
+        std::string_view operation_id) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        if (auto it = inner_->operation_results.find(std::string{operation_id});
+            it != inner_->operation_results.end()) {
+            return it->second;
+        }
+        return "unknown FlowRT operation result `" + std::string{operation_id} + "`";
+    }
+
+    struct OperationObservePage {
+        std::vector<IntrospectionOperationEvent> events;
+        std::uint64_t next_sequence = 0;
+        bool terminal = false;
+    };
+
+    /**
+     * @brief 查询 Operation observation event page。
+     */
+    std::variant<OperationObservePage, std::string> observe_operation(
+        std::string_view operation_id, std::uint64_t after_sequence,
+        std::optional<std::size_t> limit) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto it = inner_->operation_events.find(std::string{operation_id});
+        if (it == inner_->operation_events.end()) {
+            return "unknown FlowRT operation `" + std::string{operation_id} + "`";
+        }
+        const auto clamped_limit =
+            std::max<std::size_t>(1U, std::min<std::size_t>(limit.value_or(64U), 1024U));
+        OperationObservePage page;
+        for (const auto &event : it->second) {
+            if (event.sequence < after_sequence) {
+                continue;
+            }
+            if (page.events.size() >= clamped_limit) {
+                break;
+            }
+            page.events.push_back(event);
+        }
+        page.next_sequence =
+            page.events.empty() ? after_sequence : page.events.back().sequence + 1U;
+        page.terminal = !it->second.empty() &&
+                        (it->second.back().kind == "result" || it->second.back().kind == "error");
+        return page;
     }
 
     /**
@@ -1423,6 +1584,16 @@ class IntrospectionState {
         std::map<std::string, BoundaryStatus> io_boundaries;
         std::map<std::string, IntrospectionServiceStatus> services;
         std::map<std::string, IntrospectionOperationStatus> operations;
+        std::map<std::string, IntrospectionOperationResult> operation_results;
+        std::map<std::string, std::vector<IntrospectionOperationEvent>> operation_events;
+        std::map<std::string,
+                 std::function<std::variant<IntrospectionOperationStartStatus, std::string>(
+                     std::vector<std::uint8_t>, std::optional<std::uint64_t>,
+                     std::optional<std::string>)>>
+            operation_start_handlers;
+        std::map<std::string, std::function<std::variant<IntrospectionOperationStatus, std::string>(
+                                  std::string_view)>>
+            operation_status_handlers;
         std::map<std::string, std::function<std::variant<IntrospectionOperationStatus, std::string>(
                                   std::string_view)>>
             operation_cancel_handlers;
@@ -1447,6 +1618,26 @@ class IntrospectionState {
 
     static std::vector<std::uint8_t> string_bytes(std::string_view value) {
         return std::vector<std::uint8_t>{value.begin(), value.end()};
+    }
+
+    static void push_operation_event_locked(
+        const std::shared_ptr<Inner> &inner, const std::string &operation,
+        const std::string &operation_id, const std::string &kind, std::optional<std::string> state,
+        std::optional<std::uint64_t> progress_sequence,
+        const std::optional<std::vector<std::uint8_t>> &payload, std::optional<std::string> message,
+        std::optional<std::uint64_t> unix_ms) {
+        auto &events = inner->operation_events[operation_id];
+        events.push_back(IntrospectionOperationEvent{
+            .sequence = static_cast<std::uint64_t>(events.size()),
+            .kind = kind,
+            .operation_id = operation_id,
+            .operation = operation,
+            .state = std::move(state),
+            .progress_sequence = progress_sequence,
+            .payload = payload,
+            .message = std::move(message),
+            .unix_ms = unix_ms,
+        });
     }
 
     IntrospectionRouteStatus &route_entry_locked(std::string name) const {

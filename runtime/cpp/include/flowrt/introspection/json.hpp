@@ -789,6 +789,108 @@ inline std::string payload_json(const std::optional<std::vector<std::uint8_t>> &
     return output;
 }
 
+inline std::string operation_start_status_json(const IntrospectionOperationStartStatus &started) {
+    std::string output;
+    output.append("{\"operation_id\":");
+    output.append(json_string(started.operation_id));
+    output.append(",\"operation\":");
+    output.append(operation_status_json(started.operation));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string operation_result_json(const IntrospectionOperationResult &result) {
+    std::string output;
+    output.append("{\"operation_id\":");
+    output.append(json_string(result.operation_id));
+    output.append(",\"operation\":");
+    output.append(json_string(result.operation));
+    output.append(",\"state\":");
+    output.append(json_string(result.state));
+    output.append(",\"result\":");
+    output.append(result.result ? json_string(*result.result) : "null");
+    output.append(",\"error\":");
+    output.append(result.error ? json_string(*result.error) : "null");
+    output.append(",\"payload\":");
+    output.append(payload_json(result.payload));
+    output.append(",\"completed_unix_ms\":");
+    output.append(optional_u64_json(result.completed_unix_ms));
+    output.append(",\"expires_unix_ms\":");
+    output.append(optional_u64_json(result.expires_unix_ms));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string operation_event_json(const IntrospectionOperationEvent &event) {
+    std::string output;
+    output.append("{\"sequence\":");
+    output.append(std::to_string(event.sequence));
+    output.append(",\"kind\":");
+    output.append(json_string(event.kind));
+    output.append(",\"operation_id\":");
+    output.append(json_string(event.operation_id));
+    output.append(",\"operation\":");
+    output.append(json_string(event.operation));
+    output.append(",\"state\":");
+    output.append(event.state ? json_string(*event.state) : "null");
+    output.append(",\"progress_sequence\":");
+    output.append(optional_u64_json(event.progress_sequence));
+    output.append(",\"payload\":");
+    output.append(payload_json(event.payload));
+    output.append(",\"message\":");
+    output.append(event.message ? json_string(*event.message) : "null");
+    output.append(",\"unix_ms\":");
+    output.append(optional_u64_json(event.unix_ms));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string operation_started_response_json(
+    const IntrospectionHandshake &handshake, const IntrospectionOperationStartStatus &started) {
+    std::string output;
+    output.append("{\"response\":\"operation_started\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"started\":");
+    output.append(operation_start_status_json(started));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string operation_result_response_json(const IntrospectionHandshake &handshake,
+                                                  const IntrospectionOperationResult &result) {
+    std::string output;
+    output.append("{\"response\":\"operation_result\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"result\":");
+    output.append(operation_result_json(result));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string operation_events_response_json(
+    const IntrospectionHandshake &handshake, std::string_view operation_id,
+    const std::vector<IntrospectionOperationEvent> &events, std::uint64_t next_sequence,
+    bool terminal) {
+    std::string output;
+    output.append("{\"response\":\"operation_events\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"operation_id\":");
+    output.append(json_string(operation_id));
+    output.append(",\"events\":[");
+    for (std::size_t index = 0; index < events.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(operation_event_json(events[index]));
+    }
+    output.append("],\"next_sequence\":");
+    output.append(std::to_string(next_sequence));
+    output.append(",\"terminal\":");
+    output.append(terminal ? "true" : "false");
+    output.push_back('}');
+    return output;
+}
+
 inline std::string recorder_entity_json(const IntrospectionRecorderEvent &event) {
     std::string output;
     output.append("{\"kind\":");

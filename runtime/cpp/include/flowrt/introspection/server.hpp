@@ -130,6 +130,52 @@ inline void handle_introspection_connection(
                 }
                 break;
             }
+            case IntrospectionRequestKind::OperationStatus: {
+                const auto result = state.status_operation(request->operation_id);
+                if (std::holds_alternative<IntrospectionOperationStatus>(result)) {
+                    response = operation_value_response_json(
+                        handshake, std::get<IntrospectionOperationStatus>(result));
+                } else {
+                    response = error_response_json(handshake, std::get<std::string>(result));
+                }
+                break;
+            }
+            case IntrospectionRequestKind::OperationResult: {
+                const auto result = state.result_operation(request->operation_id);
+                if (std::holds_alternative<IntrospectionOperationResult>(result)) {
+                    response = operation_result_response_json(
+                        handshake, std::get<IntrospectionOperationResult>(result));
+                } else {
+                    response = error_response_json(handshake, std::get<std::string>(result));
+                }
+                break;
+            }
+            case IntrospectionRequestKind::OperationObserve: {
+                const auto result = state.observe_operation(request->operation_id,
+                                                            request->operation_after_sequence,
+                                                            request->operation_limit);
+                if (std::holds_alternative<IntrospectionState::OperationObservePage>(result)) {
+                    const auto &page = std::get<IntrospectionState::OperationObservePage>(result);
+                    response = operation_events_response_json(handshake, request->operation_id,
+                                                              page.events, page.next_sequence,
+                                                              page.terminal);
+                } else {
+                    response = error_response_json(handshake, std::get<std::string>(result));
+                }
+                break;
+            }
+            case IntrospectionRequestKind::OperationStart: {
+                const auto result =
+                    state.start_operation(request->operation_name, request->operation_payload,
+                                          request->operation_timeout_ms, request->operation_owner);
+                if (std::holds_alternative<IntrospectionOperationStartStatus>(result)) {
+                    response = operation_started_response_json(
+                        handshake, std::get<IntrospectionOperationStartStatus>(result));
+                } else {
+                    response = error_response_json(handshake, std::get<std::string>(result));
+                }
+                break;
+            }
             case IntrospectionRequestKind::RecorderStart: {
                 const auto recorder = state.start_recorder(IntrospectionRecorderStart{
                     .output = request->recorder_output,
