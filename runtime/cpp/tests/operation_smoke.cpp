@@ -2,12 +2,14 @@
 ///
 /// 覆盖 OperationId、policy、状态转换、cooperative cancel、进度事件和健康计数。
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <flowrt/operation.hpp>
 #include <flowrt/wire.hpp>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -237,14 +239,56 @@ int main() {
     assert(progress.id.operation_key == 9U);
     assert(progress.sequence == 3U);
     assert(progress.value == 42);
-    flowrt::OperationProgressPublisher<int> publisher{flowrt::OperationId{7U, 8U, 9U}};
-    publisher.publish(1);
-    publisher.publish(2);
+    flowrt::OperationProgressPublisher<TinyGoal> publisher{flowrt::OperationId{7U, 8U, 9U}};
+    publisher.publish(TinyGoal{.value = 1U});
+    publisher.publish(TinyGoal{.value = 2U});
     assert(publisher.events().size() == 2U);
     assert(publisher.events()[0].sequence == 0U);
     assert(publisher.events()[1].sequence == 1U);
     assert(publisher.drain().size() == 2U);
     assert(publisher.events().empty());
+
+    std::optional<std::vector<std::uint8_t>> progress_payload;
+    flowrt::OperationProgressPublisher<TinyGoal> hooked_publisher{
+        flowrt::OperationId{7U, 8U, 10U},
+        [&progress_payload](flowrt::OperationId, std::uint64_t sequence,
+                            std::optional<std::vector<std::uint8_t>> payload) {
+            assert(sequence == 0U);
+            progress_payload = std::move(payload);
+        }};
+    hooked_publisher.publish(TinyGoal{.value = 0x01020304U});
+    assert(progress_payload.has_value());
+    assert(progress_payload->size() == TinyGoal::wire_size());
+    assert((*progress_payload)[0] == 0x04U);
+    assert((*progress_payload)[1] == 0x03U);
+    assert((*progress_payload)[2] == 0x02U);
+    assert((*progress_payload)[3] == 0x01U);
+
+    auto payload_control = flowrt::OperationControl{77U, *retention_policy};
+    const auto payload_started = payload_control.start(owner_a, 200U);
+    assert(payload_started.has_value());
+    assert(payload_control.mark_running(payload_started->id) == flowrt::OperationControlError::Ok);
+    std::vector<std::uint8_t> result_payload{9U, 8U, 7U, 6U};
+    payload_control.publish_progress_with_payload(payload_started->id, 4U, result_payload);
+    assert(payload_control.complete_with_payload(payload_started->id,
+                                                 flowrt::OperationState::Succeeded,
+                                                 result_payload) ==
+           flowrt::OperationControlError::Ok);
+    const auto runtime_events = payload_control.drain_events();
+    const auto progress_event =
+        std::find_if(runtime_events.begin(), runtime_events.end(), [](const auto &event) {
+            return event.kind == flowrt::OperationRuntimeEventKind::Progress;
+        });
+    assert(progress_event != runtime_events.end());
+    assert(progress_event->payload.has_value());
+    assert(*progress_event->payload == result_payload);
+    const auto result_event =
+        std::find_if(runtime_events.begin(), runtime_events.end(), [](const auto &event) {
+            return event.kind == flowrt::OperationRuntimeEventKind::Result;
+        });
+    assert(result_event != runtime_events.end());
+    assert(result_event->payload.has_value());
+    assert(*result_event->payload == result_payload);
 
     const auto ack = flowrt::OperationStartAck::accepted_ack(id);
     assert(ack.accepted);

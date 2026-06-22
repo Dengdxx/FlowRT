@@ -637,12 +637,26 @@ class OperationProgressPublisher {
    public:
     explicit OperationProgressPublisher(OperationId id) : id_(id) {}
     OperationProgressPublisher(OperationId id, std::function<void(OperationId, std::uint64_t)> hook)
+        : id_(id),
+          progress_hook_([hook = std::move(hook)](OperationId id, std::uint64_t sequence,
+                                                  std::optional<std::vector<std::uint8_t>>) {
+              hook(id, sequence);
+          }) {}
+    OperationProgressPublisher(
+        OperationId id,
+        std::function<void(OperationId, std::uint64_t, std::optional<std::vector<std::uint8_t>>)>
+            hook)
         : id_(id), progress_hook_(std::move(hook)) {}
 
     void publish(T value) {
         const auto sequence = next_sequence_++;
+        std::optional<std::vector<std::uint8_t>> payload;
+        if constexpr (CanonicalTransportMessage<T>) {
+            payload.emplace(detail::encoded_frame_size(value));
+            detail::encode_frame(value, std::span<std::uint8_t>{payload->data(), payload->size()});
+        }
         if (progress_hook_) {
-            progress_hook_(id_, sequence);
+            progress_hook_(id_, sequence, payload);
         }
         events_.push_back(
             OperationProgress<T>{.id = id_, .sequence = sequence, .value = std::move(value)});
@@ -660,7 +674,8 @@ class OperationProgressPublisher {
     OperationId id_{};
     std::uint64_t next_sequence_ = 0;
     std::vector<OperationProgress<T>> events_;
-    std::function<void(OperationId, std::uint64_t)> progress_hook_;
+    std::function<void(OperationId, std::uint64_t, std::optional<std::vector<std::uint8_t>>)>
+        progress_hook_;
 };
 
 /**
@@ -721,6 +736,7 @@ struct OperationRuntimeEvent {
     OperationRuntimeEventKind kind{OperationRuntimeEventKind::StateChanged};
     std::optional<OperationState> state;
     std::optional<std::uint64_t> sequence;
+    std::optional<std::vector<std::uint8_t>> payload;
     std::optional<std::string_view> message;
 };
 
@@ -1008,11 +1024,25 @@ class OperationControl {
     }
 
     OperationControlError complete(OperationId id, OperationState terminal_state) noexcept {
-        return complete_at(id, terminal_state, monotonic_time_ms());
+        return complete_with_payload(id, terminal_state, std::nullopt);
+    }
+
+    OperationControlError complete_with_payload(
+        OperationId id, OperationState terminal_state,
+        std::optional<std::vector<std::uint8_t>> payload) noexcept {
+        return complete_with_payload_at(id, terminal_state, std::move(payload),
+                                        monotonic_time_ms());
     }
 
     OperationControlError complete_at(OperationId id, OperationState terminal_state,
                                       std::uint64_t completed_at_ms) noexcept {
+        return complete_with_payload_at(id, terminal_state, std::nullopt, completed_at_ms);
+    }
+
+    OperationControlError complete_with_payload_at(
+        OperationId id, OperationState terminal_state,
+        std::optional<std::vector<std::uint8_t>> payload,
+        std::uint64_t completed_at_ms) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!is_terminal(terminal_state)) {
             return OperationControlError::InvalidTransition;
@@ -1033,7 +1063,7 @@ class OperationControl {
                 return error;
             }
             health_.record_state(terminal_state);
-            push_result_event(id, terminal_state);
+            push_result_event(id, terminal_state, std::move(payload));
             push_state_event(id, terminal_state);
             const auto snapshot = snapshot_with_health(lifecycle);
             const bool keep_terminal_primary = was_primary && in_flight_.empty() &&
@@ -1066,7 +1096,7 @@ class OperationControl {
             retained->snapshot.health = health_.snapshot();
             retained->expires_at_ms = retention_deadline(completed_at_ms);
             const auto should_remove = !retained->expires_at_ms.has_value();
-            push_result_event(id, terminal_state);
+            push_result_event(id, terminal_state, std::move(payload));
             push_state_event(id, terminal_state);
             if (should_remove) {
                 retained_results_.erase(retained);
@@ -1101,6 +1131,11 @@ class OperationControl {
     }
 
     void publish_progress(OperationId id, std::uint64_t sequence) noexcept {
+        publish_progress_with_payload(id, sequence, std::nullopt);
+    }
+
+    void publish_progress_with_payload(OperationId id, std::uint64_t sequence,
+                                       std::optional<std::vector<std::uint8_t>> payload) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         auto *lifecycle = current(id);
         if (lifecycle == nullptr || is_terminal(lifecycle->state())) {
@@ -1111,6 +1146,7 @@ class OperationControl {
             .kind = OperationRuntimeEventKind::Progress,
             .state = std::nullopt,
             .sequence = sequence,
+            .payload = std::move(payload),
             .message = std::nullopt,
         });
     }
@@ -1316,13 +1352,15 @@ class OperationControl {
         return snapshot;
     }
 
-    void push_result_event(OperationId id, OperationState terminal_state) {
+    void push_result_event(OperationId id, OperationState terminal_state,
+                           std::optional<std::vector<std::uint8_t>> payload) {
         events_.push_back(OperationRuntimeEvent{
             .id = id,
             .kind = terminal_state == OperationState::Failed ? OperationRuntimeEventKind::Error
                                                              : OperationRuntimeEventKind::Result,
             .state = terminal_state,
             .sequence = std::nullopt,
+            .payload = std::move(payload),
             .message = std::nullopt,
         });
     }
@@ -1333,6 +1371,7 @@ class OperationControl {
             .kind = OperationRuntimeEventKind::StateChanged,
             .state = state,
             .sequence = std::nullopt,
+            .payload = std::nullopt,
             .message = std::nullopt,
         });
     }

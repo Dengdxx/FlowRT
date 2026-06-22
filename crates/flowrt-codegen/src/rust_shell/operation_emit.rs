@@ -75,6 +75,13 @@ pub(crate) fn emit_rust_operation_client_handles(contract: &ContractIr, graph: &
         "fn flowrt_operation_result<T>(result: flowrt::ServiceResult<T>) -> Result<T, flowrt::OperationClientError> {\n    match result {\n        flowrt::ServiceResult::Ok(value) => Ok(value),\n        flowrt::ServiceResult::Err(error, _) => Err(flowrt::OperationClientError::from_service_error(error)),\n    }\n}\n\npub(crate) fn flowrt_operation_id_string(id: flowrt::OperationId) -> String {\n    format!(\"{}:{}:{}\", id.operation_key, id.client_id, id.sequence)\n}\n\npub(crate) fn flowrt_operation_id_from_string(value: &str) -> Result<flowrt::OperationId, String> {\n    let mut parts = value.split(':');\n    let operation_key = parts.next().ok_or_else(|| format!(\"invalid operation id `{value}`\"))?.parse::<u64>().map_err(|_| format!(\"invalid operation id `{value}`\"))?;\n    let client_id = parts.next().ok_or_else(|| format!(\"invalid operation id `{value}`\"))?.parse::<u64>().map_err(|_| format!(\"invalid operation id `{value}`\"))?;\n    let sequence = parts.next().ok_or_else(|| format!(\"invalid operation id `{value}`\"))?.parse::<u64>().map_err(|_| format!(\"invalid operation id `{value}`\"))?;\n    if parts.next().is_some() {\n        return Err(format!(\"invalid operation id `{value}`\"));\n    }\n    Ok(flowrt::OperationId::new(operation_key, client_id, sequence))\n}\n\npub(crate) fn flowrt_operation_status_from_snapshot(name: &str, owner: &str, snapshot: flowrt::OperationStatusSnapshot) -> flowrt::IntrospectionOperationStatus {\n    let active = !snapshot.state.is_terminal() && snapshot.state != flowrt::OperationState::Idle;\n    flowrt::IntrospectionOperationStatus {\n        name: name.to_string(),\n        ready: true,\n        running: if active { 1 } else { 0 },\n        queued: 0,\n        current_operation_ids: if active { vec![flowrt_operation_id_string(snapshot.id)] } else { Vec::new() },\n        total_started: snapshot.health.started,\n        succeeded_count: snapshot.health.succeeded,\n        failed_count: snapshot.health.failed,\n        canceled_count: snapshot.health.canceled,\n        timeout_count: snapshot.health.timeout,\n        preempted_count: snapshot.health.preempted,\n        current_state: Some(snapshot.state.as_str().to_string()),\n        current_owner: if snapshot.owner.owner_key == 0 { None } else { Some(owner.to_string()) },\n        current_deadline_ms: if active { Some(snapshot.deadline_ms) } else { None },\n        last_event: Some(\"flowrt.operation.state_changed\".to_string()),\n        last_error: None,\n        last_transition_ms: Some(flowrt::monotonic_time_ms()),\n    }\n}\n\npub(crate) fn flowrt_operation_control_error<T>(error: flowrt::OperationControlError) -> flowrt::ServiceResult<T> {\n    let code = match error {\n        flowrt::OperationControlError::Busy { .. } | flowrt::OperationControlError::OwnerConflict { .. } => flowrt::ServiceError::Busy,\n        flowrt::OperationControlError::StaleInvocation { .. } | flowrt::OperationControlError::AlreadyTerminal { .. } => flowrt::ServiceError::Rejected,\n        flowrt::OperationControlError::InvalidPolicy(_) | flowrt::OperationControlError::InvalidTransition { .. } => flowrt::ServiceError::HandlerError,\n        flowrt::OperationControlError::Ok => flowrt::ServiceError::HandlerError,\n    };\n    flowrt::ServiceResult::err_with_message(code, error.to_string())\n}\n\n",
     );
 
+    for plan in plans.iter().filter(|plan| plan.backend.0 == "iox2") {
+        let command_ty = iox2_operation_start_command_type(plan);
+        output.push_str(&format!(
+            "#[allow(non_camel_case_types)]\npub(crate) struct {command_ty} {{\n    pub(crate) payload: Vec<u8>,\n    pub(crate) timeout_ms: Option<u64>,\n    pub(crate) reply: std::sync::mpsc::SyncSender<Result<flowrt::IntrospectionOperationStartStatus, String>>,\n}}\n\n"
+        ));
+    }
+
     let mut emitted_handles = std::collections::BTreeSet::new();
     for plan in &plans {
         let handle_name = operation_client_handle_name(plan);
@@ -178,6 +185,13 @@ pub(crate) fn rust_app_operation_fields(contract: &ContractIr, graph: &GraphIr) 
                 operation_cancel_server_field_name(plan),
                 operation_status_server_field_name(plan),
             ));
+            let command_ty = iox2_operation_start_command_type(plan);
+            output.push_str(&format!(
+                "    {}: std::sync::mpsc::Sender<{command_ty}>,\n\
+                 {}: std::sync::Mutex<std::sync::mpsc::Receiver<{command_ty}>>,\n",
+                iox2_operation_start_command_tx_field_name(plan),
+                iox2_operation_start_command_rx_field_name(plan),
+            ));
             continue;
         }
         output.push_str(&format!(
@@ -240,15 +254,27 @@ pub(crate) fn emit_rust_operation_new(
              let {control_var} = std::sync::Arc::new(std::sync::Mutex::new(flowrt::OperationControl::new({operation_key}, operation_policy_{index})));\n",
                 index = plan.index,
             ));
+            if plan.backend.0 == "iox2" {
+                let command_ty = iox2_operation_start_command_type(plan);
+                let tx_field = iox2_operation_start_command_tx_field_name(plan);
+                let rx_field = iox2_operation_start_command_rx_field_name(plan);
+                registration.push_str(&format!(
+                    "        let ({tx_field}, {rx_field}) = std::sync::mpsc::channel::<{command_ty}>();\n"
+                ));
+            }
             initializers.push_str(&format!(
                 "            {client_field}: {handle_name} {{ start_client: std::sync::Arc::new(std::sync::OnceLock::new()), cancel_client: std::sync::Arc::new(std::sync::OnceLock::new()), status_client: std::sync::Arc::new(std::sync::OnceLock::new()) }},\n\
                  {control_var}: {control_var}.clone(),\n"
             ));
             if plan.backend.0 == "iox2" {
+                let tx_field = iox2_operation_start_command_tx_field_name(plan);
+                let rx_field = iox2_operation_start_command_rx_field_name(plan);
                 initializers.push_str(&format!(
                     "            {}: std::sync::Arc::new(std::sync::OnceLock::new()),\n\
                      {}: std::sync::Arc::new(std::sync::OnceLock::new()),\n\
-                     {}: std::sync::Arc::new(std::sync::OnceLock::new()),\n",
+                     {}: std::sync::Arc::new(std::sync::OnceLock::new()),\n\
+                     {tx_field},\n\
+                     {rx_field}: std::sync::Mutex::new({rx_field}),\n",
                     operation_start_server_field_name(plan),
                     operation_cancel_server_field_name(plan),
                     operation_status_server_field_name(plan),
@@ -1124,6 +1150,18 @@ pub(crate) fn operation_status_server_field_name(plan: &OperationRuntimePlan) ->
         crate::snake_identifier(&plan.server_instance),
         crate::snake_identifier(&plan.server_port)
     )
+}
+
+pub(crate) fn iox2_operation_start_command_type(plan: &OperationRuntimePlan) -> String {
+    format!("FlowrtIox2OperationStartCommand_{}", plan.index)
+}
+
+pub(crate) fn iox2_operation_start_command_tx_field_name(plan: &OperationRuntimePlan) -> String {
+    format!("operation_start_command_tx_{}", plan.index)
+}
+
+pub(crate) fn iox2_operation_start_command_rx_field_name(plan: &OperationRuntimePlan) -> String {
+    format!("operation_start_command_rx_{}", plan.index)
 }
 
 pub(crate) fn operation_handler_method_name(port_name: &str) -> String {

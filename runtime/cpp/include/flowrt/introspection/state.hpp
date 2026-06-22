@@ -919,16 +919,27 @@ class IntrospectionState {
      */
     void record_operation_progress(std::string_view operation, std::string_view operation_id,
                                    std::uint64_t sequence) const {
+        record_operation_progress_payload(operation, operation_id, sequence, std::nullopt);
+    }
+
+    /**
+     * @brief 记录 operation progress 事件，并保留 payload 长度供观测事件说明。
+     */
+    void record_operation_progress_payload(
+        std::string_view operation, std::string_view operation_id, std::uint64_t sequence,
+        const std::optional<std::vector<std::uint8_t>> &payload_bytes) const {
         const auto operation_name = std::string{operation};
         std::lock_guard<std::mutex> lock(inner_->mutex);
         auto &entry = inner_->operations[operation_name];
         entry.name = operation_name;
         entry.last_event = "flowrt.operation.progress";
-        const auto payload = "{\"operation_id\":" + detail::json_string(operation_id) +
-                             ",\"sequence\":" + std::to_string(sequence) + "}";
+        const auto payload_json =
+            "{\"operation_id\":" + detail::json_string(operation_id) + ",\"sequence\":" +
+            std::to_string(sequence) + ",\"payload_len\":" +
+            (payload_bytes ? std::to_string(payload_bytes->size()) : std::string{"null"}) + "}";
         record_event_locked("operation", operation_name, "operation_event", "operation",
                             operation_name, "", "json", "flowrt.operation.progress",
-                            string_bytes(payload), std::nullopt);
+                            string_bytes(payload_json), std::nullopt);
     }
 
     /**
@@ -937,6 +948,16 @@ class IntrospectionState {
     void record_operation_result(std::string_view operation, std::string_view operation_id,
                                  std::string_view result,
                                  std::optional<std::string_view> error) const {
+        record_operation_result_payload(operation, operation_id, result, error, std::nullopt);
+    }
+
+    /**
+     * @brief 记录 operation result/error 事件，并保留 payload 长度供观测事件说明。
+     */
+    void record_operation_result_payload(
+        std::string_view operation, std::string_view operation_id, std::string_view result,
+        std::optional<std::string_view> error,
+        const std::optional<std::vector<std::uint8_t>> &payload_bytes) const {
         const auto operation_name = std::string{operation};
         const auto event = (error.has_value() || result == "failed")
                                ? std::string{"flowrt.operation.error"}
@@ -946,11 +967,14 @@ class IntrospectionState {
         entry.name = operation_name;
         entry.last_event = event;
         entry.last_error = error ? std::optional<std::string>{std::string{*error}} : std::nullopt;
-        const auto payload = "{\"operation_id\":" + detail::json_string(operation_id) +
-                             ",\"result\":" + detail::json_string(result) + ",\"error\":" +
-                             (error ? detail::json_string(*error) : std::string{"null"}) + "}";
+        const auto payload_json =
+            "{\"operation_id\":" + detail::json_string(operation_id) +
+            ",\"result\":" + detail::json_string(result) + ",\"error\":" +
+            (error ? detail::json_string(*error) : std::string{"null"}) + ",\"payload_len\":" +
+            (payload_bytes ? std::to_string(payload_bytes->size()) : std::string{"null"}) + "}";
         record_event_locked("operation", operation_name, "operation_event", "operation",
-                            operation_name, "", "json", event, string_bytes(payload), std::nullopt);
+                            operation_name, "", "json", event, string_bytes(payload_json),
+                            std::nullopt);
     }
 
     /**

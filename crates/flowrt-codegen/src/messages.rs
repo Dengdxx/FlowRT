@@ -75,6 +75,7 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
     output.push_str("namespace flowrt_app {\n\n");
     let needs_iox2_type_name = contract_uses_backend(contract, "iox2");
     let needs_wire_codec = contract_uses_backend(contract, "zenoh")
+        || contract_uses_backend(contract, "iox2")
         || contract_has_variable_messages(contract)
         || contract_has_boundary_endpoints(contract);
     let frame_descriptor_messages = frame_descriptor_message_names(contract);
@@ -122,6 +123,7 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
     output.push('\n');
     let needs_iox2_type_name = contract_uses_backend(contract, "iox2");
     let needs_wire_codec = contract_uses_backend(contract, "zenoh")
+        || contract_uses_backend(contract, "iox2")
         || contract_has_variable_messages(contract)
         || contract_has_boundary_endpoints(contract);
     let ordered_types = ordered_types(contract);

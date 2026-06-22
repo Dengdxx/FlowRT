@@ -60,6 +60,13 @@ pub(crate) fn flowrt_operation_control_error<T>(error: flowrt::OperationControlE
 }
 
 #[allow(non_camel_case_types)]
+pub(crate) struct FlowrtIox2OperationStartCommand_0 {
+    pub(crate) payload: Vec<u8>,
+    pub(crate) timeout_ms: Option<u64>,
+    pub(crate) reply: std::sync::mpsc::SyncSender<Result<flowrt::IntrospectionOperationStartStatus, String>>,
+}
+
+#[allow(non_camel_case_types)]
 #[derive(Clone)]
 pub struct OperationClient_controller_plan {
     pub(crate) start_client: std::sync::Arc<std::sync::OnceLock<flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>>>,

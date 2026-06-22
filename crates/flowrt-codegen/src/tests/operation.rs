@@ -781,6 +781,26 @@ fn cpp_operation_components_are_generated() {
         "C++ start handler must return structured Operation control errors.\n\n{shell}"
     );
     assert!(
+        shell.contains("flowrt::OperationHandlerResult<PlanResult>::Kind::Succeeded"),
+        "C++ worker must inspect typed success result.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::detail::encode_frame(*result.value()"),
+        "C++ worker must encode typed success result with Message ABI.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(
+            "operation_control->complete_with_payload(id, terminal_state, std::move(result_payload)"
+        ),
+        "C++ worker must pass result payload into OperationControl.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(
+            "operation_control->publish_progress_with_payload(progress_id, sequence, std::move(payload));"
+        ),
+        "C++ worker must pass progress payload into OperationControl.\n\n{shell}"
+    );
+    assert!(
         shell.contains("check_deadline(flowrt::monotonic_time_ms())"),
         "C++ operation hidden scheduler task must drive runtime deadline checks.\n\n{shell}"
     );

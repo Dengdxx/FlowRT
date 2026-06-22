@@ -7,7 +7,8 @@
 
 当前 `master` 在 `v0.26.0 Transport Compile Evidence Matrix` 发布后继续做未发布硬化：
 不新增 RSDL、Contract IR 或 runtime 用户语义，只补强 generated shell 真编译证据网、
-自描述嵌入生成与离线包 SDK 下载失败路径。用户侧仍只看到 FlowRT typed Service / Operation API 和常规
+Operation control-plane、record/replay command 投影、自描述嵌入生成与离线包 SDK 下载失败
+路径。用户侧仍只看到 FlowRT typed Service / Operation API 和常规
 `Vec` / `String` / `std::vector` / `std::string` 消息字段；`iox2` / `zenoh` 仍是
 FlowRT runtime API 之下的 backend 实现细节。
 
@@ -88,10 +89,12 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   已可按 invocation id 读取 retained typed result payload，并用 self-description Message ABI
   解码为 JSON；`flowrt op follow` / `flowrt op start --follow` 已可通过 `OperationObserve`
   读取 retained state/progress/result event，并把 typed progress/result payload 解码为 JSON；
-  本机 socket 与远程 zenoh Operation control-plane 均支持。Operation start/cancel accepted
-  后会进入 recorder command event，`flowrt replay --file <recording.mcap>` 可读取
-  operation command timeline 并重新驱动 start/cancel；progress/result/error 仍只作为
-  observation evidence，不参与重放。
+  本机 socket 与远程 zenoh Operation control-plane 均支持。C++ Operation runtime 与 generated
+  shell 已补齐 typed payload parity：feedback/result 会编码为 canonical Message ABI bytes 并
+  进入 runtime event，generated introspection drain 走 payload-aware progress/result 记录入口。
+  Operation start/cancel accepted 后会进入 recorder command event，`flowrt replay --file
+  <recording.mcap>` 可读取 operation command timeline 并重新驱动 start/cancel；
+  progress/result/error 仍只作为 observation evidence，不参与重放。
 - 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke、v0.25.1 的
   `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据，以及
   v0.26.0 的代表性 iox2/zenoh generated dataflow、Service、Operation、bounded variable

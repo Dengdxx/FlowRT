@@ -81,14 +81,19 @@ pub(super) fn cpp_operation_registration_block(
                             error != flowrt::OperationControlError::Ok) {{
                             return;
                         }}
-                        auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence) {{
-                            operation_control->publish_progress(progress_id, sequence);
+                        auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence, std::optional<std::vector<std::uint8_t>> payload) {{
+                            operation_control->publish_progress_with_payload(progress_id, sequence, std::move(payload));
                         }}}};
                         flowrt::OperationState terminal_state = flowrt::OperationState::Failed;
+                        std::optional<std::vector<std::uint8_t>> result_payload;
                         try {{
                             const auto result = operation_worker_server->on_{port}_operation(goal_for_worker, *cancel, progress);
                             switch (result.kind()) {{
                                 case flowrt::OperationHandlerResult<{result_ty}>::Kind::Succeeded:
+                                    if (result.value().has_value()) {{
+                                        result_payload.emplace(flowrt::detail::encoded_frame_size(*result.value()));
+                                        flowrt::detail::encode_frame(*result.value(), std::span<std::uint8_t>{{result_payload->data(), result_payload->size()}});
+                                    }}
                                     terminal_state = flowrt::OperationState::Succeeded;
                                     break;
                                 case flowrt::OperationHandlerResult<{result_ty}>::Kind::Failed:
@@ -100,8 +105,9 @@ pub(super) fn cpp_operation_registration_block(
                             }}
                         }} catch (...) {{
                             terminal_state = flowrt::OperationState::Failed;
+                            result_payload = std::nullopt;
                         }}
-                        (void)operation_control->complete(id, terminal_state);
+                        (void)operation_control->complete_with_payload(id, terminal_state, std::move(result_payload));
                     }}).detach();
                 }} catch (...) {{
                     (void)operation_control->complete(id, flowrt::OperationState::Failed);

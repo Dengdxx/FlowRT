@@ -18,6 +18,8 @@ pub struct App {
     operation_start_server_navigator_plan: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>>>>,
 operation_cancel_server_navigator_plan: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>>,
 operation_status_server_navigator_plan: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>>,
+    operation_start_command_tx_0: std::sync::mpsc::Sender<FlowrtIox2OperationStartCommand_0>,
+operation_start_command_rx_0: std::sync::Mutex<std::sync::mpsc::Receiver<FlowrtIox2OperationStartCommand_0>>,
 }
 
 impl App {
@@ -39,6 +41,7 @@ Ok(policy) => policy,
 Err(error) => panic!("validated operation policy rejected at runtime: {error}"),
 };
 let operation_control_0 = std::sync::Arc::new(std::sync::Mutex::new(flowrt::OperationControl::new(flowrt::fnv1a64("controller.plan".as_bytes()), operation_policy_0)));
+        let (operation_start_command_tx_0, operation_start_command_rx_0) = std::sync::mpsc::channel::<FlowrtIox2OperationStartCommand_0>();
         Self {
             controller: controller.clone(),
             navigator: navigator.clone(),
@@ -47,6 +50,8 @@ operation_control_0: operation_control_0.clone(),
             operation_start_server_navigator_plan: std::sync::Arc::new(std::sync::OnceLock::new()),
 operation_cancel_server_navigator_plan: std::sync::Arc::new(std::sync::OnceLock::new()),
 operation_status_server_navigator_plan: std::sync::Arc::new(std::sync::OnceLock::new()),
+operation_start_command_tx_0,
+operation_start_command_rx_0: std::sync::Mutex::new(operation_start_command_rx_0),
             startup_status,
         }
     }
@@ -670,19 +675,42 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
                             let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(3));
-                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                let operation_start_command_tx = app.operation_start_command_tx_0.clone();
+                                let operation_start_waiter = scheduler_events.clone();
                                 introspection_state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
                                     let _ = owner;
-                                    let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&payload).map_err(|error| error.to_string())?;
-                                    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
-                                    let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
-                                    let operation_id = flowrt_operation_id_string(ack.id);
-                                    let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
-                                    Ok(flowrt::IntrospectionOperationStartStatus {
-                                        operation_id,
-                                        operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
-                                    })
+                                    let (reply, response) = std::sync::mpsc::sync_channel(1);
+                                    operation_start_command_tx.send(FlowrtIox2OperationStartCommand_0 { payload, timeout_ms, reply }).map_err(|_| "operation start scheduler bridge disconnected".to_string())?;
+                                    operation_start_waiter.notify_data();
+                                    let wait_ms = timeout_ms.unwrap_or(5000).saturating_add(1000);
+                                    match response.recv_timeout(std::time::Duration::from_millis(wait_ms)) {
+                                        Ok(result) => result,
+                                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("timed out waiting for operation start scheduler bridge".to_string()),
+                                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("operation start scheduler bridge dropped response".to_string()),
+                                    }
                                 });
+                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                let mut operation_start_commands = Vec::new();
+                                {
+                                    let operation_start_command_rx = app.operation_start_command_rx_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    while let Ok(command) = operation_start_command_rx.try_recv() {
+                                        operation_start_commands.push(command);
+                                    }
+                                }
+                                for command in operation_start_commands {
+                                    let result = (|| -> Result<flowrt::IntrospectionOperationStartStatus, String> {
+                                        let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&command.payload).map_err(|error| error.to_string())?;
+                                        let timeout = std::time::Duration::from_millis(command.timeout_ms.unwrap_or(5000));
+                                        let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
+                                        let operation_id = flowrt_operation_id_string(ack.id);
+                                        let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
+                                        Ok(flowrt::IntrospectionOperationStartStatus {
+                                            operation_id,
+                                            operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
+                                        })
+                                    })();
+                                    let _ = command.reply.send(result);
+                                }
                                 let operation_status_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_status_handler("controller.plan", move |operation_id| {
                                     let id = flowrt_operation_id_from_string(operation_id)?;
@@ -1313,19 +1341,42 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
                             let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(2));
-                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                let operation_start_command_tx = app.operation_start_command_tx_0.clone();
+                                let operation_start_waiter = scheduler_events.clone();
                                 introspection_state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
                                     let _ = owner;
-                                    let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&payload).map_err(|error| error.to_string())?;
-                                    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
-                                    let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
-                                    let operation_id = flowrt_operation_id_string(ack.id);
-                                    let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
-                                    Ok(flowrt::IntrospectionOperationStartStatus {
-                                        operation_id,
-                                        operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
-                                    })
+                                    let (reply, response) = std::sync::mpsc::sync_channel(1);
+                                    operation_start_command_tx.send(FlowrtIox2OperationStartCommand_0 { payload, timeout_ms, reply }).map_err(|_| "operation start scheduler bridge disconnected".to_string())?;
+                                    operation_start_waiter.notify_data();
+                                    let wait_ms = timeout_ms.unwrap_or(5000).saturating_add(1000);
+                                    match response.recv_timeout(std::time::Duration::from_millis(wait_ms)) {
+                                        Ok(result) => result,
+                                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("timed out waiting for operation start scheduler bridge".to_string()),
+                                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("operation start scheduler bridge dropped response".to_string()),
+                                    }
                                 });
+                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                let mut operation_start_commands = Vec::new();
+                                {
+                                    let operation_start_command_rx = app.operation_start_command_rx_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    while let Ok(command) = operation_start_command_rx.try_recv() {
+                                        operation_start_commands.push(command);
+                                    }
+                                }
+                                for command in operation_start_commands {
+                                    let result = (|| -> Result<flowrt::IntrospectionOperationStartStatus, String> {
+                                        let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&command.payload).map_err(|error| error.to_string())?;
+                                        let timeout = std::time::Duration::from_millis(command.timeout_ms.unwrap_or(5000));
+                                        let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
+                                        let operation_id = flowrt_operation_id_string(ack.id);
+                                        let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
+                                        Ok(flowrt::IntrospectionOperationStartStatus {
+                                            operation_id,
+                                            operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
+                                        })
+                                    })();
+                                    let _ = command.reply.send(result);
+                                }
                                 let operation_status_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_status_handler("controller.plan", move |operation_id| {
                                     let id = flowrt_operation_id_from_string(operation_id)?;
@@ -1905,19 +1956,42 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
                             let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(2));
-                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                let operation_start_command_tx = app.operation_start_command_tx_0.clone();
+                                let operation_start_waiter = scheduler_events.clone();
                                 introspection_state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
                                     let _ = owner;
-                                    let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&payload).map_err(|error| error.to_string())?;
-                                    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
-                                    let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
-                                    let operation_id = flowrt_operation_id_string(ack.id);
-                                    let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
-                                    Ok(flowrt::IntrospectionOperationStartStatus {
-                                        operation_id,
-                                        operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
-                                    })
+                                    let (reply, response) = std::sync::mpsc::sync_channel(1);
+                                    operation_start_command_tx.send(FlowrtIox2OperationStartCommand_0 { payload, timeout_ms, reply }).map_err(|_| "operation start scheduler bridge disconnected".to_string())?;
+                                    operation_start_waiter.notify_data();
+                                    let wait_ms = timeout_ms.unwrap_or(5000).saturating_add(1000);
+                                    match response.recv_timeout(std::time::Duration::from_millis(wait_ms)) {
+                                        Ok(result) => result,
+                                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("timed out waiting for operation start scheduler bridge".to_string()),
+                                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("operation start scheduler bridge dropped response".to_string()),
+                                    }
                                 });
+                                let operation_start_client = __flowrt_operation_start_client_0.clone();
+                                let mut operation_start_commands = Vec::new();
+                                {
+                                    let operation_start_command_rx = app.operation_start_command_rx_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    while let Ok(command) = operation_start_command_rx.try_recv() {
+                                        operation_start_commands.push(command);
+                                    }
+                                }
+                                for command in operation_start_commands {
+                                    let result = (|| -> Result<flowrt::IntrospectionOperationStartStatus, String> {
+                                        let goal = <PlanGoal as flowrt::FrameCodec>::decode_frame(&command.payload).map_err(|error| error.to_string())?;
+                                        let timeout = std::time::Duration::from_millis(command.timeout_ms.unwrap_or(5000));
+                                        let ack = operation_start_client.start(goal, timeout).map_err(|error| format!("{error:?}"))?;
+                                        let operation_id = flowrt_operation_id_string(ack.id);
+                                        let snapshot = operation_start_client.status(ack.id, timeout).map_err(|error| format!("{error:?}"))?;
+                                        Ok(flowrt::IntrospectionOperationStartStatus {
+                                            operation_id,
+                                            operation: flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot),
+                                        })
+                                    })();
+                                    let _ = command.reply.send(result);
+                                }
                                 let operation_status_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_status_handler("controller.plan", move |operation_id| {
                                     let id = flowrt_operation_id_from_string(operation_id)?;
