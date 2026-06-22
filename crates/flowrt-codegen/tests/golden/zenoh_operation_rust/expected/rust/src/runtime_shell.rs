@@ -341,49 +341,6 @@ operation_control_0: operation_control_0.clone(),
         }
         flowrt::TaskRunOutcome::ok(__flowrt_output_commits)
     }
-// ── Operation step functions ───────────────────────────────────────
-
-    fn step_operation_navigator_plan(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {
-let operation_cancel_control = self.operation_control_0.clone();
-introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
-let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-let snapshot = control.snapshot();
-if flowrt_operation_id_string(snapshot.id) != operation_id {
-return Err(format!("stale operation invocation `{}`; current is `{}`", operation_id, flowrt_operation_id_string(snapshot.id)));
-}
-control.request_cancel(snapshot.id, snapshot.owner).map_err(|error| error.to_string())?;
-Ok(flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", control.snapshot()))
-});
-let mut operation_control = self.operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());
-let snapshot = operation_control.snapshot();
-let events = operation_control.drain_events();
-drop(operation_control);
-for event in events {
-let operation_id = flowrt_operation_id_string(event.id);
-match event.kind {
-flowrt::OperationRuntimeEventKind::StateChanged => {
-if let Some(state) = event.state {
-introspection_state.record_operation_transition("controller.plan", &operation_id, state.as_str(), Some("controller.plan"), if state.is_terminal() { None } else { Some(snapshot.deadline_ms) });
-}
-}
-flowrt::OperationRuntimeEventKind::Progress => {
-introspection_state.record_operation_progress("controller.plan", &operation_id, event.sequence.unwrap_or(0));
-}
-flowrt::OperationRuntimeEventKind::Result => {
-let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
-introspection_state.record_operation_result("controller.plan", &operation_id, result, None);
-}
-flowrt::OperationRuntimeEventKind::Error => {
-let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("failed");
-introspection_state.record_operation_result("controller.plan", &operation_id, result, Some("handler error"));
-}
-}
-}
-introspection_state.record_operation_health(flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", snapshot));
-flowrt::Status::Ok
-}
-
     pub fn run(self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {
         if self.startup_status != flowrt::Status::Ok {
             return self.startup_status;
@@ -636,7 +593,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                     let flowrt_operation_snapshot_0 = app.operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();
     let flowrt_operation_active_0 = !flowrt_operation_snapshot_0.state.is_terminal()
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
-    if (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
+    if flowrt_operation_active_0 && !flowrt_operation_tick_driven_0 {
     scheduler.wake(flowrt::TaskId(3));
     flowrt_operation_tick_driven_0 = true;
     woke_on_message = true;
@@ -1180,7 +1137,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                     let flowrt_operation_snapshot_0 = app.operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();
     let flowrt_operation_active_0 = !flowrt_operation_snapshot_0.state.is_terminal()
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
-    if (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
+    if flowrt_operation_active_0 && !flowrt_operation_tick_driven_0 {
     scheduler.wake(flowrt::TaskId(2));
     flowrt_operation_tick_driven_0 = true;
     woke_on_message = true;
@@ -1728,7 +1685,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                     let flowrt_operation_snapshot_0 = app.operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();
     let flowrt_operation_active_0 = !flowrt_operation_snapshot_0.state.is_terminal()
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
-    if (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
+    if flowrt_operation_active_0 && !flowrt_operation_tick_driven_0 {
     scheduler.wake(flowrt::TaskId(2));
     flowrt_operation_tick_driven_0 = true;
     woke_on_message = true;

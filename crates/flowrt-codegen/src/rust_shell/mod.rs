@@ -12,8 +12,9 @@ use flowrt_ir::{ComponentIr, ContractIr, DeterminismMode, LanguageKind, TaskConc
 use crate::runtime_plan::{
     active_boundaries_for_instances, bind_runtime_plans, boundary_runtime_plans,
     bridge_runtime_plans, contract_has_runtime_params_for_language, incoming_bind_index_map,
-    incoming_boundary_index_map, incoming_bridge_index_map, outgoing_bind_indices_map,
-    outgoing_boundary_indices_map, outgoing_bridge_indices_map, process_runtime_plans,
+    incoming_boundary_index_map, incoming_bridge_index_map, operation_runtime_plans,
+    outgoing_bind_indices_map, outgoing_boundary_indices_map, outgoing_bridge_indices_map,
+    process_runtime_plans, service_runtime_plans,
 };
 use crate::{component_by_name, component_rust_name, managed_header};
 
@@ -21,14 +22,13 @@ use backend_emit::selected_backend_name;
 use introspection_emit::emit_rust_introspection_helpers;
 use lifecycle_emit::{emit_rust_app_new, emit_rust_app_run, emit_rust_app_run_tick};
 use operation_emit::{
-    emit_rust_operation_client_handles, emit_rust_operation_step_functions,
-    operation_client_handle_name, rust_operation_handler_methods,
+    emit_rust_operation_client_handles, operation_client_handle_name,
+    rust_operation_handler_methods,
 };
 use params_emit::{emit_rust_param_constraint_helpers, rust_params_struct};
 use scheduler_emit::emit_all_step_functions;
 use service_emit::{
-    client_handle_name, emit_rust_service_client_handles, emit_rust_service_step_functions,
-    rust_service_handler_methods,
+    client_handle_name, emit_rust_service_client_handles, rust_service_handler_methods,
 };
 use step_emit::RustStepEmission;
 
@@ -144,11 +144,20 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     let outgoing_bridge_indices = outgoing_bridge_indices_map(&bridge_plans);
     let outgoing_boundary_indices = outgoing_boundary_indices_map(&boundary_plans);
     let selected_backend = selected_backend_name(contract);
+    let needs_message_import = !bind_plans.is_empty()
+        || !bridge_plans.is_empty()
+        || !active_boundaries_for_instances(&boundary_plans, &order).is_empty()
+        || service_runtime_plans(contract, graph)
+            .iter()
+            .any(|plan| plan.backend.0 != "zenoh")
+        || !operation_runtime_plans(contract, graph).is_empty();
 
     let mut output = managed_header();
-    output.push_str(
-        "\nuse crate::components::*;\nuse crate::messages::*;\nuse crate::selfdesc;\nuse crate::user;\n\n",
-    );
+    output.push_str("\nuse crate::components::*;\n");
+    if needs_message_import {
+        output.push_str("use crate::messages::*;\n");
+    }
+    output.push_str("use crate::selfdesc;\nuse crate::user;\n\n");
     output.push_str(&format!(
         "const PACKAGE_NAME: &str = {};\n\n",
         crate::rust_string_literal(&contract.package.name)
@@ -251,9 +260,6 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
 
     emit_all_step_functions(&step_emission, graph, &order, &mut output);
     scheduler_emit::emit_process_step_functions(&step_emission, graph, &process_plans, &mut output);
-    // service hidden task step functions
-    output.push_str(&emit_rust_service_step_functions(contract, graph));
-    output.push_str(&emit_rust_operation_step_functions(contract, graph));
     output.push_str(&emit_rust_app_run(
         contract,
         graph,

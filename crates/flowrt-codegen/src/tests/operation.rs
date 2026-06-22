@@ -233,12 +233,15 @@ fn rust_operation_step_drives_deadline_timeout_and_stale_cancel_errors() {
     let bundle = emit_artifacts(&contract).unwrap();
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     let components = artifact_content(&bundle, "rust/src/components.rs");
-    let step_fn = generated_function_block(shell, "fn step_operation_navigator_plan");
     let cancel_handler = generated_function_block(shell, "let operation_cancel_handler_0");
 
     assert!(
-        step_fn.contains(".check_deadline(flowrt::monotonic_time_ms())"),
-        "operation hidden scheduler task must drive runtime deadline checks.\n\n{step_fn}"
+        !shell.contains("fn step_operation_navigator_plan("),
+        "Rust runtime shell must not keep an unused operation helper.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(".check_deadline(flowrt::monotonic_time_ms())"),
+        "operation hidden scheduler task must drive runtime deadline checks.\n\n{shell}"
     );
     assert!(
         cancel_handler.contains("flowrt_operation_control_error"),
@@ -249,8 +252,8 @@ fn rust_operation_step_drives_deadline_timeout_and_stale_cancel_errors() {
         "generated helper must map stale invocation ids to structured rejected errors.\n\n{components}"
     );
     assert!(
-        step_fn.contains("state.as_str()"),
-        "generated shell must publish final lifecycle state names through OperationState::as_str().\n\n{step_fn}"
+        shell.contains("state.as_str()"),
+        "generated shell must publish final lifecycle state names through OperationState::as_str().\n\n{shell}"
     );
 }
 

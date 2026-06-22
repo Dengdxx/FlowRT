@@ -320,6 +320,7 @@ impl App {
         scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(1), lane: flowrt::LaneId(1), priority: 0 });
         let mut boundary_input_feed_seen_revision_for_monitor_main: u64 = 0;
         let scheduler_base_period_ms: u64 = 1;
+        let _ = scheduler_base_period_ms;
         let mut tick_base: usize = 0;
         let mut scheduler_now_ms: u64 = 0;
         let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
@@ -727,6 +728,7 @@ impl App {
         scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(1), lane: flowrt::LaneId(1), priority: 0 });
         let mut boundary_input_feed_seen_revision_for_monitor_main: u64 = 0;
         let scheduler_base_period_ms: u64 = 1;
+        let _ = scheduler_base_period_ms;
         let mut tick_base: usize = 0;
         let mut scheduler_now_ms: u64 = 0;
         let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();

@@ -330,30 +330,6 @@ impl App {
         }
         flowrt::TaskRunOutcome::ok(__flowrt_output_commits)
     }
-// ── Service step functions ─────────────────────────────────────────
-
-    /// Hidden service task: process pending iox2 requests for `plan_svc.plan`。
-fn step_service_plan_svc_plan(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {
-let Some(server) = self.service_server_plan_svc_plan.get() else { return flowrt::Status::Error; };
-let handled = match server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| self.plan_svc.as_ref().as_ref().on_plan_request(&request)) {
-Ok(handled) => handled,
-Err(_) => return flowrt::Status::Error,
-};
-introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {
-name: "plan_client.plan".to_string(),
-ready: true,
-in_flight: 0,
-queued: 0,
-total_requests: handled as u64,
-timeout_count: 0,
-busy_count: 0,
-unavailable_count: 0,
-late_drop_count: 0,
-});
-let _ = handled;
-flowrt::Status::Ok
-}
-
     pub fn run(self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {
         if self.startup_status != flowrt::Status::Ok {
             return self.startup_status;

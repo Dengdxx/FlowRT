@@ -1,7 +1,6 @@
 // FlowRT 管理产物。不要手工修改。
 
 use crate::components::*;
-use crate::messages::*;
 use crate::selfdesc;
 use crate::user;
 
@@ -328,8 +327,6 @@ impl App {
         }
         flowrt::TaskRunOutcome::ok(__flowrt_output_commits)
     }
-// ── Service step functions ─────────────────────────────────────────
-
     pub fn run(self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {
         if self.startup_status != flowrt::Status::Ok {
             return self.startup_status;

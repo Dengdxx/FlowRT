@@ -441,99 +441,6 @@ pub(crate) fn emit_rust_operation_new(
     (registration, initializers)
 }
 
-pub(crate) fn emit_rust_operation_step_functions(contract: &ContractIr, graph: &GraphIr) -> String {
-    let plans = operation_runtime_plans(contract, graph);
-    if plans.is_empty() {
-        return String::new();
-    }
-
-    let mut output = String::new();
-    output.push_str("// ── Operation step functions ───────────────────────────────────────\n\n");
-    for plan in &plans {
-        let operation_name = rust_string_literal(&plan.operation_name);
-        let owner_name =
-            rust_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
-        let control_var = format!("operation_control_{}", plan.index);
-        let pending_block = match plan.backend.0.as_str() {
-            "zenoh" => String::new(),
-            "iox2" => rust_iox2_operation_pending_drain(
-                contract,
-                graph,
-                plan,
-                RustIox2OperationPendingDrain {
-                    start_server_expr: &format!("self.{}", operation_start_server_field_name(plan)),
-                    cancel_server_expr: &format!(
-                        "self.{}",
-                        operation_cancel_server_field_name(plan)
-                    ),
-                    status_server_expr: &format!(
-                        "self.{}",
-                        operation_status_server_field_name(plan)
-                    ),
-                    control_expr: &format!("self.{control_var}"),
-                    server_expr: &format!("self.{}", plan.server_instance),
-                    indent: "        ",
-                    error_return: "return flowrt::Status::Error;",
-                },
-            ),
-            _ => {
-                format!(
-                    "        self.{start_server}.process_pending_requests();\n        self.{cancel_server}.process_pending_requests();\n        self.{status_server}.process_pending_requests();\n",
-                    start_server = operation_start_server_field_name(plan),
-                    cancel_server = operation_cancel_server_field_name(plan),
-                    status_server = operation_status_server_field_name(plan),
-                )
-            }
-        };
-        output.push_str(&format!(
-            "    fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
-                 let operation_cancel_control = self.{control_var}.clone();\n\
-                 introspection_state.register_operation_cancel_handler({operation_name}, move |operation_id| {{\n\
-                     let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
-                     let snapshot = control.snapshot();\n\
-                     if flowrt_operation_id_string(snapshot.id) != operation_id {{\n\
-                         return Err(format!(\"stale operation invocation `{{}}`; current is `{{}}`\", operation_id, flowrt_operation_id_string(snapshot.id)));\n\
-                     }}\n\
-                     control.request_cancel(snapshot.id, snapshot.owner).map_err(|error| error.to_string())?;\n\
-                     Ok(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, control.snapshot()))\n\
-                 }});\n\
-                 {pending_block}\
-                 let mut operation_control = self.{control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
-                 let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());\n\
-                 let snapshot = operation_control.snapshot();\n\
-                 let events = operation_control.drain_events();\n\
-                 drop(operation_control);\n\
-                 for event in events {{\n\
-                     let operation_id = flowrt_operation_id_string(event.id);\n\
-                     match event.kind {{\n\
-                         flowrt::OperationRuntimeEventKind::StateChanged => {{\n\
-                             if let Some(state) = event.state {{\n\
-                                 introspection_state.record_operation_transition({operation_name}, &operation_id, state.as_str(), Some({owner_name}), if state.is_terminal() {{ None }} else {{ Some(snapshot.deadline_ms) }});\n\
-                             }}\n\
-                         }}\n\
-                         flowrt::OperationRuntimeEventKind::Progress => {{\n\
-                             introspection_state.record_operation_progress({operation_name}, &operation_id, event.sequence.unwrap_or(0));\n\
-                         }}\n\
-                         flowrt::OperationRuntimeEventKind::Result => {{\n\
-                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"succeeded\");\n\
-                             introspection_state.record_operation_result({operation_name}, &operation_id, result, None);\n\
-                         }}\n\
-                         flowrt::OperationRuntimeEventKind::Error => {{\n\
-                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"failed\");\n\
-                             introspection_state.record_operation_result({operation_name}, &operation_id, result, Some(\"handler error\"));\n\
-                         }}\n\
-                     }}\n\
-                 }}\n\
-                 introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n\
-                 flowrt::Status::Ok\n\
-             }}\n\n",
-            fn_name = operation_step_fn_name(plan),
-        ));
-    }
-
-    output
-}
-
 pub(crate) fn emit_rust_zenoh_operation_endpoints(
     contract: &ContractIr,
     graph: &GraphIr,
@@ -1076,7 +983,7 @@ pub(crate) fn emit_rust_operation_wake_checks(
             "                let flowrt_operation_snapshot_{index} = self.{control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();\n\
                  let flowrt_operation_active_{index} = !flowrt_operation_snapshot_{index}.state.is_terminal()\n\
                      && flowrt_operation_snapshot_{index}.state != flowrt::OperationState::Idle;\n\
-                 if {pending_condition}(flowrt_operation_active_{index} && !{tick_driven_flag}) {{\n\
+                 if {pending_condition}flowrt_operation_active_{index} && !{tick_driven_flag} {{\n\
                      scheduler.wake(flowrt::TaskId({task_id}));\n\
                      {tick_driven_flag} = true;\n\
                      woke_on_message = true;\n\
@@ -1205,14 +1112,6 @@ pub(crate) fn operation_cancel_server_field_name(plan: &OperationRuntimePlan) ->
 pub(crate) fn operation_status_server_field_name(plan: &OperationRuntimePlan) -> String {
     format!(
         "operation_status_server_{}_{}",
-        crate::snake_identifier(&plan.server_instance),
-        crate::snake_identifier(&plan.server_port)
-    )
-}
-
-fn operation_step_fn_name(plan: &OperationRuntimePlan) -> String {
-    format!(
-        "step_operation_{}_{}",
         crate::snake_identifier(&plan.server_instance),
         crate::snake_identifier(&plan.server_port)
     )

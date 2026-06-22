@@ -217,6 +217,9 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         "        let scheduler_base_period_ms: u64 = {};\n",
         scheduler_plan.scheduler_base_period_ms
     ));
+    if external_tick.is_some() || rust_scheduler_uses_data_time(contract) {
+        output.push_str("        let _ = scheduler_base_period_ms;\n");
+    }
     let task_health_init = emit_rust_task_health_init(&scheduler_plan.dataflow_tasks);
     let clock_source = scheduler_clock_source(contract);
     let task_clock_source = rust_task_clock_source_expr(contract);

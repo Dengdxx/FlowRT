@@ -124,14 +124,24 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
     let needs_wire_codec = contract_uses_backend(contract, "zenoh")
         || contract_has_variable_messages(contract)
         || contract_has_boundary_endpoints(contract);
-    let zero_copy_derive = if needs_iox2_type_name {
+    let ordered_types = ordered_types(contract);
+    let needs_zero_copy_derive = needs_iox2_type_name
+        && ordered_types.iter().any(|ty| {
+            !type_contains_variable_data(
+                contract,
+                &TypeExpr::Named {
+                    name: ty.qualified_name.clone(),
+                },
+            )
+        });
+    let zero_copy_derive = if needs_zero_copy_derive {
         output.push_str("use flowrt::ZeroCopySend;\n\n");
         ", flowrt::ZeroCopySend"
     } else {
         ""
     };
     let frame_descriptor_messages = frame_descriptor_message_names(contract);
-    for ty in ordered_types(contract) {
+    for ty in ordered_types {
         let variable_message = type_contains_variable_data(
             contract,
             &TypeExpr::Named {

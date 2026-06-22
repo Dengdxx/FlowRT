@@ -374,77 +374,6 @@ pub(crate) fn emit_rust_service_new(
     (registration, initializers)
 }
 
-// ── Service step 函数 ──────────────────────────────────────────────────
-
-/// 生成每个 service server 的 hidden task step 函数。
-pub(crate) fn emit_rust_service_step_functions(contract: &ContractIr, graph: &GraphIr) -> String {
-    let plans = service_runtime_plans(contract, graph);
-    if plans.is_empty() {
-        return String::new();
-    }
-
-    let mut output = String::new();
-    output.push_str("// ── Service step functions ─────────────────────────────────────────\n\n");
-
-    for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
-        let fn_name = service_step_fn_name(plan);
-        let server_field = server_field_name(plan);
-        let server_instance = &plan.server_instance;
-        let server_instance_ir = graph
-            .instances
-            .iter()
-            .find(|instance| instance.name == *server_instance)
-            .expect("validated service server instance must exist");
-        let server_component =
-            crate::component_by_name(contract, &server_instance_ir.component.name);
-        let handler_method = service_handler_method_name(&plan.server_port);
-        let handler_call = if super::rust_component_is_parallel(server_component) {
-            format!("self.{server_instance}.as_ref().as_ref().{handler_method}(&request)")
-        } else {
-            format!(
-                "self.{server_instance}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{handler_method}(&request)"
-            )
-        };
-
-        if plan.backend.0 == "iox2" {
-            output.push_str(&format!(
-                "    /// Hidden service task: process pending iox2 requests for `{server_instance}.{server_port}`。\n\
-                 fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
-                     let Some(server) = self.{server_field}.get() else {{ return flowrt::Status::Error; }};\n\
-                     let handled = match server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| {handler_call}) {{\n\
-                         Ok(handled) => handled,\n\
-                         Err(_) => return flowrt::Status::Error,\n\
-                     }};\n\
-                     {status_update}\
-                     let _ = handled;\n\
-                     flowrt::Status::Ok\n\
-                 }}\n\n",
-                server_instance = server_instance,
-                server_port = plan.server_port,
-                handler_call = handler_call,
-                status_update = rust_iox2_service_status_update(plan, "handled"),
-            ));
-        } else {
-            output.push_str(&format!(
-                "    /// Hidden service task: process pending requests for `{server_instance}.{server_port}`。\n\
-                 fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
-                     self.{server_field}.process_pending_requests();\n\
-                     {status_update}\
-                     flowrt::Status::Ok\n\
-                 }}\n\n",
-                server_instance = server_instance,
-                server_port = plan.server_port,
-                status_update = rust_service_status_update(plan),
-            ));
-        }
-    }
-
-    output
-}
-
 /// 生成运行开始时的 service introspection 注册代码。
 pub(crate) fn emit_rust_service_introspection_registration(
     contract: &ContractIr,
@@ -486,27 +415,6 @@ pub(crate) fn emit_rust_service_ready_marks(contract: &ContractIr, graph: &Graph
         ));
     }
     output
-}
-
-fn rust_service_status_update(plan: &ServiceRuntimePlan) -> String {
-    let server_field = server_field_name(plan);
-    let service_name = rust_string_literal(&plan.service_name);
-    format!(
-        "{{\n\
-             let service_stats = self.{server_field}.stats();\n\
-             introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {{\n\
-                 name: {service_name}.to_string(),\n\
-                 ready: true,\n\
-                 in_flight: self.{server_field}.in_flight_count() as u64,\n\
-                 queued: self.{server_field}.pending_count() as u64,\n\
-                 total_requests: service_stats.requests,\n\
-                 timeout_count: service_stats.timeout,\n\
-                 busy_count: service_stats.busy,\n\
-                 unavailable_count: service_stats.unavailable,\n\
-                 late_drop_count: service_stats.late_dropped,\n\
-             }});\n\
-         }}\n"
-    )
 }
 
 pub(crate) fn rust_iox2_service_status_update(
@@ -640,15 +548,6 @@ pub(crate) fn client_field_name(plan: &ServiceRuntimePlan) -> String {
 pub(crate) fn server_field_name(plan: &ServiceRuntimePlan) -> String {
     format!(
         "service_server_{}_{}",
-        crate::snake_identifier(&plan.server_instance),
-        crate::snake_identifier(&plan.server_port)
-    )
-}
-
-/// service hidden task step 函数名。
-fn service_step_fn_name(plan: &ServiceRuntimePlan) -> String {
-    format!(
-        "step_service_{}_{}",
         crate::snake_identifier(&plan.server_instance),
         crate::snake_identifier(&plan.server_port)
     )

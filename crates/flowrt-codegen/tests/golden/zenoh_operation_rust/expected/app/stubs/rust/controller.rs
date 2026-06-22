@@ -6,7 +6,7 @@ pub struct Controller;
 impl flowrt_app::components::Controller for Controller {
     fn on_tick(
         &mut self,
-        plan: &flowrt_app::components::OperationClient_controller_plan,
+        _plan: &flowrt_app::components::OperationClient_controller_plan,
     ) -> flowrt::Status {
         flowrt::Status::Ok
     }

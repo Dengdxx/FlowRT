@@ -1,7 +1,5 @@
 // FlowRT 管理产物。不要手工修改。
 
-use flowrt::ZeroCopySend;
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Packet {
     pub payload: Vec<u8>,

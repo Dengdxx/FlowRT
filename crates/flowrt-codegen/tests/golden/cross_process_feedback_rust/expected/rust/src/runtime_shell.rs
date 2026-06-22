@@ -741,7 +741,7 @@ impl App {
             message_type: "State".to_string(),
             ..Default::default()
         });
-        app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(State { x: 0f64 }, 0);
+        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(State { x: 0f64 }, 0);
         let _introspection_server = flowrt::spawn_status_server(
             flowrt::IntrospectionIdentity {
                 self_description_hash: selfdesc::self_description_hash().to_string(),
@@ -1639,7 +1639,7 @@ impl App {
             selected_reason: "profile_default".to_string(),
             ..Default::default()
         });
-        app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(State { x: 0f64 }, 0);
+        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(State { x: 0f64 }, 0);
         let _introspection_server = flowrt::spawn_status_server(
             flowrt::IntrospectionIdentity {
                 self_description_hash: selfdesc::self_description_hash().to_string(),

@@ -382,13 +382,13 @@ fn app_api_artifacts_include_implementation_notes_and_reference_stubs() {
     assert!(rust_stub.contains("impl flowrt_app::components::Controller for Controller"));
     assert!(rust_stub.contains("pub fn build_app() -> flowrt_app::runtime_shell::App"));
     assert!(rust_stub.contains("fn on_tick("));
-    assert!(rust_stub.contains("plan: &flowrt_app::components::ServiceClient_controller_plan"));
+    assert!(rust_stub.contains("_plan: &flowrt_app::components::ServiceClient_controller_plan"));
     assert!(
         rust_stub
-            .contains("navigate: &flowrt_app::components::OperationClient_controller_navigate")
+            .contains("_navigate: &flowrt_app::components::OperationClient_controller_navigate")
     );
     assert!(rust_stub.contains("scan: flowrt::Latest<'_, flowrt_app::messages::Scan>"));
-    assert!(rust_stub.contains("params: &flowrt_app::components::ControllerParams"));
+    assert!(rust_stub.contains("_params: &flowrt_app::components::ControllerParams"));
     assert!(rust_stub.contains("cmd: &mut flowrt::Output<flowrt_app::messages::Cmd>"));
 
     let cpp_stub = artifact_content(&bundle, "app/stubs/cpp/planner.cpp");

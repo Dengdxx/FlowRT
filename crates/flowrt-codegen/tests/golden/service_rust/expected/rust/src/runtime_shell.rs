@@ -302,28 +302,6 @@ service_handler_0,
         }
         flowrt::TaskRunOutcome::ok(__flowrt_output_commits)
     }
-// ── Service step functions ─────────────────────────────────────────
-
-    /// Hidden service task: process pending requests for `plan_svc.plan`。
-fn step_service_plan_svc_plan(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {
-self.service_server_plan_svc_plan.process_pending_requests();
-{
-let service_stats = self.service_server_plan_svc_plan.stats();
-introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {
-name: "plan_client.plan".to_string(),
-ready: true,
-in_flight: self.service_server_plan_svc_plan.in_flight_count() as u64,
-queued: self.service_server_plan_svc_plan.pending_count() as u64,
-total_requests: service_stats.requests,
-timeout_count: service_stats.timeout,
-busy_count: service_stats.busy,
-unavailable_count: service_stats.unavailable,
-late_drop_count: service_stats.late_dropped,
-});
-}
-flowrt::Status::Ok
-}
-
     pub fn run(self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {
         if self.startup_status != flowrt::Status::Ok {
             return self.startup_status;

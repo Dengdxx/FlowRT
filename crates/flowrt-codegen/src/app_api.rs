@@ -1410,7 +1410,7 @@ fn rust_stub_on_tick_args(
         .filter(|plan| component_name_matches(component, &plan.client_component))
     {
         args.push(format!(
-            "{}: &flowrt_app::components::{}",
+            "_{}: &flowrt_app::components::{}",
             snake_identifier(&plan.client_port),
             service_client_handle_type(plan)
         ));
@@ -1420,7 +1420,7 @@ fn rust_stub_on_tick_args(
         .filter(|plan| component_name_matches(component, &plan.client_component))
     {
         args.push(format!(
-            "{}: &flowrt_app::components::{}",
+            "_{}: &flowrt_app::components::{}",
             snake_identifier(&plan.client_port),
             operation_client_handle_type(plan)
         ));
@@ -1434,7 +1434,7 @@ fn rust_stub_on_tick_args(
     }
     if !component.params.is_empty() {
         args.push(format!(
-            "params: &flowrt_app::components::{}Params",
+            "_params: &flowrt_app::components::{}Params",
             component_rust_name(component)
         ));
     }

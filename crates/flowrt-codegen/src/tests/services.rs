@@ -163,15 +163,15 @@ fn rust_runtime_shell_registers_service() {
     );
 }
 
-/// runtime shell 包含 hidden service task step 函数。
+/// runtime shell 不保留未被 scheduler 调用的 hidden service helper。
 #[test]
-fn rust_runtime_shell_has_service_step_function() {
+fn rust_runtime_shell_does_not_emit_unused_service_step_helper() {
     let contract = contract_from_source(SERVICE_RSDL);
     let bundle = emit_artifacts(&contract).unwrap();
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(
-        shell.contains("fn step_service_plan_svc_plan("),
-        "runtime shell must have hidden service step function.\n\n{shell}"
+        !shell.contains("fn step_service_plan_svc_plan("),
+        "runtime shell must not emit unused hidden service helper.\n\n{shell}"
     );
 }
 
