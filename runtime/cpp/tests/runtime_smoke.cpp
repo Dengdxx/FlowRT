@@ -664,8 +664,7 @@ int main() {
 
     const auto injected_drop = flowrt::BackendHealthSnapshot::fault_injection_backend_drop();
     assert(injected_drop.state == flowrt::BackendHealthState::Degraded);
-    assert(injected_drop.last_error ==
-           std::optional<std::string>{"fault_injection_backend_drop"});
+    assert(injected_drop.last_error == std::optional<std::string>{"fault_injection_backend_drop"});
     assert(injected_drop.attempt == 0U);
     assert(!injected_drop.next_retry_unix_ms.has_value());
     assert(injected_drop.recoverable);
@@ -1294,6 +1293,27 @@ int main() {
     assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_read));
     assert(std::get<flowrt::ChannelError>(zenoh_transport_read) ==
            flowrt::ChannelError::Unsupported);
+    assert(flowrt::zenoh::operation_key_expr("robot", "hash", 42U) == "flowrt/op/robot/hash/42");
+    flowrt::IntrospectionState operation_state;
+    const flowrt::IntrospectionHandshake operation_handshake{
+        .protocol_version = flowrt::INTROSPECTION_PROTOCOL_VERSION,
+        .pid = 42U,
+        .started_at_unix_ms = 0U,
+        .self_description_hash = "hash",
+        .package = "robot",
+        .process = "planner",
+        .runtime = "cpp",
+    };
+    const auto operation_status_json = flowrt::zenoh::operation_response_json(
+        operation_handshake, operation_state, R"({"command":"status"})");
+    assert(operation_status_json.find(R"("response":"status")") != std::string::npos);
+    assert(operation_status_json.find(R"("runtime":"cpp")") != std::string::npos);
+    const auto operation_error_json =
+        flowrt::zenoh::operation_response_json(operation_handshake, operation_state, "{}");
+    assert(operation_error_json.find(R"("response":"error")") != std::string::npos);
+    auto operation_server = flowrt::zenoh::ZenohOperationServer::open_from_environment(
+        "flowrt/op/robot/hash/42", operation_handshake, operation_state);
+    assert(!operation_server.ready());
 
     return 0;
 }

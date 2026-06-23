@@ -80,12 +80,14 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - Operation 控制面：generated Operation runtime 已支持 inproc、zenoh，并在本版本接入
   iox2；`flowrt op list/status/cancel` 是本机 introspection 控制面。未发布版本已接入
   本机 `flowrt op start` 基座和 `OperationStatus` by id 请求，可用 self-description
-  Message ABI 编码 goal JSON 并经 introspection socket 启动 generated Rust Operation，
+  Message ABI 编码 goal JSON 并经 introspection socket 启动 generated Rust/C++ Operation，
   也可用 returned `operation_id` 精确查询 live invocation status。远程 zenoh Operation
-  控制面已接入 start/status/cancel 基座：generated Rust shell 暴露
+  控制面已接入 start/status/cancel 基座：generated Rust/C++ shell 暴露
   `flowrt/op/<package>/<selfdesc_hash>/<pid>` queryable，CLI 可用 `--remote` 发现匹配
   self-description hash 的 runtime 或用 `--runtime` 精确选择，并可用 self-description
-  Message ABI 编码 goal JSON 启动远端 generated Rust Operation。`flowrt op result`
+  Message ABI 编码 goal JSON 启动远端 generated Rust/C++ Operation；C++ inproc/iox2
+  app 会 opportunistic 查找 `zenohcxx::zenohc` 并启用 remote queryable，缺少 SDK 时仍保留
+  本机 socket 控制面。`flowrt op result`
   已可按 invocation id 读取 retained typed result payload，并用 self-description Message ABI
   解码为 JSON；`flowrt op follow` / `flowrt op start --follow` 已可通过 `OperationObserve`
   读取 retained state/progress/result event，并把 typed progress/result payload 解码为 JSON；
@@ -1061,10 +1063,12 @@ Operation 观测路径沿用 FlowRT 自描述和本机 introspection socket：se
 `flowrt op list/status/cancel` 提供本机观测和 cooperative cancel 控制面。未发布版本把
 本机 `flowrt op start` 和 `OperationStatus` by id 接入同一 introspection command-plane：
 CLI 使用 self-description Message ABI 把 goal JSON 编码为 canonical payload，generated
-Rust shell 注册 start/status hook，并复用 typed Operation client 与 `OperationControl`
+Rust/C++ shell 注册 start/status hook，并复用 typed Operation client 与 `OperationControl`
 路径启动和查询 invocation。远程 zenoh Operation start/status/cancel 已复用同一
 `IntrospectionRequest` / `IntrospectionResponse` 语义，key expression 为
-`flowrt/op/<package>/<selfdesc_hash>/<pid>`。未发布版本还接入了 `OperationResult`
+`flowrt/op/<package>/<selfdesc_hash>/<pid>`；generated Rust/C++ shell 都会暴露该
+queryable，C++ inproc/iox2 app 仅在生成 CMake 找到 `zenohcxx::zenohc` 时启用 remote
+server，缺少 SDK 不影响本机 socket 控制面。未发布版本还接入了 `OperationResult`
 introspection 请求：generated Rust/C++ worker 不再丢弃 `OperationHandlerResult::Succeeded`
 返回值，而是把 typed result 编码为 canonical Message ABI payload，scheduler hidden task
 投影到 retained introspection result；`flowrt op result <operation_id> --image ...` 本机和

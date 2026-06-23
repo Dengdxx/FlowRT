@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use flowrt_ir::{ContractIr, LanguageKind};
 
 use crate::ros2_bridge::ros2_bridge_stem;
-use crate::runtime_plan::{contract_backend_features, contract_uses_backend};
+use crate::runtime_plan::{
+    contract_backend_features, contract_has_operations_for_language, contract_uses_backend,
+};
 use crate::{
     contract_has_external_process, contract_has_ros2_bridge, contract_has_variable_messages,
     fixed_message_abi_expectations, has_language, sanitize_package_name,
@@ -51,13 +53,23 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
                 "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)\n"
             ));
         }
-        if has_cpp_shell_components && contract_uses_backend(contract, "zenoh") {
-            output.push_str(cmake_zenoh_dependency_block());
+        let cpp_requires_zenoh_backend =
+            has_cpp_shell_components && contract_uses_backend(contract, "zenoh");
+        let cpp_wants_remote_operation_control = has_cpp_shell_components
+            && (contract_has_operations_for_language(contract, LanguageKind::Cpp)
+                || contract_has_operations_for_language(contract, LanguageKind::C));
+        if cpp_requires_zenoh_backend {
+            output.push_str(cmake_required_zenoh_dependency_block());
             output.push_str(&format!(
                 "target_link_libraries({package_name}_flowrt_app INTERFACE ${{FLOWRT_ZENOH_CXX_TARGET}})\n"
             ));
             output.push_str(&format!(
                 "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ZENOH_CXX=1)\n"
+            ));
+        } else if cpp_wants_remote_operation_control {
+            output.push_str(cmake_optional_zenoh_dependency_block());
+            output.push_str(&format!(
+                "if(FLOWRT_ZENOH_CXX_TARGET)\n  target_link_libraries({package_name}_flowrt_app INTERFACE ${{FLOWRT_ZENOH_CXX_TARGET}})\n  target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ZENOH_CXX=1)\nendif()\n"
             ));
         }
         output.push_str(
@@ -322,7 +334,18 @@ endif()
 "#
 }
 
-fn cmake_zenoh_dependency_block() -> &'static str {
+fn cmake_zenoh_discovery_block() -> &'static str {
+    r#"
+set(FLOWRT_ZENOH_CXX_TARGET "")
+find_package(zenohc 1.9.0 QUIET)
+find_package(zenohcxx 1.9.0 QUIET)
+if(TARGET zenohcxx::zenohc)
+  set(FLOWRT_ZENOH_CXX_TARGET zenohcxx::zenohc)
+endif()
+"#
+}
+
+fn cmake_required_zenoh_dependency_block() -> &'static str {
     r#"
 set(FLOWRT_ZENOH_CXX_TARGET "")
 find_package(zenohc 1.9.0 QUIET)
@@ -334,6 +357,10 @@ if(NOT FLOWRT_ZENOH_CXX_TARGET)
   message(FATAL_ERROR "zenoh C++ target is unavailable. Install zenoh-c and zenoh-cpp 1.9.0 so CMake exposes zenohc::lib and zenohcxx::zenohc, then set CMAKE_PREFIX_PATH if needed.")
 endif()
 "#
+}
+
+fn cmake_optional_zenoh_dependency_block() -> &'static str {
+    cmake_zenoh_discovery_block()
 }
 
 fn contract_has_ros2_bridge_type(contract: &ContractIr, ros2_type: &str) -> bool {

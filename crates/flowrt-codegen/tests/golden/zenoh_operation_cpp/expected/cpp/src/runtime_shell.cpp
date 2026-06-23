@@ -738,6 +738,19 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
         },
         introspection_state);
     (void)introspection_server;
+    auto remote_operation_handshake = flowrt::IntrospectionIdentity{
+        .self_description_hash = std::string{flowrt_app::self_description_hash()},
+        .package = "zenoh_operation_cpp",
+        .process = "main",
+        .runtime = "cpp",
+    }.handshake();
+    auto remote_operation_key_expr = flowrt::zenoh::operation_key_expr(
+        "zenoh_operation_cpp", flowrt_app::self_description_hash(), remote_operation_handshake.pid);
+    auto remote_operation_server = flowrt::zenoh::ZenohOperationServer::open_from_environment(
+        remote_operation_key_expr, remote_operation_handshake, introspection_state);
+    if (!remote_operation_server.ready()) {
+        std::fprintf(stderr, "FlowRT: zenoh operation control-plane disabled %s\n", remote_operation_key_expr.c_str());
+    }
     bool controller_initialized = false;
     bool controller_started = false;
     introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
@@ -1325,6 +1338,19 @@ flowrt::Status App::run_process_client_proc(const flowrt::Backend& backend, std:
         },
         introspection_state);
     (void)introspection_server;
+    auto remote_operation_handshake = flowrt::IntrospectionIdentity{
+        .self_description_hash = std::string{flowrt_app::self_description_hash()},
+        .package = "zenoh_operation_cpp",
+        .process = "client_proc",
+        .runtime = "cpp",
+    }.handshake();
+    auto remote_operation_key_expr = flowrt::zenoh::operation_key_expr(
+        "zenoh_operation_cpp", flowrt_app::self_description_hash(), remote_operation_handshake.pid);
+    auto remote_operation_server = flowrt::zenoh::ZenohOperationServer::open_from_environment(
+        remote_operation_key_expr, remote_operation_handshake, introspection_state);
+    if (!remote_operation_server.ready()) {
+        std::fprintf(stderr, "FlowRT: zenoh operation control-plane disabled %s\n", remote_operation_key_expr.c_str());
+    }
     bool controller_initialized = false;
     bool controller_started = false;
     introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
@@ -1702,6 +1728,19 @@ flowrt::Status App::run_process_server_proc(const flowrt::Backend& backend, std:
         },
         introspection_state);
     (void)introspection_server;
+    auto remote_operation_handshake = flowrt::IntrospectionIdentity{
+        .self_description_hash = std::string{flowrt_app::self_description_hash()},
+        .package = "zenoh_operation_cpp",
+        .process = "server_proc",
+        .runtime = "cpp",
+    }.handshake();
+    auto remote_operation_key_expr = flowrt::zenoh::operation_key_expr(
+        "zenoh_operation_cpp", flowrt_app::self_description_hash(), remote_operation_handshake.pid);
+    auto remote_operation_server = flowrt::zenoh::ZenohOperationServer::open_from_environment(
+        remote_operation_key_expr, remote_operation_handshake, introspection_state);
+    if (!remote_operation_server.ready()) {
+        std::fprintf(stderr, "FlowRT: zenoh operation control-plane disabled %s\n", remote_operation_key_expr.c_str());
+    }
     bool navigator_initialized = false;
     bool navigator_started = false;
     introspection_state.record_lifecycle_state("navigator", flowrt::LifecycleState::Uninitialized);

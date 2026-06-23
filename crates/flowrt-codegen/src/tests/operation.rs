@@ -845,6 +845,25 @@ fn cpp_operation_components_are_generated() {
         shell.contains("event.retention_ms"),
         "C++ generated drain must use runtime event retention metadata.\n\n{shell}"
     );
+    assert!(
+        shell.contains("flowrt::zenoh::operation_key_expr("),
+        "C++ runtime shell with Operation must derive remote operation key expression.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohOperationServer::open_from_environment"),
+        "C++ runtime shell with Operation must expose zenoh remote Operation control-plane.\n\n{shell}"
+    );
+
+    let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+    assert!(
+        cmake.contains("find_package(zenohc 1.9.0 QUIET)")
+            && cmake.contains("if(FLOWRT_ZENOH_CXX_TARGET)"),
+        "C++ Operation remote control-plane must discover zenoh SDK opportunistically.\n\n{cmake}"
+    );
+    assert!(
+        !cmake.contains("message(FATAL_ERROR \"zenoh C++ target is unavailable"),
+        "inproc C++ Operation app must still build without zenoh SDK.\n\n{cmake}"
+    );
 }
 
 /// C++ zenoh Operation 也必须生成真实 transport lowering，同时保持 Operation typed API。

@@ -628,7 +628,7 @@ generated Operation runtime 使用明确生命周期：
 | `failed` | handler error、panic/exception 或 runtime 执行失败 |
 | `timed_out` | scheduler/runtime 驱动 deadline 到期 |
 
-当前 generated Operation runtime 支持 `inproc` 与 `zenoh` backend、single-owner control
+当前 generated Operation runtime 支持 `inproc`、`iox2` 与 `zenoh` backend、single-owner control
 authority、`concurrency = "reject" | "queue"`、`preempt = "reject" | "cancel_running"`、
 `max_in_flight > 0`、`feedback = "latest" | "fifo"` 和 `result_retention_ms`。start 会建立
 invocation id、owner 和 deadline；同一 scope 的第二个 owner start 返回结构化冲突错误。
@@ -640,7 +640,10 @@ timeout/deadline 由 runtime hidden task 驱动，不依赖用户 handler 自觉
 `OperationProgressPublisher` 发布 progress。`status` / `record` 会输出 state change、
 progress、result 和 error 事件；终态 status 会按 `result_retention_ms` 保留。`backend =
 "zenoh"` 时，generated runtime 会把 start/cancel/status control path 接到内部 zenoh service
-transport；用户 API 仍是 Operation。
+transport；用户 API 仍是 Operation。本机 introspection socket 支持 Rust/C++ Operation
+start/status/cancel/result/follow；远程 `flowrt op ... --remote` 使用
+`flowrt/op/{package}/{selfdesc_hash}/{pid}` zenoh control-plane，C++ app 仅在构建时找到
+`zenohcxx::zenohc` 后启用远程 queryable，缺少 SDK 不影响本机或 inproc/iox2 路径。
 
 查看 Operation 拓扑和运行态状态：
 

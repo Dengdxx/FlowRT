@@ -152,6 +152,7 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         cpp_string_literal(run.package_name),
         cpp_string_literal(run.process_name)
     ));
+    output.push_str(&emit_cpp_remote_operation_server(run));
     output.push_str(&emit_cpp_feedback_channel_seed(
         run.contract,
         run.order,
@@ -250,6 +251,19 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     );
     output.push_str("    return status;\n}\n\n");
     output
+}
+
+fn emit_cpp_remote_operation_server(run: &CppRunEmission<'_>) -> String {
+    if crate::runtime_plan::operation_runtime_plans(run.contract, run.graph).is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "    auto remote_operation_handshake = flowrt::IntrospectionIdentity{{\n        .self_description_hash = std::string{{flowrt_app::self_description_hash()}},\n        .package = {},\n        .process = {},\n        .runtime = \"cpp\",\n    }}.handshake();\n    auto remote_operation_key_expr = flowrt::zenoh::operation_key_expr(\n        {}, flowrt_app::self_description_hash(), remote_operation_handshake.pid);\n    auto remote_operation_server = flowrt::zenoh::ZenohOperationServer::open_from_environment(\n        remote_operation_key_expr, remote_operation_handshake, introspection_state);\n    if (!remote_operation_server.ready()) {{\n        std::fprintf(stderr, \"FlowRT: zenoh operation control-plane disabled %s\\n\", remote_operation_key_expr.c_str());\n    }}\n",
+        cpp_string_literal(run.package_name),
+        cpp_string_literal(run.process_name),
+        cpp_string_literal(run.package_name),
+    )
 }
 
 fn emit_cpp_graph_health_registration(graph: &GraphIr) -> String {

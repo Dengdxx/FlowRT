@@ -11,6 +11,9 @@
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>
 #include <flowrt/executor.hpp>
+#include <flowrt/introspection/json.hpp>
+#include <flowrt/introspection/request_parser.hpp>
+#include <flowrt/introspection/state.hpp>
 #include <flowrt/service.hpp>
 #include <flowrt/wire.hpp>
 #include <functional>
@@ -136,6 +139,20 @@ inline std::string service_key_expr(std::string_view service_name) {
     }
 
     return "flowrt/service/" + encoded + "/request";
+}
+
+inline std::string operation_key_expr(std::string_view package, std::string_view selfdesc_hash,
+                                      std::uint32_t pid) {
+    std::string key;
+    key.reserve(std::string_view{"flowrt/op/"}.size() + package.size() + 1U + selfdesc_hash.size() +
+                1U + 10U);
+    key.append("flowrt/op/");
+    key.append(package);
+    key.push_back('/');
+    key.append(selfdesc_hash);
+    key.push_back('/');
+    key.append(std::to_string(pid));
+    return key;
 }
 
 template <typename Resp>
@@ -1306,6 +1323,146 @@ inline ::zenoh::Session open_zenoh_session_from_env() {
     return ::zenoh::Session::open(zenoh_config_from_environment());
 }
 #endif
+
+inline std::string operation_response_json(const IntrospectionHandshake &handshake,
+                                           const IntrospectionState &state,
+                                           std::string_view payload) {
+    const auto request = flowrt::detail::parse_introspection_request(payload);
+    if (!request) {
+        return flowrt::detail::error_response_json(handshake,
+                                                   "invalid zenoh operation request JSON");
+    }
+
+    switch (request->kind) {
+        case flowrt::detail::IntrospectionRequestKind::Status:
+            return flowrt::detail::status_response_json(handshake, state.status());
+        case flowrt::detail::IntrospectionRequestKind::OperationStart: {
+            const auto result =
+                state.start_operation(request->operation_name, request->operation_payload,
+                                      request->operation_timeout_ms, request->operation_owner);
+            if (std::holds_alternative<IntrospectionOperationStartStatus>(result)) {
+                return flowrt::detail::operation_started_response_json(
+                    handshake, std::get<IntrospectionOperationStartStatus>(result));
+            }
+            return flowrt::detail::error_response_json(handshake, std::get<std::string>(result));
+        }
+        case flowrt::detail::IntrospectionRequestKind::OperationStatus: {
+            const auto result = state.status_operation(request->operation_id);
+            if (std::holds_alternative<IntrospectionOperationStatus>(result)) {
+                return flowrt::detail::operation_value_response_json(
+                    handshake, std::get<IntrospectionOperationStatus>(result));
+            }
+            return flowrt::detail::error_response_json(handshake, std::get<std::string>(result));
+        }
+        case flowrt::detail::IntrospectionRequestKind::OperationCancel: {
+            const auto result = state.cancel_operation(request->operation_id);
+            if (std::holds_alternative<IntrospectionOperationStatus>(result)) {
+                return flowrt::detail::operation_value_response_json(
+                    handshake, std::get<IntrospectionOperationStatus>(result));
+            }
+            return flowrt::detail::error_response_json(handshake, std::get<std::string>(result));
+        }
+        case flowrt::detail::IntrospectionRequestKind::OperationResult: {
+            const auto result = state.result_operation(request->operation_id);
+            if (std::holds_alternative<IntrospectionOperationResult>(result)) {
+                return flowrt::detail::operation_result_response_json(
+                    handshake, std::get<IntrospectionOperationResult>(result));
+            }
+            return flowrt::detail::error_response_json(handshake, std::get<std::string>(result));
+        }
+        case flowrt::detail::IntrospectionRequestKind::OperationObserve: {
+            const auto result = state.observe_operation(
+                request->operation_id, request->operation_after_sequence, request->operation_limit);
+            if (std::holds_alternative<IntrospectionState::OperationObservePage>(result)) {
+                const auto &page = std::get<IntrospectionState::OperationObservePage>(result);
+                return flowrt::detail::operation_events_response_json(
+                    handshake, request->operation_id, page.events, page.next_sequence,
+                    page.terminal);
+            }
+            return flowrt::detail::error_response_json(handshake, std::get<std::string>(result));
+        }
+        default:
+            return flowrt::detail::error_response_json(handshake,
+                                                       "unsupported zenoh operation command");
+    }
+}
+
+/**
+ * @brief Zenoh remote Operation control-plane server。
+ *
+ * 该 server 只暴露 Operation introspection command-plane，不承载 typed Operation data plane。
+ * 未编译 zenoh-cpp 时对象仍可构造，`ready()` 返回 false，generated inproc/iox2 app 不因此失败。
+ */
+class ZenohOperationServer {
+   public:
+    ZenohOperationServer(ZenohOperationServer &&) noexcept = default;
+    ZenohOperationServer(const ZenohOperationServer &) = delete;
+    auto operator=(ZenohOperationServer &&) noexcept -> ZenohOperationServer & = default;
+    auto operator=(const ZenohOperationServer &) -> ZenohOperationServer & = delete;
+    ~ZenohOperationServer() = default;
+
+    static ZenohOperationServer open_from_environment(std::string_view key_expr,
+                                                      IntrospectionHandshake handshake,
+                                                      IntrospectionState state) {
+        return ZenohOperationServer(key_expr, std::move(handshake), std::move(state));
+    }
+
+    std::string_view key_expr() const noexcept { return key_expr_; }
+
+    bool ready() const noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        return session_.has_value() && queryable_.has_value() && !session_->is_closed();
+#else
+        return false;
+#endif
+    }
+
+   private:
+    ZenohOperationServer(std::string_view key_expr, IntrospectionHandshake handshake,
+                         IntrospectionState state)
+        : key_expr_(key_expr) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        try {
+            session_.emplace(open_zenoh_session_from_env());
+            auto shared_handshake = std::make_shared<IntrospectionHandshake>(std::move(handshake));
+            auto shared_state = std::make_shared<IntrospectionState>(std::move(state));
+            auto reply_key = key_expr_;
+            queryable_.emplace(session_->declare_queryable(
+                ::zenoh::KeyExpr(key_expr_),
+                [shared_handshake, shared_state, reply_key](::zenoh::Query &query) {
+                    std::string response;
+                    auto payload_ref = query.get_payload();
+                    if (!payload_ref.has_value()) {
+                        response = flowrt::detail::error_response_json(
+                            *shared_handshake, "empty zenoh operation request payload");
+                    } else {
+                        const auto payload = payload_ref->get().as_vector();
+                        response = operation_response_json(
+                            *shared_handshake, *shared_state,
+                            std::string_view{reinterpret_cast<const char *>(payload.data()),
+                                             payload.size()});
+                    }
+                    query.reply(::zenoh::KeyExpr(reply_key),
+                                ::zenoh::Bytes(
+                                    std::vector<std::uint8_t>(response.begin(), response.end())));
+                },
+                []() {}));
+        } catch (...) {
+            queryable_.reset();
+            session_.reset();
+        }
+#else
+        (void)handshake;
+        (void)state;
+#endif
+    }
+
+    std::string key_expr_;
+#ifdef FLOWRT_HAS_ZENOH_CXX
+    std::optional<::zenoh::Session> session_;
+    std::optional<::zenoh::Queryable<void>> queryable_;
+#endif
+};
 
 }  // namespace zenoh
 
