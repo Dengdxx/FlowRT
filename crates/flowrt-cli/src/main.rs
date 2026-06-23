@@ -734,6 +734,15 @@ enum OpCommand {
         #[arg(long)]
         follow: bool,
 
+        /// `--follow` 阶段的观察请求超时毫秒。
+        #[arg(
+            long,
+            requires = "follow",
+            default_value_t = 5000,
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        follow_timeout_ms: u64,
+
         /// 输出格式。
         #[arg(long, value_enum, default_value_t = OperationOutputFormat::Text)]
         format: OperationOutputFormat,
@@ -1627,6 +1636,7 @@ fn main() -> Result<()> {
                 remote,
                 timeout_ms,
                 follow,
+                follow_timeout_ms,
                 format,
             } => {
                 let remote_runtime = control_plane_remote_runtime_arg(
@@ -1672,7 +1682,7 @@ fn main() -> Result<()> {
                                 None,
                                 true,
                                 remote_runtime.as_deref(),
-                                5000,
+                                follow_timeout_ms,
                             )?,
                             OperationOutputFormat::Json => operation_follow_json(
                                 &image,
@@ -1680,7 +1690,7 @@ fn main() -> Result<()> {
                                 None,
                                 true,
                                 remote_runtime.as_deref(),
-                                5000,
+                                follow_timeout_ms,
                             )?,
                         };
                         match format {
@@ -1724,7 +1734,7 @@ fn main() -> Result<()> {
                                 socket.as_deref(),
                                 false,
                                 None,
-                                5000,
+                                follow_timeout_ms,
                             )?,
                             OperationOutputFormat::Json => operation_follow_json(
                                 &image,
@@ -1732,7 +1742,7 @@ fn main() -> Result<()> {
                                 socket.as_deref(),
                                 false,
                                 None,
-                                5000,
+                                follow_timeout_ms,
                             )?,
                         };
                         match format {

@@ -1381,6 +1381,7 @@ fn cli_parses_operation_commands() {
                 remote,
                 timeout_ms,
                 follow,
+                follow_timeout_ms,
                 format,
             },
     } = start_cli.command
@@ -1396,6 +1397,7 @@ fn cli_parses_operation_commands() {
     assert!(!remote);
     assert_eq!(timeout_ms, Some(2500));
     assert!(!follow);
+    assert_eq!(follow_timeout_ms, 5000);
     assert_eq!(format, OperationOutputFormat::Text);
 
     let remote_start_cli = Cli::try_parse_from([
@@ -1426,6 +1428,7 @@ fn cli_parses_operation_commands() {
                 remote,
                 timeout_ms,
                 follow,
+                follow_timeout_ms,
                 format,
             },
     } = remote_start_cli.command
@@ -1441,6 +1444,7 @@ fn cli_parses_operation_commands() {
     assert!(remote);
     assert_eq!(timeout_ms, Some(2500));
     assert!(!follow);
+    assert_eq!(follow_timeout_ms, 5000);
     assert_eq!(format, OperationOutputFormat::Text);
 
     let cancel_cli = Cli::try_parse_from([
@@ -1635,6 +1639,64 @@ fn operation_start_follow_json_combines_started_and_events() {
     assert_eq!(value["response"], "operation_start_follow");
     assert_eq!(value["started"]["operation_id"], "111:7:3");
     assert_eq!(value["follow"]["terminal"], true);
+}
+
+#[test]
+fn cli_parses_operation_start_follow_timeout_separately_from_operation_timeout() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "start",
+        "controller.plan",
+        "--json",
+        "{\"target\":7}",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--follow",
+        "--timeout-ms",
+        "2500",
+        "--follow-timeout-ms",
+        "7500",
+    ])
+    .unwrap();
+
+    let Command::Op {
+        command:
+            OpCommand::Start {
+                timeout_ms,
+                follow,
+                follow_timeout_ms,
+                ..
+            },
+    } = cli.command
+    else {
+        panic!("op start --follow should parse into Command::Op")
+    };
+    assert_eq!(timeout_ms, Some(2500));
+    assert!(follow);
+    assert_eq!(follow_timeout_ms, 7500);
+}
+
+#[test]
+fn cli_rejects_operation_start_follow_timeout_without_follow() {
+    let error = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "start",
+        "controller.plan",
+        "--json",
+        "{\"target\":7}",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--follow-timeout-ms",
+        "7500",
+    ])
+    .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
 
 #[test]

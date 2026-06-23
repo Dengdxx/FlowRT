@@ -91,7 +91,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   已可按 invocation id 读取 retained typed result payload，并用 self-description Message ABI
   解码为 JSON；`flowrt op follow` / `flowrt op start --follow` 已可通过 `OperationObserve`
   读取 retained state/progress/result event，并把 typed progress/result payload 解码为 JSON；
-  本机 socket 与远程 zenoh Operation control-plane 均支持。C++ Operation runtime 与 generated
+  本机 socket 与远程 zenoh Operation control-plane 均支持。`op start --follow` 的 follow 阶段
+  可用 `--follow-timeout-ms` 独立控制 observation 请求超时，避免复用 Operation start timeout
+  override。C++ Operation runtime 与 generated
   shell 已补齐 typed payload parity：feedback/result 会编码为 canonical Message ABI bytes 并
   进入 runtime event，generated introspection drain 走 payload-aware progress/result 记录入口；
   C++ 本机 introspection socket 也支持 `OperationStart`、`OperationStatus`、`OperationResult`

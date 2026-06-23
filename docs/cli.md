@@ -41,7 +41,7 @@ flowrt params set <instance.param> <json-value> --image <path> [--socket <path>]
 flowrt params set --file <path/to/params.json> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt op list [--image <path>] [--socket <path>] [--format <text|json>]
 flowrt op status [operation|operation_id] [--socket <path>] [--image <path> --remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--format <text|json>]
-flowrt op start <operation> (--json <goal-json>|--file <goal-json-file>) --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--follow] [--format <text|json>]
+flowrt op start <operation> (--json <goal-json>|--file <goal-json-file>) --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--follow] [--follow-timeout-ms <ms>] [--format <text|json>]
 flowrt op cancel <operation_id> [--socket <path>] [--image <path> --remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--format <text|json>]
 flowrt op result <operation_id> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--format <text|json>]
 flowrt op follow <operation_id> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--format <text|json>]
@@ -1303,7 +1303,7 @@ flowrt op status 111:7:3 --image flowrt/selfdesc/selfdesc.json --remote
 flowrt op status 111:7:3 --image flowrt/selfdesc/selfdesc.json --remote --runtime flowrt/op/robot/hash/12345
 flowrt op start controller.plan --json '{"target":7}' --image flowrt/selfdesc/selfdesc.json --socket /run/user/1000/flowrt/12345.sock --timeout-ms 2500
 flowrt op start controller.plan --json '{"target":7}' --image flowrt/selfdesc/selfdesc.json --remote --runtime flowrt/op/robot/hash/12345 --timeout-ms 2500
-flowrt op start controller.plan --json '{"target":7}' --image flowrt/selfdesc/selfdesc.json --socket /run/user/1000/flowrt/12345.sock --follow
+flowrt op start controller.plan --json '{"target":7}' --image flowrt/selfdesc/selfdesc.json --socket /run/user/1000/flowrt/12345.sock --follow --follow-timeout-ms 7500
 flowrt op cancel 111:7:3 --socket /run/user/1000/flowrt/12345.sock
 flowrt op cancel 111:7:3 --image flowrt/selfdesc/selfdesc.json --remote
 flowrt op result 111:7:3 --image flowrt/selfdesc/selfdesc.json --socket /run/user/1000/flowrt/12345.sock
@@ -1395,12 +1395,16 @@ operation_id=111:7:3 operation=controller.plan ready=true state=starting owner=c
 ```
 
 传入 `--follow` 时，CLI 会先输出 start accepted 行，再用 returned `operation_id` 进入
-`op follow` 语义，持续输出 state/progress/result，直到 terminal event。
+`op follow` 语义，持续输出 state/progress/result，直到 terminal event。`--follow-timeout-ms`
+只控制该 follow 阶段每次 `OperationObserve` 请求的超时，默认 5000ms；它不覆盖 Operation
+start deadline，也不改变 `--timeout-ms` 的 start 请求语义。未传 `--follow` 时使用
+`--follow-timeout-ms` 会被 CLI 拒绝。
 
 远程 `op start <operation> --remote` 使用同一 self-description goal 编码路径和
 `flowrt/op/{package}/{selfdesc_hash}/{pid}` targeting 模型。CLI 不暴露 zenoh queryable 或
 session；用户只选择 Operation 与 runtime。当前 `--timeout-ms` 表示 Operation start timeout
-override，不表示 zenoh discovery timeout。
+override，不表示 zenoh discovery timeout。传入 `--follow` 时，远程 follow 阶段同样使用
+`--follow-timeout-ms` 控制 observation 请求超时。
 
 `op cancel <operation_id>` 通过 runtime introspection socket 发送 `operation_cancel` 请求。
 `operation_id` 来自 `op status` 的 `current_operation_ids` 字段。runtime 会把请求交给
