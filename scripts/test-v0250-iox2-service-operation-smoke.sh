@@ -10,6 +10,9 @@ cd "$repo_root"
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/flowrt-v0250-iox2-service-operation.XXXXXX")"
 cleanup() {
+    if declare -F stop_generated_supervisor >/dev/null; then
+        stop_generated_supervisor
+    fi
     if [[ "${FLOWRT_KEEP_SMOKE_WORKDIR:-0}" == "1" ]]; then
         printf 'preserved v0.25.0 iox2 service/operation smoke work dir: %s\n' "$work_dir" >&2
         return
@@ -39,6 +42,84 @@ fi
 
 run_flowrt() {
     "${flowrt_cmd[@]}" "$@"
+}
+
+find_supervisor_binary() {
+    local build_out="$1"
+    local supervisor
+    if [[ ! -d "$build_out/build/bin/debug" ]]; then
+        echo "missing generated binary directory under $build_out/build/bin/debug" >&2
+        return 1
+    fi
+    supervisor="$(find "$build_out/build/bin/debug" -maxdepth 1 -type f -name '*supervisor' -print -quit)"
+    if [[ -z "$supervisor" ]]; then
+        echo "missing generated supervisor binary under $build_out/build/bin/debug" >&2
+        return 1
+    fi
+    printf '%s\n' "$supervisor"
+}
+
+start_generated_supervisor() {
+    local build_out="$1"
+    local log_path="$2"
+    local supervisor
+    supervisor="$(find_supervisor_binary "$build_out")"
+    printf '+ %q\n' "$supervisor"
+    "$supervisor" >"$log_path" 2>&1 &
+    FLOWRT_SMOKE_SUPERVISOR_PID="$!"
+}
+
+stop_generated_supervisor() {
+    local pid="${FLOWRT_SMOKE_SUPERVISOR_PID:-}"
+    if [[ -z "$pid" ]]; then
+        return
+    fi
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    FLOWRT_SMOKE_SUPERVISOR_PID=""
+}
+
+wait_for_live_operation_counter() {
+    local package="$1"
+    local operation="$2"
+    local status_path="$3"
+    for _ in $(seq 1 80); do
+        if run_flowrt status --live-only --format json >"$status_path" 2>/dev/null &&
+            python3 - "$status_path" "$package" "$operation" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as status_file:
+    entries = json.load(status_file)
+
+package = sys.argv[2]
+operation_name = sys.argv[3]
+for entry in entries:
+    handshake = entry.get("handshake") or {}
+    if handshake.get("package") != package:
+        continue
+    status = entry.get("status") or {}
+    for operation in status.get("operations", []):
+        if operation.get("name") != operation_name:
+            continue
+        started = int(operation.get("total_started", 0))
+        succeeded = int(operation.get("succeeded_count", 0))
+        if started > 0 and succeeded > 0:
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+        then
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "missing live Operation counter package=$package operation=$operation" >&2
+    if [[ -s "$status_path" ]]; then
+        sed -n '1,120p' "$status_path" >&2
+    fi
+    return 1
 }
 
 echo "v0.25.0 iox2 service/operation smoke: script syntax"
@@ -167,6 +248,8 @@ if [[ "${FLOWRT_V0250_REQUIRE_IOX2_SDK:-0}" == "1" ]]; then
     mkdir -p "$real_demo"
     cp -R examples/iox2_service_demo/app "$real_demo/app"
     cp -R examples/iox2_service_demo/rsdl "$real_demo/rsdl"
+    run sed -i 's/name = "iox2_service_demo"/name = "iox2_service_demo_smoke"/' \
+        "$real_demo/rsdl/robot.rsdl"
     case "$(uname -m)" in
         aarch64|arm64)
             run sed -i 's/platform = "linux-amd64"/platform = "linux-arm64"/' \
@@ -174,39 +257,110 @@ if [[ "${FLOWRT_V0250_REQUIRE_IOX2_SDK:-0}" == "1" ]]; then
             ;;
     esac
     build_out="$real_demo/flowrt"
-    status_out="$real_demo/status.json"
+    status_out="$real_demo/live-status.json"
+    supervisor_log="$real_demo/supervisor.log"
     run run_flowrt deps "$real_demo/rsdl/robot.rsdl" --backend iox2 --build-mode debug
     run run_flowrt build "$real_demo/rsdl/robot.rsdl" --out-dir "$build_out" --build-mode debug --launcher
-    export FLOWRT_STATUS_OUT="$status_out"
-    export FLOWRT_TICK_SLEEP_MS=5
-    run run_flowrt launch "$real_demo/rsdl/robot.rsdl" --out-dir "$build_out" --build-mode debug --run-steps 5
-    unset FLOWRT_STATUS_OUT
-    unset FLOWRT_TICK_SLEEP_MS
-    run python3 - "$status_out" <<'PY'
-import json
-import sys
+    start_generated_supervisor "$build_out" "$supervisor_log"
+    if ! wait_for_live_operation_counter "iox2_service_demo_smoke" "nav_client.nav" "$status_out"; then
+        sed -n '1,120p' "$supervisor_log" >&2 || true
+        stop_generated_supervisor
+        exit 1
+    fi
+    stop_generated_supervisor
 
-with open(sys.argv[1], "r", encoding="utf-8") as status_file:
-    status = json.load(status_file)
+    echo "v0.25.0 iox2 service/operation smoke: real C++ bounded operation build/run"
+    cpp_demo="$work_dir/cpp_bounded_operation_real"
+    mkdir -p "$cpp_demo/app/cpp" "$cpp_demo/rsdl"
+    cp crates/flowrt-codegen/tests/golden/bounded_operation_iox2_cpp/input.rsdl \
+        "$cpp_demo/rsdl/robot.rsdl"
+    run sed -i 's/name = "bounded_operation_iox2_cpp"/name = "bounded_operation_iox2_cpp_smoke"/' \
+        "$cpp_demo/rsdl/robot.rsdl"
+    cat >> "$cpp_demo/rsdl/robot.rsdl" <<'RSDL'
 
-operations = []
-if status.get("mode") == "launch":
-    for process in status.get("processes", []):
-        operations.extend(process.get("status", {}).get("operations", []))
-else:
-    operations.extend(status.get("operations", []))
+[[process]]
+name = "server_proc"
+readiness = "runtime_ready"
 
-matching = [operation for operation in operations if operation.get("name", "").endswith(".nav")]
-if not matching:
-    raise SystemExit("missing nav operation status in real iox2 run")
+[[process]]
+name = "client_proc"
+depends_on = ["server_proc"]
+RSDL
+    cat > "$cpp_demo/app/cpp/components.cpp" <<'CPP'
+#include "flowrt_app/runtime_shell.hpp"
 
-started = sum(int(operation.get("total_started", 0)) for operation in matching)
-succeeded = sum(int(operation.get("succeeded_count", 0)) for operation in matching)
-if started == 0 or succeeded == 0:
-    raise SystemExit(
-        f"real iox2 Operation was not exercised: total_started={started} succeeded_count={succeeded}"
-    )
-PY
+#include <memory>
+
+namespace {
+
+class Controller final : public flowrt_app::ControllerInterface {
+public:
+    flowrt::Status on_tick(flowrt_app::OperationClient_controller_plan& plan) override {
+        if (started_) {
+            return flowrt::Status::Ok;
+        }
+        auto goal = flowrt_app::PlanGoal{};
+        goal.target = "dock";
+        const auto result = plan.start(goal, 5000);
+        if (result.is_err()) {
+            return flowrt::Status::Ok;
+        }
+        if (!result.value().has_value() || !result.value()->accepted) {
+            return flowrt::Status::Error;
+        }
+        started_ = true;
+        return flowrt::Status::Ok;
+    }
+
+private:
+    bool started_ = false;
+};
+
+class Navigator final : public flowrt_app::NavigatorInterface {
+public:
+    flowrt::OperationHandlerResult<flowrt_app::PlanResult> on_plan_operation(
+        const flowrt_app::PlanGoal& goal,
+        flowrt::OperationCancelToken cancel,
+        flowrt::OperationProgressPublisher<flowrt_app::PlanFeedback>& progress) override {
+        (void)cancel;
+        if (goal.target != "dock") {
+            return flowrt::OperationHandlerResult<flowrt_app::PlanResult>::failed();
+        }
+        progress.publish(flowrt_app::PlanFeedback{.progress = 0.5F});
+        progress.publish(flowrt_app::PlanFeedback{.progress = 1.0F});
+        return flowrt::OperationHandlerResult<flowrt_app::PlanResult>::succeeded(
+            flowrt_app::PlanResult{.accepted = true});
+    }
+
+    flowrt::Status on_tick() override { return flowrt::Status::Ok; }
+};
+
+}  // namespace
+
+namespace flowrt_user {
+
+flowrt_app::App build_app() {
+    return flowrt_app::App(
+        std::make_unique<Controller>(),
+        std::make_unique<Navigator>());
+}
+
+}  // namespace flowrt_user
+CPP
+    cpp_build_out="$cpp_demo/flowrt"
+    cpp_status_out="$cpp_demo/live-status.json"
+    cpp_supervisor_log="$cpp_demo/supervisor.log"
+    run run_flowrt deps "$cpp_demo/rsdl/robot.rsdl" --backend iox2 --build-mode debug
+    run run_flowrt build "$cpp_demo/rsdl/robot.rsdl" --out-dir "$cpp_build_out" \
+        --build-mode debug --launcher
+    start_generated_supervisor "$cpp_build_out" "$cpp_supervisor_log"
+    if ! wait_for_live_operation_counter \
+        "bounded_operation_iox2_cpp_smoke" "controller.plan" "$cpp_status_out"; then
+        sed -n '1,120p' "$cpp_supervisor_log" >&2 || true
+        stop_generated_supervisor
+        exit 1
+    fi
+    stop_generated_supervisor
 else
     echo "v0.25.0 iox2 service/operation smoke: skip real iox2 build/run (set FLOWRT_V0250_REQUIRE_IOX2_SDK=1)"
 fi

@@ -823,6 +823,8 @@ examples/iox2_service_demo/app/rust/mod.rs
 该示例验证 Service / Operation over `iox2` 的同主机跨进程 control-plane：
 `plan_client` 和 `plan_svc` 分属不同 process group，profile 选择 `iox2`，Service
 request/response 与 Operation start/cancel/status 都使用 canonical iox2 service name。
+composition 层声明 `server_proc` 的 `readiness = "service_ready"`，`client_proc` 依赖
+`server_proc`，确保 generated launch 先等服务端 ready 后再启动 client 进程。
 用户实现仍是 FlowRT typed Service / Operation API，不接触 `iceoryx2` SDK 类型。
 
 运行路径：

@@ -100,6 +100,14 @@ concurrency = "reject"
 preempt = "reject"
 feedback = "latest"
 
+[[process]]
+name = "server_proc"
+readiness = "service_ready"
+
+[[process]]
+name = "client_proc"
+depends_on = ["server_proc"]
+
 [profile.default]
 backend = "iox2"
 default_overflow = "drop_oldest"
