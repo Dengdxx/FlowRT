@@ -26,6 +26,10 @@ bounded Operation start frame 经 iox2 定容 slot 的 build/run 路径。
 Release Candidate workflow 会在该 smoke 前按 `scripts/deps.lock` 准备 locked
 `iceoryx2-cxx` C++ SDK prefix，并通过 `CMAKE_PREFIX_PATH` 提供给 source-tree generated
 C++ build，避免真实 SDK 分支依赖尚未生成的 deb package。
+Release Candidate 和 `scripts/package-deb.sh` 现在为 Cargo 网络访问设置较保守的
+retry/timeout 默认值并关闭 HTTP/2 multiplexing；Debian 打包入口会先 `cargo fetch --locked`
+并对 fetch/vendor 做外层重试，避免 arm64 原生 runner 首次 cache miss 时 crates.io HTTP/2
+瞬断直接打掉 deb artifact job。
 generated self-description 的 `message_abi` / `message_frames` registry 现在统一使用 Contract
 IR canonical type id（例如 `module::Type`）作为协议和 CLI 主键；C++/Rust 生成名只作为语言
 binding name。boundary endpoint、dataflow channel、record/replay 和 `flowrt pub` / `flowrt echo`

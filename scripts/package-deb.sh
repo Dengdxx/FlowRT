@@ -71,6 +71,32 @@ command -v sha256sum >/dev/null || {
     exit 1
 }
 
+# GitHub arm64 runner 偶发 crates.io sparse index HTTP/2 framing 失败。这里给
+# release 打包入口设置可被调用方覆盖的保守默认值，避免一次网络抖动打断 deb 产物。
+export CARGO_NET_RETRY="${CARGO_NET_RETRY:-10}"
+export CARGO_HTTP_TIMEOUT="${CARGO_HTTP_TIMEOUT:-600}"
+export CARGO_HTTP_MULTIPLEXING="${CARGO_HTTP_MULTIPLEXING:-false}"
+
+cargo_network_attempts="${FLOWRT_PACKAGE_CARGO_ATTEMPTS:-3}"
+retry_network_command() {
+    local label="$1"
+    shift
+    local attempt=1
+    while true; do
+        if "$@"; then
+            return 0
+        fi
+        local status="$?"
+        if ((attempt >= cargo_network_attempts)); then
+            return "$status"
+        fi
+        printf 'warning: %s failed with status %s; retrying (%s/%s)\n' \
+            "$label" "$status" "$((attempt + 1))" "$cargo_network_attempts" >&2
+        sleep "$((attempt * 5))"
+        attempt="$((attempt + 1))"
+    done
+}
+
 # ---------------------------------------------------------------------------
 # 依赖锁定校验
 # ---------------------------------------------------------------------------
@@ -279,6 +305,7 @@ cache_dir="$package_work_parent/cache"
 vendor_src_dir="$package_work_parent/vendor-src"
 mkdir -p "$cache_dir" "$vendor_src_dir"
 
+retry_network_command "cargo fetch" cargo fetch --locked
 cargo build --release -p flowrt-cli
 
 install -D -m 0755 "$repo_root/target/release/flowrt" "$private_root/bin/flowrt"
@@ -306,7 +333,7 @@ thiserror = "2"
 EOF
 install -d "$private_root/share/cargo"
 vendor_log="$package_work/cargo-vendor.log"
-if ! cargo vendor --locked --versioned-dirs "$private_root/share/cargo/vendor" \
+if ! retry_network_command "cargo vendor" cargo vendor --locked --versioned-dirs "$private_root/share/cargo/vendor" \
     >"$vendor_log" 2>&1; then
     cat "$vendor_log" >&2
     exit 1
