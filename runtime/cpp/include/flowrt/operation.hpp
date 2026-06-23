@@ -331,9 +331,9 @@ OperationClientResult<T> operation_client_result_from_service(ServiceResult<T> r
 struct OperationPolicy {
     std::chrono::milliseconds timeout{30000};  ///< invocation 超时时间。
     OperationConcurrencyPolicy concurrency{OperationConcurrencyPolicy::Reject};  ///< 并发策略。
-    OperationPreemptPolicy preempt{OperationPreemptPolicy::Reject};  ///< 抢占策略。
-    std::uint32_t queue_depth = 8;                                   ///< 等待队列深度。
-    std::uint32_t max_in_flight = 1;                                 ///< 最大 in-flight 数。
+    OperationPreemptPolicy preempt{OperationPreemptPolicy::Reject};              ///< 抢占策略。
+    std::uint32_t queue_depth = 8;                                               ///< 等待队列深度。
+    std::uint32_t max_in_flight = 1;                ///< 最大 in-flight 数。
     std::chrono::milliseconds result_retention{0};  ///< 终态快照保留时间。
 
     /**
@@ -738,6 +738,7 @@ struct OperationRuntimeEvent {
     std::optional<std::uint64_t> sequence;
     std::optional<std::vector<std::uint8_t>> payload;
     std::optional<std::string_view> message;
+    std::optional<std::uint64_t> retention_ms;
 };
 
 /**
@@ -1039,10 +1040,9 @@ class OperationControl {
         return complete_with_payload_at(id, terminal_state, std::nullopt, completed_at_ms);
     }
 
-    OperationControlError complete_with_payload_at(
-        OperationId id, OperationState terminal_state,
-        std::optional<std::vector<std::uint8_t>> payload,
-        std::uint64_t completed_at_ms) noexcept {
+    OperationControlError complete_with_payload_at(OperationId id, OperationState terminal_state,
+                                                   std::optional<std::vector<std::uint8_t>> payload,
+                                                   std::uint64_t completed_at_ms) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!is_terminal(terminal_state)) {
             return OperationControlError::InvalidTransition;
@@ -1066,18 +1066,11 @@ class OperationControl {
             push_result_event(id, terminal_state, std::move(payload));
             push_state_event(id, terminal_state);
             const auto snapshot = snapshot_with_health(lifecycle);
-            const bool keep_terminal_primary = was_primary && in_flight_.empty() &&
-                                               queue_.empty() &&
-                                               !retention_deadline(completed_at_ms).has_value();
-            if (keep_terminal_primary) {
-                lifecycle_ = std::move(lifecycle);
-            } else {
-                retain_terminal_snapshot(snapshot, completed_at_ms);
-                if (was_primary) {
-                    promote_next_active();
-                }
-                promote_queued_until_capacity();
+            retain_terminal_snapshot(snapshot, completed_at_ms);
+            if (was_primary) {
+                promote_next_active();
             }
+            promote_queued_until_capacity();
             return OperationControlError::Ok;
         }
         auto retained = std::find_if(
@@ -1148,6 +1141,7 @@ class OperationControl {
             .sequence = sequence,
             .payload = std::move(payload),
             .message = std::nullopt,
+            .retention_ms = std::nullopt,
         });
     }
 
@@ -1362,6 +1356,7 @@ class OperationControl {
             .sequence = std::nullopt,
             .payload = std::move(payload),
             .message = std::nullopt,
+            .retention_ms = result_retention_ms(),
         });
     }
 
@@ -1373,6 +1368,7 @@ class OperationControl {
             .sequence = std::nullopt,
             .payload = std::nullopt,
             .message = std::nullopt,
+            .retention_ms = std::nullopt,
         });
     }
 
@@ -1447,18 +1443,13 @@ class OperationControl {
         health_.record_state(OperationState::TimedOut);
         handler_active_ = false;
         const auto snapshot = snapshot_with_health(lifecycle);
+        push_result_event(id, OperationState::TimedOut, std::nullopt);
         push_state_event(id, OperationState::TimedOut);
-        const bool keep_terminal_primary = was_primary && in_flight_.empty() && queue_.empty() &&
-                                           !retention_deadline(now_ms).has_value();
-        if (keep_terminal_primary) {
-            lifecycle_ = std::move(lifecycle);
-        } else {
-            retain_terminal_snapshot(snapshot, now_ms);
-            if (was_primary) {
-                promote_next_active();
-            }
-            promote_queued_until_capacity();
+        retain_terminal_snapshot(snapshot, now_ms);
+        if (was_primary) {
+            promote_next_active();
         }
+        promote_queued_until_capacity();
         return true;
     }
 
@@ -1480,6 +1471,7 @@ class OperationControl {
         }
         health_.record_state(OperationState::TimedOut);
         const auto snapshot = snapshot_with_health(lifecycle);
+        push_result_event(id, OperationState::TimedOut, std::nullopt);
         push_state_event(id, OperationState::TimedOut);
         retain_terminal_snapshot(snapshot, now_ms);
         return true;
@@ -1501,7 +1493,18 @@ class OperationControl {
         if (policy_.result_retention.count() <= 0) {
             return std::nullopt;
         }
-        return completed_at_ms + static_cast<std::uint64_t>(policy_.result_retention.count());
+        const auto retention_ms = static_cast<std::uint64_t>(policy_.result_retention.count());
+        if (retention_ms > std::numeric_limits<std::uint64_t>::max() - completed_at_ms) {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        return completed_at_ms + retention_ms;
+    }
+
+    std::uint64_t result_retention_ms() const noexcept {
+        if (policy_.result_retention.count() <= 0) {
+            return 0U;
+        }
+        return static_cast<std::uint64_t>(policy_.result_retention.count());
     }
 
     void erase_retained(OperationId id) {

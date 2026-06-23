@@ -1068,6 +1068,52 @@ int main() {
         .preempted_count = 0,
         .last_transition_ms = std::optional<std::uint64_t>{12345U},
     });
+    {
+        flowrt::IntrospectionState retention_state;
+        retention_state.record_operation_transition(
+            "controller.plan", "111:7:3", "running",
+            std::optional<std::string_view>{"controller.plan"}, std::optional<std::uint64_t>{50U});
+        retention_state.record_operation_progress_payload(
+            "controller.plan", "111:7:3", 1U,
+            std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{1U, 2U}});
+        retention_state.record_operation_result_payload_with_retention(
+            "controller.plan", "111:7:3", "succeeded", std::nullopt,
+            std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{3U, 4U}},
+            std::optional<std::uint64_t>{10U});
+
+        const auto result = std::get<flowrt::IntrospectionOperationResult>(
+            retention_state.result_operation("111:7:3"));
+        assert((result.payload ==
+                std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{3U, 4U}}));
+        assert(result.completed_unix_ms.has_value());
+        assert(result.expires_unix_ms ==
+               std::optional<std::uint64_t>{*result.completed_unix_ms + 10U});
+        const auto page = std::get<flowrt::IntrospectionState::OperationObservePage>(
+            retention_state.observe_operation("111:7:3", 0U, std::nullopt));
+        assert(page.events.size() == 3U);
+        assert(page.terminal);
+
+        retention_state.evict_retained_operation_observations(*result.expires_unix_ms + 1U);
+        assert(std::holds_alternative<std::string>(retention_state.result_operation("111:7:3")));
+        assert(std::holds_alternative<std::string>(
+            retention_state.observe_operation("111:7:3", 0U, std::nullopt)));
+    }
+    {
+        flowrt::IntrospectionState retention_state;
+        retention_state.record_operation_transition(
+            "controller.plan", "111:7:4", "running",
+            std::optional<std::string_view>{"controller.plan"}, std::optional<std::uint64_t>{50U});
+        retention_state.record_operation_progress_payload(
+            "controller.plan", "111:7:4", 1U,
+            std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{1U, 2U}});
+        retention_state.record_operation_result_payload_with_retention(
+            "controller.plan", "111:7:4", "succeeded", std::nullopt,
+            std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{3U, 4U}},
+            std::optional<std::uint64_t>{0U});
+        assert(std::holds_alternative<std::string>(retention_state.result_operation("111:7:4")));
+        assert(std::holds_alternative<std::string>(
+            retention_state.observe_operation("111:7:4", 0U, std::nullopt)));
+    }
     state.register_operation_start_handler(
         "controller.plan",
         [state](std::vector<std::uint8_t> payload, std::optional<std::uint64_t> timeout_ms,

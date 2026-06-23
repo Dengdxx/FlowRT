@@ -1004,12 +1004,36 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 记录 operation result/error 事件，并按 retention 清理 result 与 event log。
+     */
+    void record_operation_result_with_retention(std::string_view operation,
+                                                std::string_view operation_id,
+                                                std::string_view result,
+                                                std::optional<std::string_view> error,
+                                                std::optional<std::uint64_t> retention_ms) const {
+        record_operation_result_payload_with_retention(operation, operation_id, result, error,
+                                                       std::nullopt, retention_ms);
+    }
+
+    /**
      * @brief 记录 operation result/error 事件，并保留 payload 长度供观测事件说明。
      */
     void record_operation_result_payload(
         std::string_view operation, std::string_view operation_id, std::string_view result,
         std::optional<std::string_view> error,
         const std::optional<std::vector<std::uint8_t>> &payload_bytes) const {
+        record_operation_result_payload_with_retention(operation, operation_id, result, error,
+                                                       payload_bytes, std::nullopt);
+    }
+
+    /**
+     * @brief 记录 operation result/error 事件，并按 retention 保留 payload 与 observation log。
+     */
+    void record_operation_result_payload_with_retention(
+        std::string_view operation, std::string_view operation_id, std::string_view result,
+        std::optional<std::string_view> error,
+        const std::optional<std::vector<std::uint8_t>> &payload_bytes,
+        std::optional<std::uint64_t> retention_ms) const {
         const auto operation_name = std::string{operation};
         const auto id = std::string{operation_id};
         const auto event = (error.has_value() || result == "failed")
@@ -1018,6 +1042,14 @@ class IntrospectionState {
         const auto kind = (error.has_value() || result == "failed") ? std::string{"error"}
                                                                     : std::string{"result"};
         const auto now = detail::unix_time_ms();
+        const auto expires_unix_ms =
+            retention_ms
+                ? std::optional<std::uint64_t>{*retention_ms >
+                                                       std::numeric_limits<std::uint64_t>::max() -
+                                                           now
+                                                   ? std::numeric_limits<std::uint64_t>::max()
+                                                   : now + *retention_ms}
+                : std::nullopt;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         push_operation_event_locked(
             inner_, operation_name, id, kind, std::string{result}, std::nullopt, payload_bytes,
@@ -1042,8 +1074,12 @@ class IntrospectionState {
                     .error = error ? std::optional<std::string>{std::string{*error}} : std::nullopt,
                     .payload = payload_bytes,
                     .completed_unix_ms = now,
-                    .expires_unix_ms = std::nullopt,
+                    .expires_unix_ms = expires_unix_ms,
                 });
+        if (retention_ms == std::optional<std::uint64_t>{0U}) {
+            inner_->operation_results.erase(id);
+            inner_->operation_events.erase(id);
+        }
         const auto payload_json =
             "{\"operation_id\":" + detail::json_string(operation_id) +
             ",\"result\":" + detail::json_string(result) +
@@ -1053,6 +1089,30 @@ class IntrospectionState {
         record_event_locked("operation", operation_name, "operation_event", "operation",
                             operation_name, "", "json", event, string_bytes(payload_json),
                             std::nullopt);
+    }
+
+    /**
+     * @brief 清理超过 result retention 的 operation result 与 observation event log。
+     */
+    void evict_retained_operation_observations(std::uint64_t now_unix_ms) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        std::vector<std::string> expired_ids;
+        for (const auto &[operation_id, result] : inner_->operation_results) {
+            if (result.expires_unix_ms.has_value() && now_unix_ms > *result.expires_unix_ms) {
+                expired_ids.push_back(operation_id);
+            }
+        }
+        for (const auto &operation_id : expired_ids) {
+            inner_->operation_results.erase(operation_id);
+            inner_->operation_events.erase(operation_id);
+        }
+    }
+
+    /**
+     * @brief 按当前 wall-clock 清理超过 result retention 的 operation observation。
+     */
+    void evict_expired_operation_observations() const {
+        evict_retained_operation_observations(detail::unix_time_ms());
     }
 
     /**

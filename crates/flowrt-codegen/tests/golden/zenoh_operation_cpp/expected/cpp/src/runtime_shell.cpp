@@ -682,9 +682,12 @@ flowrt::Status App::step_operation_navigator_plan(std::size_t tick, flowrt::Cont
         return flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", this->operation_control_0_->snapshot());
     });
     if (this->operation_control_0_) {
-        (void)this->operation_control_0_->check_deadline(flowrt::monotonic_time_ms());
+        const auto now_ms = flowrt::monotonic_time_ms();
+        (void)this->operation_control_0_->check_deadline(now_ms);
+        this->operation_control_0_->evict_retained_results(now_ms);
         const auto snapshot = this->operation_control_0_->snapshot();
         const auto events = this->operation_control_0_->drain_events();
+        introspection_state.evict_expired_operation_observations();
         for (const auto& event : events) {
             const auto operation_id = flowrt_operation_id_string(event.id);
             switch (event.kind) {
@@ -703,12 +706,12 @@ flowrt::Status App::step_operation_navigator_plan(std::size_t tick, flowrt::Cont
                     break;
                 case flowrt::OperationRuntimeEventKind::Result: {
                     const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{"succeeded"};
-                    introspection_state.record_operation_result_payload("controller.plan", operation_id, result, std::nullopt, event.payload);
+                    introspection_state.record_operation_result_payload_with_retention("controller.plan", operation_id, result, std::nullopt, event.payload, event.retention_ms);
                     break;
                 }
                 case flowrt::OperationRuntimeEventKind::Error: {
                     const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{"failed"};
-                    introspection_state.record_operation_result("controller.plan", operation_id, result, std::optional<std::string_view>{"handler error"});
+                    introspection_state.record_operation_result_with_retention("controller.plan", operation_id, result, std::optional<std::string_view>{"handler error"}, event.retention_ms);
                     break;
                 }
             }

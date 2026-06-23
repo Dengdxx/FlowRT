@@ -1231,6 +1231,25 @@ impl IntrospectionState {
         self.record_operation_result_payload(operation, operation_id, result, error, None);
     }
 
+    /// 记录 operation result/error 事件，并按 retention 清理 result 与 event log。
+    pub fn record_operation_result_with_retention(
+        &self,
+        operation: &str,
+        operation_id: &str,
+        result: &str,
+        error: Option<&str>,
+        retention_ms: Option<u64>,
+    ) {
+        self.record_operation_result_payload_with_retention(
+            operation,
+            operation_id,
+            result,
+            error,
+            None,
+            retention_ms,
+        );
+    }
+
     /// 记录 operation result/error 事件，并保留 typed payload 供 `flowrt op result` 查询。
     pub fn record_operation_result_payload(
         &self,
@@ -1239,6 +1258,26 @@ impl IntrospectionState {
         result: &str,
         error: Option<&str>,
         payload: Option<Vec<u8>>,
+    ) {
+        self.record_operation_result_payload_with_retention(
+            operation,
+            operation_id,
+            result,
+            error,
+            payload,
+            None,
+        );
+    }
+
+    /// 记录 operation result/error 事件，并按 retention 保留 typed payload 和 observation log。
+    pub fn record_operation_result_payload_with_retention(
+        &self,
+        operation: &str,
+        operation_id: &str,
+        result: &str,
+        error: Option<&str>,
+        payload: Option<Vec<u8>>,
+        retention_ms: Option<u64>,
     ) {
         let event = if error.is_some() || result == "failed" {
             "flowrt.operation.error"
@@ -1259,7 +1298,7 @@ impl IntrospectionState {
             error: error.map(str::to_string),
             payload: payload.clone(),
             completed_unix_ms: Some(now),
-            expires_unix_ms: None,
+            expires_unix_ms: retention_ms.map(|duration| now.saturating_add(duration)),
         };
         {
             let mut inner = self.lock_inner();
@@ -1282,9 +1321,14 @@ impl IntrospectionState {
             entry.current_operation_ids.retain(|id| id != operation_id);
             entry.running = 0;
             entry.last_transition_ms = Some(now);
-            inner
-                .operation_results
-                .insert(operation_id.to_string(), result_status);
+            if retention_ms == Some(0) {
+                inner.operation_results.remove(operation_id);
+                inner.operation_events.remove(operation_id);
+            } else {
+                inner
+                    .operation_results
+                    .insert(operation_id.to_string(), result_status);
+            }
         }
         self.recorder.record_operation_event_json(
             operation,
@@ -1296,6 +1340,30 @@ impl IntrospectionState {
                 "payload_len": payload.as_ref().map(Vec::len),
             }),
         );
+    }
+
+    /// 清理超过 result retention 的 operation result 与 observation event log。
+    pub fn evict_retained_operation_observations(&self, now_unix_ms: u64) {
+        let mut inner = self.lock_inner();
+        let expired_ids = inner
+            .operation_results
+            .iter()
+            .filter(|(_, result)| {
+                result
+                    .expires_unix_ms
+                    .is_some_and(|deadline| now_unix_ms > deadline)
+            })
+            .map(|(operation_id, _)| operation_id.clone())
+            .collect::<Vec<_>>();
+        for operation_id in expired_ids {
+            inner.operation_results.remove(&operation_id);
+            inner.operation_events.remove(&operation_id);
+        }
+    }
+
+    /// 按当前 wall-clock 清理超过 result retention 的 operation observation。
+    pub fn evict_expired_operation_observations(&self) {
+        self.evict_retained_operation_observations(unix_time_ms());
     }
 
     /// 查询保留的 operation result。

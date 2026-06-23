@@ -825,10 +825,13 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                     }
                                 }
                                 let mut operation_control = __flowrt_operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());
+                                let now_ms = flowrt::monotonic_time_ms();
+                                let _ = operation_control.check_deadline(now_ms);
+                                operation_control.evict_retained_results(now_ms);
                                 let snapshot = operation_control.snapshot();
                                 let events = operation_control.drain_events();
                                 drop(operation_control);
+                                introspection_state.evict_expired_operation_observations();
                                 for event in events {
                                     let operation_id = flowrt_operation_id_string(event.id);
                                     match event.kind {
@@ -842,11 +845,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
-                                            introspection_state.record_operation_result_payload("controller.plan", &operation_id, result, None, event.payload);
+                                            introspection_state.record_operation_result_payload_with_retention("controller.plan", &operation_id, result, None, event.payload, event.retention_ms);
                                         }
                                         flowrt::OperationRuntimeEventKind::Error => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("failed");
-                                            introspection_state.record_operation_result("controller.plan", &operation_id, result, Some("handler error"));
+                                            introspection_state.record_operation_result_with_retention("controller.plan", &operation_id, result, Some("handler error"), event.retention_ms);
                                         }
                                     }
                                 }
@@ -1491,10 +1494,13 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                     }
                                 }
                                 let mut operation_control = __flowrt_operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());
+                                let now_ms = flowrt::monotonic_time_ms();
+                                let _ = operation_control.check_deadline(now_ms);
+                                operation_control.evict_retained_results(now_ms);
                                 let snapshot = operation_control.snapshot();
                                 let events = operation_control.drain_events();
                                 drop(operation_control);
+                                introspection_state.evict_expired_operation_observations();
                                 for event in events {
                                     let operation_id = flowrt_operation_id_string(event.id);
                                     match event.kind {
@@ -1508,11 +1514,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
-                                            introspection_state.record_operation_result_payload("controller.plan", &operation_id, result, None, event.payload);
+                                            introspection_state.record_operation_result_payload_with_retention("controller.plan", &operation_id, result, None, event.payload, event.retention_ms);
                                         }
                                         flowrt::OperationRuntimeEventKind::Error => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("failed");
-                                            introspection_state.record_operation_result("controller.plan", &operation_id, result, Some("handler error"));
+                                            introspection_state.record_operation_result_with_retention("controller.plan", &operation_id, result, Some("handler error"), event.retention_ms);
                                         }
                                     }
                                 }
@@ -2106,10 +2112,13 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                     }
                                 }
                                 let mut operation_control = __flowrt_operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());
+                                let now_ms = flowrt::monotonic_time_ms();
+                                let _ = operation_control.check_deadline(now_ms);
+                                operation_control.evict_retained_results(now_ms);
                                 let snapshot = operation_control.snapshot();
                                 let events = operation_control.drain_events();
                                 drop(operation_control);
+                                introspection_state.evict_expired_operation_observations();
                                 for event in events {
                                     let operation_id = flowrt_operation_id_string(event.id);
                                     match event.kind {
@@ -2123,11 +2132,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                         }
                                         flowrt::OperationRuntimeEventKind::Result => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("succeeded");
-                                            introspection_state.record_operation_result_payload("controller.plan", &operation_id, result, None, event.payload);
+                                            introspection_state.record_operation_result_payload_with_retention("controller.plan", &operation_id, result, None, event.payload, event.retention_ms);
                                         }
                                         flowrt::OperationRuntimeEventKind::Error => {
                                             let result = event.state.map(flowrt::OperationState::as_str).unwrap_or("failed");
-                                            introspection_state.record_operation_result("controller.plan", &operation_id, result, Some("handler error"));
+                                            introspection_state.record_operation_result_with_retention("controller.plan", &operation_id, result, Some("handler error"), event.retention_ms);
                                         }
                                     }
                                 }

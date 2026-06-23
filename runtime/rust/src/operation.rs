@@ -1014,6 +1014,7 @@ pub struct OperationRuntimeEvent {
     pub sequence: Option<u64>,
     pub payload: Option<Vec<u8>>,
     pub message: Option<&'static str>,
+    pub retention_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1235,19 +1236,11 @@ impl OperationControl {
             self.push_state_event(id, terminal_state);
             let mut snapshot = lifecycle.snapshot();
             snapshot.health = self.health.snapshot();
-            let should_keep_terminal_primary = was_primary
-                && self.in_flight.is_empty()
-                && self.queue.is_empty()
-                && self.retention_deadline(completed_at_ms).is_none();
-            if should_keep_terminal_primary {
-                self.lifecycle = Some(lifecycle);
-            } else {
-                self.retain_terminal_snapshot(snapshot, completed_at_ms);
-                if was_primary {
-                    self.promote_next_active();
-                }
-                self.promote_queued_until_capacity();
+            self.retain_terminal_snapshot(snapshot, completed_at_ms);
+            if was_primary {
+                self.promote_next_active();
             }
+            self.promote_queued_until_capacity();
             return Ok(());
         }
 
@@ -1311,6 +1304,7 @@ impl OperationControl {
                 sequence: Some(sequence),
                 payload,
                 message: None,
+                retention_ms: None,
             });
         }
     }
@@ -1471,6 +1465,7 @@ impl OperationControl {
             sequence: None,
             payload: None,
             message: None,
+            retention_ms: None,
         });
     }
 
@@ -1492,6 +1487,7 @@ impl OperationControl {
             sequence: None,
             payload,
             message: None,
+            retention_ms: Some(duration_millis_u64(self.policy.result_retention)),
         });
     }
 
@@ -1602,20 +1598,13 @@ impl OperationControl {
         self.handler_active = false;
         let mut snapshot = lifecycle.snapshot();
         snapshot.health = self.health.snapshot();
+        self.push_result_event(id, OperationState::TimedOut, None);
         self.push_state_event(id, OperationState::TimedOut);
-        let should_keep_terminal_primary = was_primary
-            && self.in_flight.is_empty()
-            && self.queue.is_empty()
-            && self.retention_deadline(now_ms).is_none();
-        if should_keep_terminal_primary {
-            self.lifecycle = Some(lifecycle);
-        } else {
-            self.retain_terminal_snapshot(snapshot, now_ms);
-            if was_primary {
-                self.promote_next_active();
-            }
-            self.promote_queued_until_capacity();
+        self.retain_terminal_snapshot(snapshot, now_ms);
+        if was_primary {
+            self.promote_next_active();
         }
+        self.promote_queued_until_capacity();
         true
     }
 
@@ -1635,6 +1624,7 @@ impl OperationControl {
         self.health.record_state(OperationState::TimedOut);
         let mut snapshot = lifecycle.snapshot();
         snapshot.health = self.health.snapshot();
+        self.push_result_event(id, OperationState::TimedOut, None);
         self.push_state_event(id, OperationState::TimedOut);
         self.retain_terminal_snapshot(snapshot, now_ms);
         true
@@ -1766,6 +1756,7 @@ mod tests {
             8,
             1,
         )
+        .and_then(|policy| policy.with_result_retention(Duration::from_millis(1_000)))
         .unwrap();
         let owner = OperationOwner::new(10, 20);
         let mut control = OperationControl::new(99, policy);
@@ -1782,7 +1773,7 @@ mod tests {
         control.mark_running(ack.id).unwrap();
         control.complete(ack.id, OperationState::Succeeded).unwrap();
 
-        let snapshot = control.snapshot();
+        let snapshot = control.status(ack.id).unwrap();
         assert_eq!(snapshot.state, OperationState::Succeeded);
         assert_eq!(snapshot.owner, owner);
         assert_eq!(snapshot.deadline_ms, 150);
@@ -1840,6 +1831,7 @@ mod tests {
             8,
             1,
         )
+        .and_then(|policy| policy.with_result_retention(Duration::from_millis(1_000)))
         .unwrap();
         let owner = OperationOwner::new(10, 20);
         let mut control = OperationControl::new(99, policy);
@@ -1850,23 +1842,50 @@ mod tests {
         assert_eq!(control.snapshot().state, OperationState::Running);
         assert!(control.check_deadline(105));
 
-        let snapshot = control.snapshot();
+        let snapshot = control.status(ack.id).unwrap();
         assert_eq!(snapshot.state, OperationState::TimedOut);
         assert!(snapshot.cancel_requested);
         assert_eq!(snapshot.health.timeout, 1);
-        assert!(control.cancel_token().unwrap().is_canceled());
+        let events = control.drain_events();
+        assert!(events.iter().any(|event| {
+            event.kind == OperationRuntimeEventKind::Result
+                && event.state == Some(OperationState::TimedOut)
+                && event.retention_ms == Some(1_000)
+        }));
     }
 
     #[test]
     fn operation_control_handler_error_enters_failed() {
         let owner = OperationOwner::new(10, 20);
-        let mut control = OperationControl::new(99, OperationPolicy::default());
+        let policy = OperationPolicy::default()
+            .with_result_retention(Duration::from_millis(1_000))
+            .unwrap();
+        let mut control = OperationControl::new(99, policy);
         let ack = control.start(owner, 100).unwrap();
         control.mark_running(ack.id).unwrap();
         control.complete(ack.id, OperationState::Failed).unwrap();
 
-        let snapshot = control.snapshot();
+        let snapshot = control.status(ack.id).unwrap();
         assert_eq!(snapshot.state, OperationState::Failed);
         assert_eq!(snapshot.health.failed, 1);
+    }
+
+    #[test]
+    fn operation_control_zero_retention_drops_terminal_invocation() {
+        let owner = OperationOwner::new(10, 20);
+        let mut control = OperationControl::new(99, OperationPolicy::default());
+        let ack = control.start(owner, 100).unwrap();
+        control.mark_running(ack.id).unwrap();
+        control
+            .complete_at(ack.id, OperationState::Succeeded, 110)
+            .unwrap();
+
+        assert!(matches!(
+            control.status(ack.id),
+            Err(OperationControlError::StaleInvocation { .. })
+        ));
+        let snapshot = control.snapshot();
+        assert_eq!(snapshot.state, OperationState::Idle);
+        assert_eq!(snapshot.health.succeeded, 1);
     }
 }

@@ -50,9 +50,9 @@ int main() {
     assert(id.client_id == 1U);
     assert(id.sequence == 0xBBU);
 
-    auto policy = flowrt::OperationPolicy::make(std::chrono::milliseconds{1000},
-                                                flowrt::OperationConcurrencyPolicy::Reject,
-                                                flowrt::OperationPreemptPolicy::Reject, 8U, 1U);
+    auto policy = flowrt::OperationPolicy::make(
+        std::chrono::milliseconds{1000}, flowrt::OperationConcurrencyPolicy::Reject,
+        flowrt::OperationPreemptPolicy::Reject, 8U, 1U, std::chrono::milliseconds{1000});
     assert(policy.has_value());
     assert(!flowrt::OperationPolicy::make(std::chrono::milliseconds{0},
                                           flowrt::OperationConcurrencyPolicy::Reject,
@@ -126,10 +126,33 @@ int main() {
            flowrt::OperationControlError::StaleInvocation);
     assert(!control.check_deadline(1099U));
     assert(control.check_deadline(1100U));
-    assert(control.snapshot().state == flowrt::OperationState::TimedOut);
-    assert(control.snapshot().cancel_requested);
-    assert(control.cancel_token().has_value());
-    assert(control.cancel_token()->is_canceled());
+    assert(control.status(started->id)->state == flowrt::OperationState::TimedOut);
+    assert(control.status(started->id)->cancel_requested);
+    const auto timeout_events = control.drain_events();
+    assert(std::any_of(timeout_events.begin(), timeout_events.end(), [](const auto &event) {
+        return event.kind == flowrt::OperationRuntimeEventKind::Result &&
+               event.state ==
+                   std::optional<flowrt::OperationState>{flowrt::OperationState::TimedOut} &&
+               event.retention_ms == std::optional<std::uint64_t>{1000U};
+    }));
+
+    auto zero_retention_policy = flowrt::OperationPolicy::make(
+        std::chrono::milliseconds{50}, flowrt::OperationConcurrencyPolicy::Reject,
+        flowrt::OperationPreemptPolicy::Reject, 8U, 1U, std::chrono::milliseconds{0});
+    assert(zero_retention_policy.has_value());
+    flowrt::OperationControl zero_retention_control{99U, *zero_retention_policy};
+    const auto zero_retention_started = zero_retention_control.start(owner_a, 100U);
+    assert(zero_retention_started.has_value());
+    assert(zero_retention_control.mark_running(zero_retention_started->id) ==
+           flowrt::OperationControlError::Ok);
+    assert(zero_retention_control.complete_at(zero_retention_started->id,
+                                              flowrt::OperationState::Succeeded,
+                                              110U) == flowrt::OperationControlError::Ok);
+    const auto zero_retention_status = zero_retention_control.status(zero_retention_started->id);
+    assert(!zero_retention_status.has_value());
+    assert(zero_retention_status.error() == flowrt::OperationControlError::StaleInvocation);
+    assert(zero_retention_control.snapshot().state == flowrt::OperationState::Idle);
+    assert(zero_retention_control.snapshot().health.succeeded == 1U);
 
     auto queue_policy = flowrt::OperationPolicy::make(
         std::chrono::milliseconds{50}, flowrt::OperationConcurrencyPolicy::Queue,
@@ -157,13 +180,13 @@ int main() {
         flowrt::OperationPreemptPolicy::Reject, 2U, 1U, std::chrono::milliseconds{100});
     assert(queue_timeout_policy.has_value());
     flowrt::OperationControl queue_timeout_control{99U, *queue_timeout_policy};
-    const auto queue_timeout_first = queue_timeout_control.start_with_timeout(
-        owner_a, 100U, std::chrono::milliseconds{200});
+    const auto queue_timeout_first =
+        queue_timeout_control.start_with_timeout(owner_a, 100U, std::chrono::milliseconds{200});
     assert(queue_timeout_first.has_value());
     assert(queue_timeout_control.mark_running(queue_timeout_first->id) ==
            flowrt::OperationControlError::Ok);
-    const auto queue_timeout_second = queue_timeout_control.start_with_timeout(
-        owner_a, 101U, std::chrono::milliseconds{10});
+    const auto queue_timeout_second =
+        queue_timeout_control.start_with_timeout(owner_a, 101U, std::chrono::milliseconds{10});
     assert(queue_timeout_second.has_value());
     assert(queue_timeout_control.queued_len() == 1U);
     assert(queue_timeout_control.check_deadline(111U));
@@ -270,9 +293,8 @@ int main() {
     assert(payload_control.mark_running(payload_started->id) == flowrt::OperationControlError::Ok);
     std::vector<std::uint8_t> result_payload{9U, 8U, 7U, 6U};
     payload_control.publish_progress_with_payload(payload_started->id, 4U, result_payload);
-    assert(payload_control.complete_with_payload(payload_started->id,
-                                                 flowrt::OperationState::Succeeded,
-                                                 result_payload) ==
+    assert(payload_control.complete_with_payload(
+               payload_started->id, flowrt::OperationState::Succeeded, result_payload) ==
            flowrt::OperationControlError::Ok);
     const auto runtime_events = payload_control.drain_events();
     const auto progress_event =
@@ -282,10 +304,9 @@ int main() {
     assert(progress_event != runtime_events.end());
     assert(progress_event->payload.has_value());
     assert(*progress_event->payload == result_payload);
-    const auto result_event =
-        std::find_if(runtime_events.begin(), runtime_events.end(), [](const auto &event) {
-            return event.kind == flowrt::OperationRuntimeEventKind::Result;
-        });
+    const auto result_event = std::find_if(
+        runtime_events.begin(), runtime_events.end(),
+        [](const auto &event) { return event.kind == flowrt::OperationRuntimeEventKind::Result; });
     assert(result_event != runtime_events.end());
     assert(result_event->payload.has_value());
     assert(*result_event->payload == result_payload);

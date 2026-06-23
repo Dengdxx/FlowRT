@@ -244,6 +244,31 @@ fn rust_operation_worker_records_progress_payload() {
     );
 }
 
+/// Operation hidden task 必须把 result retention 同步到 runtime 与 introspection。
+#[test]
+fn rust_operation_hidden_task_propagates_result_retention() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        shell.contains("operation_control.evict_retained_results(now_ms);"),
+        "hidden task must evict expired runtime retained operation snapshots.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("introspection_state.evict_expired_operation_observations();"),
+        "hidden task must evict expired retained operation result/event observations.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("record_operation_result_payload_with_retention("),
+        "terminal result events must pass retention metadata into introspection.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("event.retention_ms"),
+        "generated drain must use runtime event retention metadata, not a stale duplicate literal.\n\n{shell}"
+    );
+}
+
 /// 当前 generated Operation runtime 默认 single-owner，第二个 owner 必须被结构化拒绝。
 #[test]
 fn rust_operation_start_handler_rejects_second_owner() {
@@ -356,7 +381,7 @@ fn rust_operation_step_drives_deadline_timeout_and_stale_cancel_errors() {
         "Rust runtime shell must not keep an unused operation helper.\n\n{shell}"
     );
     assert!(
-        shell.contains(".check_deadline(flowrt::monotonic_time_ms())"),
+        shell.contains(".check_deadline(now_ms)"),
         "operation hidden scheduler task must drive runtime deadline checks.\n\n{shell}"
     );
     assert!(
@@ -801,8 +826,24 @@ fn cpp_operation_components_are_generated() {
         "C++ worker must pass progress payload into OperationControl.\n\n{shell}"
     );
     assert!(
-        shell.contains("check_deadline(flowrt::monotonic_time_ms())"),
+        shell.contains("check_deadline(now_ms)"),
         "C++ operation hidden scheduler task must drive runtime deadline checks.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("evict_retained_results(now_ms)"),
+        "C++ operation hidden scheduler task must evict expired runtime retained snapshots.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("introspection_state.evict_expired_operation_observations()"),
+        "C++ operation hidden scheduler task must evict expired retained operation observations.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("record_operation_result_payload_with_retention("),
+        "C++ terminal result events must pass retention metadata into introspection.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("event.retention_ms"),
+        "C++ generated drain must use runtime event retention metadata.\n\n{shell}"
     );
 }
 

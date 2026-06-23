@@ -1035,6 +1035,75 @@ fn operation_result_request_returns_retained_payload() {
 }
 
 #[test]
+fn operation_result_retention_evicts_result_and_events() {
+    let state = IntrospectionState::new();
+    state.record_operation_transition(
+        "controller.plan",
+        "111:7:3",
+        "running",
+        Some("controller.plan"),
+        Some(50),
+    );
+    state.record_operation_progress_payload("controller.plan", "111:7:3", 1, Some(vec![1, 2]));
+    state.record_operation_result_payload_with_retention(
+        "controller.plan",
+        "111:7:3",
+        "succeeded",
+        None,
+        Some(vec![3, 4]),
+        Some(10),
+    );
+
+    let result = state
+        .result_operation("111:7:3")
+        .expect("retained result should be visible before expiry");
+    assert_eq!(result.payload, Some(vec![3, 4]));
+    assert_eq!(
+        result.expires_unix_ms,
+        result.completed_unix_ms.map(|now| now + 10)
+    );
+    let (events, _, terminal) = state
+        .observe_operation("111:7:3", 0, None)
+        .expect("retained events should be visible before expiry");
+    assert_eq!(events.len(), 3);
+    assert!(terminal);
+
+    state.evict_retained_operation_observations(
+        result
+            .expires_unix_ms
+            .expect("retained result should carry expiry")
+            .saturating_add(1),
+    );
+
+    assert!(state.result_operation("111:7:3").is_err());
+    assert!(state.observe_operation("111:7:3", 0, None).is_err());
+}
+
+#[test]
+fn operation_result_zero_retention_drops_result_and_events_immediately() {
+    let state = IntrospectionState::new();
+    state.record_operation_transition(
+        "controller.plan",
+        "111:7:4",
+        "running",
+        Some("controller.plan"),
+        Some(50),
+    );
+    state.record_operation_progress_payload("controller.plan", "111:7:4", 1, Some(vec![1, 2]));
+    state.record_operation_result_payload_with_retention(
+        "controller.plan",
+        "111:7:4",
+        "succeeded",
+        None,
+        Some(vec![3, 4]),
+        Some(0),
+    );
+
+    assert!(state.result_operation("111:7:4").is_err());
+    assert!(state.observe_operation("111:7:4", 0, None).is_err());
+}
+
+#[test]
 fn operation_observe_request_returns_ordered_events_and_terminal_flag() {
     let root = std::env::temp_dir().join(format!(
         "flowrt-introspection-operation-observe-test-{}",
