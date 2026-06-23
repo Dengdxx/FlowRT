@@ -228,6 +228,105 @@ fn manifest_deserialization_accepts_island_boundary_metadata() {
 }
 
 #[test]
+fn manifest_deserialization_accepts_control_plane_frame_metadata() {
+    let json = r#"{
+        "package": "demo",
+        "ir_version": "0.1",
+        "profiles": ["default"],
+        "targets": ["linux"],
+        "graphs": [{
+            "name": "main",
+            "scheduler": {},
+            "channels": [],
+            "boundary_endpoints": [],
+            "services": [{
+                "name": "planner.plan",
+                "client": "planner.plan",
+                "client_instance": "planner",
+                "client_port": "plan",
+                "server": "plan_service.plan",
+                "server_instance": "plan_service",
+                "server_port": "plan",
+                "request": "PlanRequest",
+                "response": "PlanResponse",
+                "backend": "iox2",
+                "backend_source": "explicit",
+                "request_frame": {
+                    "message_type": "PlanRequest",
+                    "encoding": "canonical_frame_v1",
+                    "variable": true,
+                    "bounded": true,
+                    "max_size_bytes": 16,
+                    "iox2_slot_cap_bytes": 16
+                },
+                "response_frame": {
+                    "message_type": "PlanResponse",
+                    "encoding": "canonical_frame_v1",
+                    "variable": true,
+                    "bounded": true,
+                    "max_size_bytes": 21,
+                    "iox2_slot_cap_bytes": 21
+                },
+                "service": "FlowRT/service/planner_plan",
+                "timeout_ms": 1000,
+                "queue_depth": 4,
+                "overflow": "busy",
+                "max_in_flight": 64
+            }],
+            "operations": [{
+                "name": "controller.nav",
+                "client": "controller.nav",
+                "client_instance": "controller",
+                "client_port": "nav",
+                "server": "navigator.nav",
+                "server_instance": "navigator",
+                "server_port": "nav",
+                "goal": "PlanGoal",
+                "feedback": "PlanFeedback",
+                "result": "PlanResult",
+                "backend": "iox2",
+                "backend_source": "explicit",
+                "goal_frame": {
+                    "message_type": "PlanGoal",
+                    "encoding": "canonical_frame_v1",
+                    "variable": true,
+                    "bounded": true,
+                    "max_size_bytes": 16,
+                    "iox2_slot_cap_bytes": null
+                },
+                "start_request_frame": {
+                    "message_type": "OperationStartRequest<PlanGoal>",
+                    "encoding": "canonical_frame_v1",
+                    "variable": true,
+                    "bounded": true,
+                    "max_size_bytes": 40,
+                    "iox2_slot_cap_bytes": 40
+                },
+                "start_service": "FlowRT/service/__flowrt_operation_controller_nav_start",
+                "cancel_service": "FlowRT/service/__flowrt_operation_controller_nav_cancel",
+                "status_service": "FlowRT/service/__flowrt_operation_controller_nav_status",
+                "timeout_ms": 5000,
+                "concurrency": "reject",
+                "preempt": "reject",
+                "queue_depth": 4,
+                "max_in_flight": 1,
+                "feedback_policy": "latest",
+                "result_retention_ms": 60000
+            }],
+            "ros2_bridges": [],
+            "instances": [],
+            "tasks": [],
+            "processes": []
+        }]
+    }"#;
+
+    let manifest = parse_launch_manifest(json).unwrap();
+
+    assert_eq!(manifest.graphs[0].services[0].backend, "iox2");
+    assert_eq!(manifest.graphs[0].operations[0].backend, "iox2");
+}
+
+#[test]
 fn manifest_deserialization_rejects_unsupported_ir_version() {
     let json = r#"{
         "package": "demo",

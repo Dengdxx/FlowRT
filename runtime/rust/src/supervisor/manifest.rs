@@ -277,6 +277,12 @@ pub struct LaunchService {
     pub response: String,
     pub backend: String,
     #[serde(default)]
+    pub backend_source: Option<String>,
+    #[serde(default)]
+    pub request_frame: Option<serde_json::Value>,
+    #[serde(default)]
+    pub response_frame: Option<serde_json::Value>,
+    #[serde(default)]
     pub service: Option<String>,
     #[serde(default)]
     pub key_expr: Option<String>,
@@ -304,6 +310,12 @@ pub struct LaunchOperation {
     pub feedback: String,
     pub result: String,
     pub backend: String,
+    #[serde(default)]
+    pub backend_source: Option<String>,
+    #[serde(default)]
+    pub goal_frame: Option<serde_json::Value>,
+    #[serde(default)]
+    pub start_request_frame: Option<serde_json::Value>,
     #[serde(default)]
     pub start_service: Option<String>,
     #[serde(default)]
