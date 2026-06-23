@@ -124,9 +124,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   `graph_latest_fifo`、`service_rust` 和 `service_iox2_dynamic_fallback` 的 Rust 编译覆盖。
   Rust zenoh pub/sub peer restart smoke 使用显式 loopback `listen/connect`，不依赖本机
   multicast 或外部 `zenohd`。C++ iox2 runtime smoke 在真实 `iceoryx2-cxx` SDK path 下
-  补充了 bounded variable frame service request/response roundtrip，证明
-  `Iox2FrameServiceClient` / `Iox2FrameServiceServer` 不只具备 slot codec 与 generated
-  golden 证据。
+  补充了 bounded variable frame dataflow pub/sub 与 service request/response roundtrip，证明
+  `Iox2FramePubSub`、`Iox2FrameServiceClient` 和 `Iox2FrameServiceServer` 不只具备 slot codec
+  与 generated golden 证据。
   generated Rust shell / reference stub 也已清理 `-D warnings` 下的 unused、dead-code、
   import 和 parens 告警。但这仍不等同于所有 profile、target 和真实 SDK run-time 组合的
   穷尽矩阵，新增 transport 分支仍需要按依赖可用性补 smoke 或显式 fail-fast 证据。
