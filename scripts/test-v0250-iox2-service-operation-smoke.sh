@@ -174,9 +174,39 @@ if [[ "${FLOWRT_V0250_REQUIRE_IOX2_SDK:-0}" == "1" ]]; then
             ;;
     esac
     build_out="$real_demo/flowrt"
+    status_out="$real_demo/status.json"
     run run_flowrt deps "$real_demo/rsdl/robot.rsdl" --backend iox2 --build-mode debug
-    run run_flowrt build "$real_demo/rsdl/robot.rsdl" --out-dir "$build_out" --build-mode debug
-    run run_flowrt run "$real_demo/rsdl/robot.rsdl" --out-dir "$build_out" --build-mode debug --run-steps 5
+    run run_flowrt build "$real_demo/rsdl/robot.rsdl" --out-dir "$build_out" --build-mode debug --launcher
+    export FLOWRT_STATUS_OUT="$status_out"
+    export FLOWRT_TICK_SLEEP_MS=5
+    run run_flowrt launch "$real_demo/rsdl/robot.rsdl" --out-dir "$build_out" --build-mode debug --run-steps 5
+    unset FLOWRT_STATUS_OUT
+    unset FLOWRT_TICK_SLEEP_MS
+    run python3 - "$status_out" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as status_file:
+    status = json.load(status_file)
+
+operations = []
+if status.get("mode") == "launch":
+    for process in status.get("processes", []):
+        operations.extend(process.get("status", {}).get("operations", []))
+else:
+    operations.extend(status.get("operations", []))
+
+matching = [operation for operation in operations if operation.get("name", "").endswith(".nav")]
+if not matching:
+    raise SystemExit("missing nav operation status in real iox2 run")
+
+started = sum(int(operation.get("total_started", 0)) for operation in matching)
+succeeded = sum(int(operation.get("succeeded_count", 0)) for operation in matching)
+if started == 0 or succeeded == 0:
+    raise SystemExit(
+        f"real iox2 Operation was not exercised: total_started={started} succeeded_count={succeeded}"
+    )
+PY
 else
     echo "v0.25.0 iox2 service/operation smoke: skip real iox2 build/run (set FLOWRT_V0250_REQUIRE_IOX2_SDK=1)"
 fi

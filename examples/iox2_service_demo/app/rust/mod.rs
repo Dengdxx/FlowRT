@@ -70,10 +70,25 @@ impl Planner for PlannerImpl {
 }
 
 #[derive(Default)]
-pub struct NavControllerImpl;
+pub struct NavControllerImpl {
+    nav_started: bool,
+}
 
 impl NavController for NavControllerImpl {
-    fn on_tick(&mut self, _nav: &OperationClient_nav_controller_nav) -> flowrt::Status {
+    fn on_tick(&mut self, nav: &OperationClient_nav_controller_nav) -> flowrt::Status {
+        if self.nav_started {
+            return flowrt::Status::ok();
+        }
+
+        if let Ok(ack) = nav.start(
+            PlanGoal {
+                target: "dock".to_string(),
+            },
+            std::time::Duration::from_millis(500),
+        ) {
+            self.nav_started = ack.accepted;
+        }
+
         flowrt::Status::ok()
     }
 }
@@ -106,7 +121,7 @@ impl Navigator for NavigatorImpl {
 
 pub fn build_app() -> crate::App {
     crate::App::new(
-        Box::new(NavControllerImpl),
+        Box::new(NavControllerImpl::default()),
         Box::new(NavigatorImpl),
         Box::new(PlannerImpl::default()),
         Box::new(PlanServiceImpl::default()),
