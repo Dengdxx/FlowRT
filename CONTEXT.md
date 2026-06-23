@@ -135,10 +135,11 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - 故障注入：`status_error`、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop` 已进入 test-only deterministic injection / fault matrix 路径；生产随机
   / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。未发布版本已修复
-  `flowrt fault-matrix run` 的 replay source payload 生成：matrix runner 会按 boundary input
-  的 Contract IR canonical frame layout 写入默认零值 payload，避免 fixed 或 bounded variable
-  frame boundary 以空 payload 伪装成有效回放样本。`fault-matrix run --report` 在 expectation
-  失败或单个 case 执行失败时也会先写出完整 case JSON report，再按失败 case 返回非零退出。
+  `flowrt fault-matrix run` 的 replay source payload 生成：matrix runner 会为每个
+  boundary input 按 Contract IR canonical frame layout 写入默认零值 payload，避免 fixed 或
+  bounded variable frame boundary 以空 payload 或漏驱动伪装成有效回放样本。`fault-matrix
+  run --report` 在 expectation 失败或单个 case 执行失败时也会先写出完整 case JSON report，
+  再按失败 case 返回非零退出。
   generated Rust/C++ scheduler 在 bounded `run_ticks` 下会把 pending restart 视为继续条件，
   避免 task 结果晚于 tick 预算提交时漏掉最终 restart 观测。
 - 收口残留：route health / reconnect 已统一进入 status facts，`iox2` / `zenoh` transport

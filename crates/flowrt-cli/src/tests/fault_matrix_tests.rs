@@ -411,6 +411,75 @@ backends = ["inproc"]
 }
 
 #[test]
+fn fault_matrix_replay_source_writes_each_boundary_input_default_payload() {
+    let dir = temp_test_dir("fault-matrix-replay-all-boundaries");
+    std::fs::create_dir_all(&dir).unwrap();
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "fault_matrix_replay_all_boundaries"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[type.Packet]
+payload = "bytes<max=8>"
+
+[component.source_a]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.source_b]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.source_a]
+component = "source_a"
+
+[instance.source_a.task]
+trigger = "on_message"
+input = ["sample"]
+
+[instance.source_b]
+component = "source_b"
+
+[instance.source_b.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[boundary.input]]
+name = "feed_a"
+port = "source_a.sample"
+type = "Sample"
+
+[[boundary.input]]
+name = "feed_b"
+port = "source_b.packet"
+type = "Packet"
+
+[profile.default]
+mode = "island"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let replay = fault_matrix::runner::write_case_replay_source(&dir, &contract).unwrap();
+    let timeline = flowrt_record::read_replay_timeline_from_path(&replay).unwrap();
+
+    assert_eq!(timeline.len(), 2);
+    let payloads = timeline
+        .iter()
+        .map(|event| (event.target.as_str(), event.payload.as_slice()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(payloads["feed_a"], [0, 0, 0, 0]);
+    assert_eq!(payloads["feed_b"], [0; 8]);
+}
+
+#[test]
 fn fault_matrix_expectation_evaluator_accepts_route_and_failover() {
     let status = serde_json::json!({
         "mode": "launch",

@@ -746,7 +746,7 @@ status snapshot，再校验 graph / instance / route / failover 期望。任一 
 命令退出非零；传入 `--report` 时写出 JSON 报告。单个 case 执行失败也会进入报告中的
 failed case，不会让整个矩阵在写报告前提前中断。
 
-matrix replay source 只驱动第一个 input boundary 的默认激励样本；payload 按该 boundary
+matrix replay source 会为每个 input boundary 写入默认激励样本；payload 按各自 boundary
 type 的 Contract IR canonical frame layout 写成可解码零值。fixed message 使用 wire-size
 零字节，padding 不进入 frame；variable frame 使用零值 header 表示空 `bytes` / `string` /
 `sequence`。真实业务输入矩阵仍应走显式 replay fixture，而不是把 fault matrix 当作数据生成器。

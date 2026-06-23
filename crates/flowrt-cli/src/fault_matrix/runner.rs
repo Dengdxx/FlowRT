@@ -139,12 +139,15 @@ pub(crate) fn write_case_replay_source(
     case_dir: &Path,
     contract: &ContractIr,
 ) -> Result<std::path::PathBuf> {
-    let boundary = contract
+    let boundaries = contract
         .graphs
         .iter()
         .flat_map(|graph| graph.boundary_endpoints.iter())
-        .find(|endpoint| endpoint.direction == BoundaryDirection::Input)
-        .context("fault matrix run requires at least one boundary input for simulated replay")?;
+        .filter(|endpoint| endpoint.direction == BoundaryDirection::Input)
+        .collect::<Vec<_>>();
+    if boundaries.is_empty() {
+        anyhow::bail!("fault matrix run requires at least one boundary input for simulated replay");
+    }
     let path = case_dir.join("replay.mcap");
     let mut writer =
         FlowrtMcapWriter::new(fs::File::create(&path).with_context(|| {
@@ -154,35 +157,46 @@ pub(crate) fn write_case_replay_source(
     let channel = writer
         .register_channel("flowrt/fault-matrix/replay", RecordEventKind::ChannelSample)
         .context("failed to register matrix replay MCAP channel")?;
-    let event_time_ns = 1_000_000_000_000_u64;
-    let payload = default_boundary_replay_payload(contract, &boundary.ty)?;
-    writer
-        .write_event(
-            channel,
-            &RecordEnvelope {
-                schema_version: RECORD_SCHEMA_VERSION,
-                event_kind: RecordEventKind::ChannelSample,
-                package: contract.package.name.clone(),
-                process: "fault_matrix".to_string(),
-                runtime_pid: std::process::id(),
-                selfdesc_hash: contract.source_hash.clone(),
-                monotonic_ns: event_time_ns,
-                sample_time_ns: None,
-                wall_unix_ns: 0,
-                sequence: 1,
-                entity: RecordEntity {
-                    kind: RecordEntityKind::Channel,
-                    name: boundary.name.clone(),
-                    instance: Some(boundary.port.instance.name.clone()),
-                    task: None,
-                    type_name: Some(boundary.ty.canonical_syntax()),
+    let base_event_time_ns = 1_000_000_000_000_u64;
+    for (index, boundary) in boundaries.iter().enumerate() {
+        let sequence = u64::try_from(index)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .context("fault matrix replay boundary sequence overflow")?;
+        let payload = default_boundary_replay_payload(contract, &boundary.ty)?;
+        writer
+            .write_event(
+                channel,
+                &RecordEnvelope {
+                    schema_version: RECORD_SCHEMA_VERSION,
+                    event_kind: RecordEventKind::ChannelSample,
+                    package: contract.package.name.clone(),
+                    process: "fault_matrix".to_string(),
+                    runtime_pid: std::process::id(),
+                    selfdesc_hash: contract.source_hash.clone(),
+                    monotonic_ns: base_event_time_ns + sequence,
+                    sample_time_ns: None,
+                    wall_unix_ns: 0,
+                    sequence,
+                    entity: RecordEntity {
+                        kind: RecordEntityKind::Channel,
+                        name: boundary.name.clone(),
+                        instance: Some(boundary.port.instance.name.clone()),
+                        task: None,
+                        type_name: Some(boundary.ty.canonical_syntax()),
+                    },
+                    payload_encoding: PayloadEncoding::CanonicalFrame,
+                    payload_schema: boundary.ty.canonical_syntax(),
+                    payload,
                 },
-                payload_encoding: PayloadEncoding::CanonicalFrame,
-                payload_schema: boundary.ty.canonical_syntax(),
-                payload,
-            },
-        )
-        .context("failed to write matrix replay MCAP event")?;
+            )
+            .with_context(|| {
+                format!(
+                    "failed to write matrix replay MCAP event for boundary input `{}`",
+                    boundary.name
+                )
+            })?;
+    }
     writer
         .finish_into_inner()
         .context("failed to finish matrix replay MCAP")?;
