@@ -114,7 +114,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   v0.26.0 的代表性 iox2/zenoh generated dataflow、Service、Operation、bounded variable
   frame Rust/C++ shell 真编译网已覆盖 transport 接线。compile net 现在带覆盖自检，要求
   所有生成 Rust/C++ runtime shell snapshot 的 golden case 都进入真编译列表，并补齐
-  `graph_latest_fifo`、`service_rust` 和 `service_iox2_dynamic_fallback` 的 Rust 编译覆盖；
+  `graph_latest_fifo`、`service_rust` 和 `service_iox2_dynamic_fallback` 的 Rust 编译覆盖。
+  Rust zenoh pub/sub peer restart smoke 使用显式 loopback `listen/connect`，不依赖本机
+  multicast 或外部 `zenohd`。
   generated Rust shell / reference stub 也已清理 `-D warnings` 下的 unused、dead-code、
   import 和 parens 告警。但这仍不等同于所有 profile、target 和真实 SDK run-time 组合的
   穷尽矩阵，新增 transport 分支仍需要按依赖可用性补 smoke 或显式 fail-fast 证据。

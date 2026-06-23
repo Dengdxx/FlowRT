@@ -263,9 +263,18 @@ where
         key_expr: &str,
         config: ZenohChannelConfig,
     ) -> Result<Self, ZenohError> {
+        Self::open_with_config_and_transport_config(key_expr, config, config_from_environment()?)
+    }
+
+    fn open_with_config_and_transport_config(
+        key_expr: &str,
+        config: ZenohChannelConfig,
+        transport_config: Config,
+    ) -> Result<Self, ZenohError> {
         config.validate()?;
         let inbox = Arc::new(ZenohInbox::new(config.depth()));
-        let parts = open_zenoh_parts(key_expr, config, Arc::clone(&inbox))?;
+        let parts =
+            open_zenoh_parts_with_config(key_expr, config, Arc::clone(&inbox), transport_config)?;
 
         Ok(Self {
             key_expr: key_expr.to_string(),
@@ -526,10 +535,24 @@ where
 
 fn open_zenoh_parts(
     key_expr: &str,
-    _config: ZenohChannelConfig,
+    config: ZenohChannelConfig,
     inbox: Arc<ZenohInbox>,
 ) -> Result<ZenohEndpointParts, ZenohError> {
-    let session = zenoh::open(config_from_environment()?)
+    open_zenoh_parts_with_config(
+        key_expr,
+        config,
+        Arc::clone(&inbox),
+        config_from_environment()?,
+    )
+}
+
+fn open_zenoh_parts_with_config(
+    key_expr: &str,
+    _config: ZenohChannelConfig,
+    inbox: Arc<ZenohInbox>,
+    transport_config: Config,
+) -> Result<ZenohEndpointParts, ZenohError> {
+    let session = zenoh::open(transport_config)
         .wait()
         .map_err(|error| ZenohError::transport("open Zenoh session", error))?;
     let callback_inbox = Arc::clone(&inbox);
@@ -1463,6 +1486,45 @@ mod tests {
         )
     }
 
+    fn unused_loopback_locator() -> String {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("test should reserve a local TCP port");
+        let port = listener
+            .local_addr()
+            .expect("test listener should expose a local address")
+            .port();
+        drop(listener);
+        format!("tcp/127.0.0.1:{port}")
+    }
+
+    fn test_transport_config(listen: Option<&str>, connect: Option<&str>) -> Config {
+        let mut config = Config::default();
+        insert_config_json5(&mut config, "mode", json_string("peer").unwrap()).unwrap();
+        insert_config_json5(
+            &mut config,
+            "scouting/multicast/enabled",
+            "false".to_string(),
+        )
+        .unwrap();
+        if let Some(listen) = listen {
+            insert_config_json5(
+                &mut config,
+                "listen/endpoints",
+                serde_json::to_string(&[listen]).unwrap(),
+            )
+            .unwrap();
+        }
+        if let Some(connect) = connect {
+            insert_config_json5(
+                &mut config,
+                "connect/endpoints",
+                serde_json::to_string(&[connect]).unwrap(),
+            )
+            .unwrap();
+        }
+        config
+    }
+
     #[test]
     fn channel_config_normalizes_latest_fifo_and_stale_policy() {
         let latest = ZenohChannelConfig::latest();
@@ -1638,13 +1700,18 @@ mod tests {
     fn endpoint_can_receive_after_peer_endpoint_restarts() {
         let _zenoh_guard = crate::zenoh_test_guard();
         let key_expr = unique_key_expr("peer-restart");
-        let mut receiver =
-            ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
-                .expect("receiver endpoint should open");
+        let locator = unused_loopback_locator();
+        let mut receiver = ZenohPubSub::<PaddedMessage>::open_with_config_and_transport_config(
+            &key_expr,
+            ZenohChannelConfig::latest(),
+            test_transport_config(Some(&locator), None),
+        )
+        .expect("receiver endpoint should open");
         {
-            let mut sender = ZenohPubSub::<PaddedMessage>::open_with_config(
+            let mut sender = ZenohPubSub::<PaddedMessage>::open_with_config_and_transport_config(
                 &key_expr,
                 ZenohChannelConfig::latest(),
+                test_transport_config(None, Some(&locator)),
             )
             .expect("first sender endpoint should open");
             publish_until_latest(
@@ -1656,9 +1723,12 @@ mod tests {
             );
         }
 
-        let mut sender =
-            ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
-                .expect("restarted sender endpoint should open");
+        let mut sender = ZenohPubSub::<PaddedMessage>::open_with_config_and_transport_config(
+            &key_expr,
+            ZenohChannelConfig::latest(),
+            test_transport_config(None, Some(&locator)),
+        )
+        .expect("restarted sender endpoint should open");
         publish_until_latest(
             &mut sender,
             &mut receiver,
