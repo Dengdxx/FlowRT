@@ -103,6 +103,8 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   Operation runtime retained snapshot 与 introspection result/event retention 清理；
   `result_retention_ms = 0` 不保留已完成 invocation，过期后 `op result/follow` 按 id 返回
   not found。
+  C++ `ZenohOperationServer` 也提供 shared-session `open(...)`，runtime zenoh smoke 已覆盖真实
+  SDK path 下的 remote Operation status queryable。
   Operation start/cancel accepted 后会进入 recorder command event，`flowrt replay --file
   <recording.mcap>` 可读取 operation command timeline 并重新驱动 start/cancel；
   progress/result/error 仍只作为 observation evidence，不参与重放。
@@ -1068,7 +1070,8 @@ Rust/C++ shell 注册 start/status hook，并复用 typed Operation client 与 `
 `IntrospectionRequest` / `IntrospectionResponse` 语义，key expression 为
 `flowrt/op/<package>/<selfdesc_hash>/<pid>`；generated Rust/C++ shell 都会暴露该
 queryable，C++ inproc/iox2 app 仅在生成 CMake 找到 `zenohcxx::zenohc` 时启用 remote
-server，缺少 SDK 不影响本机 socket 控制面。未发布版本还接入了 `OperationResult`
+server，缺少 SDK 不影响本机 socket 控制面；C++ runtime 还提供 shared-session `open(...)`
+入口并由 zenoh SDK smoke 验证 query/reply JSON path。未发布版本还接入了 `OperationResult`
 introspection 请求：generated Rust/C++ worker 不再丢弃 `OperationHandlerResult::Succeeded`
 返回值，而是把 typed result 编码为 canonical Message ABI payload，scheduler hidden task
 投影到 retained introspection result；`flowrt op result <operation_id> --image ...` 本机和

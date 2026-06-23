@@ -1314,6 +1314,9 @@ int main() {
     auto operation_server = flowrt::zenoh::ZenohOperationServer::open_from_environment(
         "flowrt/op/robot/hash/42", operation_handshake, operation_state);
     assert(!operation_server.ready());
+    auto operation_server_from_shared_api = flowrt::zenoh::ZenohOperationServer::open(
+        "flowrt/op/robot/hash/42", operation_handshake, operation_state);
+    assert(!operation_server_from_shared_api.ready());
 
     return 0;
 }

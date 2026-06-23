@@ -503,3 +503,6 @@ CMAKE_PREFIX_PATH=/opt/flowrt/0.2.0 \
 cmake --build build/cpp-zenoh --target flowrt_runtime_zenoh_smoke
 ctest --test-dir build/cpp-zenoh -R flowrt_runtime_zenoh_smoke --output-on-failure
 ```
+
+该 smoke 覆盖 C++ zenoh pub/sub endpoint、session 重建和 remote Operation queryable 的
+真实 SDK query/reply 路径。

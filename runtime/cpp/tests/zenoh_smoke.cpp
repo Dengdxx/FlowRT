@@ -1,12 +1,17 @@
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <flowrt/runtime.hpp>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <variant>
+#include <vector>
 
 struct WireProbe {
     std::uint8_t tag{};
@@ -36,6 +41,52 @@ struct WireProbe {
         return WireProbe{tag, flowrt::read_wire_le<std::uint32_t>(input, sizeof(std::uint8_t))};
     }
 };
+
+#ifdef FLOWRT_HAS_ZENOH_CXX
+std::optional<std::string> query_json(::zenoh::Session &session, std::string_view key_expr,
+                                      std::string_view payload) {
+    struct ReplyState {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::optional<std::string> response;
+        bool done = false;
+    };
+
+    auto state = std::make_shared<ReplyState>();
+    auto on_reply = [state](::zenoh::Reply &reply) {
+        if (reply.is_ok()) {
+            auto bytes = reply.get_ok().get_payload().as_vector();
+            std::string response{reinterpret_cast<const char *>(bytes.data()), bytes.size()};
+            {
+                std::lock_guard lock(state->mutex);
+                state->response = std::move(response);
+                state->done = true;
+            }
+            state->cv.notify_one();
+        }
+    };
+    auto on_drop = [state]() {
+        {
+            std::lock_guard lock(state->mutex);
+            state->done = true;
+        }
+        state->cv.notify_one();
+    };
+
+    auto opts = ::zenoh::Session::GetOptions::create_default();
+    opts.timeout_ms = 5000;
+    opts.payload = ::zenoh::Bytes(std::vector<std::uint8_t>(payload.begin(), payload.end()));
+    session.get(::zenoh::KeyExpr(std::string{key_expr}), "", std::move(on_reply),
+                std::move(on_drop), std::move(opts));
+
+    std::unique_lock lock(state->mutex);
+    if (!state->cv.wait_for(lock, std::chrono::milliseconds{5000},
+                            [&state]() { return state->done; })) {
+        return std::nullopt;
+    }
+    return state->response;
+}
+#endif
 
 int main() {
     static_assert(flowrt::ZenohBackend::compiled_with_transport(),
@@ -103,6 +154,31 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds{20});
     }
 #endif
+
+    {
+        auto session =
+            std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
+        auto key_expr = flowrt::zenoh::operation_key_expr("robot", "hash", 42U);
+        flowrt::IntrospectionState state;
+        auto server = flowrt::zenoh::ZenohOperationServer::open(
+            key_expr, session,
+            flowrt::IntrospectionHandshake{
+                .protocol_version = flowrt::INTROSPECTION_PROTOCOL_VERSION,
+                .pid = 42U,
+                .started_at_unix_ms = 0U,
+                .self_description_hash = "hash",
+                .package = "robot",
+                .process = "planner",
+                .runtime = "cpp",
+            },
+            state);
+        assert(server.ready());
+
+        const auto response = query_json(*session, key_expr, R"({"command":"status"})");
+        assert(response.has_value());
+        assert(response->find(R"("response":"status")") != std::string::npos);
+        assert(response->find(R"("runtime":"cpp")") != std::string::npos);
+    }
 
     const auto invalid_write = endpoint.publish_at(WireProbe{0xFFU, 99U}, 500U);
     assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(invalid_write));

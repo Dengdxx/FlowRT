@@ -1404,26 +1404,60 @@ class ZenohOperationServer {
     static ZenohOperationServer open_from_environment(std::string_view key_expr,
                                                       IntrospectionHandshake handshake,
                                                       IntrospectionState state) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        return ZenohOperationServer(
+            key_expr, std::make_shared<::zenoh::Session>(open_zenoh_session_from_env()),
+            std::move(handshake), std::move(state));
+#else
         return ZenohOperationServer(key_expr, std::move(handshake), std::move(state));
+#endif
+    }
+
+    static ZenohOperationServer open(std::string_view key_expr
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                                     ,
+                                     std::shared_ptr<::zenoh::Session> session
+#endif
+                                     ,
+                                     IntrospectionHandshake handshake, IntrospectionState state) {
+        return ZenohOperationServer(key_expr
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                                    ,
+                                    std::move(session)
+#endif
+                                        ,
+                                    std::move(handshake), std::move(state));
     }
 
     std::string_view key_expr() const noexcept { return key_expr_; }
 
     bool ready() const noexcept {
 #ifdef FLOWRT_HAS_ZENOH_CXX
-        return session_.has_value() && queryable_.has_value() && !session_->is_closed();
+        return session_ && queryable_.has_value() && !session_->is_closed();
 #else
         return false;
 #endif
     }
 
    private:
-    ZenohOperationServer(std::string_view key_expr, IntrospectionHandshake handshake,
-                         IntrospectionState state)
-        : key_expr_(key_expr) {
+    ZenohOperationServer(std::string_view key_expr
 #ifdef FLOWRT_HAS_ZENOH_CXX
+                         ,
+                         std::shared_ptr<::zenoh::Session> session
+#endif
+                         ,
+                         IntrospectionHandshake handshake, IntrospectionState state)
+        : key_expr_(key_expr)
+#ifdef FLOWRT_HAS_ZENOH_CXX
+          ,
+          session_(std::move(session))
+#endif
+    {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (!session_) {
+            return;
+        }
         try {
-            session_.emplace(open_zenoh_session_from_env());
             auto shared_handshake = std::make_shared<IntrospectionHandshake>(std::move(handshake));
             auto shared_state = std::make_shared<IntrospectionState>(std::move(state));
             auto reply_key = key_expr_;
@@ -1459,7 +1493,7 @@ class ZenohOperationServer {
 
     std::string key_expr_;
 #ifdef FLOWRT_HAS_ZENOH_CXX
-    std::optional<::zenoh::Session> session_;
+    std::shared_ptr<::zenoh::Session> session_;
     std::optional<::zenoh::Queryable<void>> queryable_;
 #endif
 };
