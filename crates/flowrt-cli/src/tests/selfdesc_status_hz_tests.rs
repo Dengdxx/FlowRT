@@ -298,6 +298,7 @@ fn live_status_summary_displays_channel_input_and_route_diagnostics() {
         overflow_count: 3,
         last_publish_ms: Some(120),
         last_error: Some("queue overflow".to_string()),
+        last_error_kind: Some("queue_full".to_string()),
         backend_health_state: "reconnecting".to_string(),
         backend_health_error: Some("publish Zenoh sample: session closed".to_string()),
         backend_reconnect_attempt: 2,
@@ -334,6 +335,7 @@ fn live_status_summary_displays_channel_input_and_route_diagnostics() {
     assert!(output.contains("overflow=3"));
     assert!(output.contains("last_publish_ms=120"));
     assert!(output.contains("last_error=queue overflow"));
+    assert!(output.contains("last_error_kind=queue_full"));
     assert!(output.contains("backend_health=reconnecting"));
     assert!(output.contains("backend_recoverable=true"));
     assert!(output.contains("backend_reconnect_attempt=2"));

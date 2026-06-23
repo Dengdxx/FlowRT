@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace flowrt {
@@ -21,6 +22,76 @@ enum class BackendHealthState : std::uint8_t {
     Failed = 3,         ///< 重连预算耗尽或错误不可恢复。
     Unsupported = 4,    ///< backend SDK 未编译进当前构建，配置错误不可恢复。
 };
+
+/**
+ * @brief backend transport 错误的 FlowRT 语义分类。
+ *
+ * 底层 SDK 原始错误只用于诊断文本；route counter 映射以该枚举为主键。
+ */
+enum class TransportErrorKind : std::uint8_t {
+    QueueFull = 0,          ///< backend 明确报告发送队列或 slot 已满。
+    Backpressure = 1,       ///< backend 明确报告当前写入遇到背压。
+    Timeout = 2,            ///< backend 操作超时。
+    Disconnected = 3,       ///< transport session 或连接已断开。
+    Unavailable = 4,        ///< endpoint、session 或资源当前不可用。
+    PermissionDenied = 5,   ///< 权限不足。
+    Unsupported = 6,        ///< 当前构建或 backend 不支持该操作。
+    Codec = 7,              ///< payload 编解码失败。
+    SchemaMismatch = 8,     ///< schema、type 或 frame layout 不匹配。
+    ResourceExhausted = 9,  ///< backend 资源耗尽，但未能确认是队列满。
+    Internal = 10,          ///< backend 内部错误。
+    Unknown = 11,           ///< SDK 未提供可稳定分类的错误。
+};
+
+inline std::string_view transport_error_kind_str(TransportErrorKind kind) noexcept {
+    switch (kind) {
+        case TransportErrorKind::QueueFull:
+            return "queue_full";
+        case TransportErrorKind::Backpressure:
+            return "backpressure";
+        case TransportErrorKind::Timeout:
+            return "timeout";
+        case TransportErrorKind::Disconnected:
+            return "disconnected";
+        case TransportErrorKind::Unavailable:
+            return "unavailable";
+        case TransportErrorKind::PermissionDenied:
+            return "permission_denied";
+        case TransportErrorKind::Unsupported:
+            return "unsupported";
+        case TransportErrorKind::Codec:
+            return "codec";
+        case TransportErrorKind::SchemaMismatch:
+            return "schema_mismatch";
+        case TransportErrorKind::ResourceExhausted:
+            return "resource_exhausted";
+        case TransportErrorKind::Internal:
+            return "internal";
+        case TransportErrorKind::Unknown:
+            return "unknown";
+    }
+    return "unknown";
+}
+
+inline bool transport_error_kind_recoverable(TransportErrorKind kind) noexcept {
+    switch (kind) {
+        case TransportErrorKind::PermissionDenied:
+        case TransportErrorKind::Unsupported:
+        case TransportErrorKind::Codec:
+        case TransportErrorKind::SchemaMismatch:
+        case TransportErrorKind::Internal:
+            return false;
+        case TransportErrorKind::QueueFull:
+        case TransportErrorKind::Backpressure:
+        case TransportErrorKind::Timeout:
+        case TransportErrorKind::Disconnected:
+        case TransportErrorKind::Unavailable:
+        case TransportErrorKind::ResourceExhausted:
+        case TransportErrorKind::Unknown:
+            return true;
+    }
+    return true;
+}
 
 /**
  * @brief backend endpoint 的重连策略。

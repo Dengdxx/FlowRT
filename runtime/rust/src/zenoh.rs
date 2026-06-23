@@ -21,8 +21,8 @@ use zenoh::{
 use crate::{
     BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, Deadline, FrameCodec, Latest,
     OverflowPolicy, ReconnectPolicy, RequestId, ScheduleWaiter, ServiceError, ServiceFrameHeader,
-    ServiceResult, StaleConfig, StalePolicy, WireCodecError, decode_service_frame,
-    encode_service_frame, fnv1a64,
+    ServiceResult, StaleConfig, StalePolicy, TransportErrorClassify, TransportErrorKind,
+    WireCodecError, decode_service_frame, encode_service_frame, fnv1a64,
 };
 
 const PUBLISHED_AT_WIRE_SIZE: usize = std::mem::size_of::<u64>();
@@ -105,13 +105,23 @@ impl ZenohInbox {
 /// 用户组件边界。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZenohError {
+    kind: TransportErrorKind,
     operation: &'static str,
     message: String,
 }
 
 impl ZenohError {
     fn new(operation: &'static str, message: impl std::fmt::Display) -> Self {
+        Self::with_kind(TransportErrorKind::Unknown, operation, message)
+    }
+
+    fn with_kind(
+        kind: TransportErrorKind,
+        operation: &'static str,
+        message: impl std::fmt::Display,
+    ) -> Self {
         Self {
+            kind,
             operation,
             message: message.to_string(),
         }
@@ -122,7 +132,7 @@ impl ZenohError {
     }
 
     fn codec(operation: &'static str, error: WireCodecError) -> Self {
-        Self::new(operation, error)
+        Self::with_kind(TransportErrorKind::Codec, operation, error)
     }
 
     /// 返回失败的 FlowRT endpoint 操作。
@@ -134,6 +144,11 @@ impl ZenohError {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    /// 返回 FlowRT transport 错误分类。
+    pub fn kind(&self) -> TransportErrorKind {
+        self.kind
+    }
 }
 
 impl std::fmt::Display for ZenohError {
@@ -143,6 +158,12 @@ impl std::fmt::Display for ZenohError {
 }
 
 impl std::error::Error for ZenohError {}
+
+impl TransportErrorClassify for ZenohError {
+    fn transport_error_kind(&self) -> TransportErrorKind {
+        self.kind
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ZenohChannelKind {

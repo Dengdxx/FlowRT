@@ -19,7 +19,7 @@ pub mod iox2 {
 
     use crate::{
         BackendHealthSnapshot, BackendHealthState, FrameCodec, Latest, OverflowPolicy,
-        ServiceError, ServiceResult, StaleConfig,
+        ServiceError, ServiceResult, StaleConfig, TransportErrorClassify, TransportErrorKind,
     };
 
     /// 可选 iceoryx2 transport helper 返回的错误。
@@ -48,6 +48,12 @@ pub mod iox2 {
     }
 
     impl std::error::Error for Iox2Error {}
+
+    impl TransportErrorClassify for Iox2Error {
+        fn transport_error_kind(&self) -> TransportErrorKind {
+            TransportErrorKind::Unsupported
+        }
+    }
 
     /// 打开 iceoryx2 publish-subscribe endpoint 时使用的 QoS 配置。
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -501,8 +507,9 @@ pub(crate) fn zenoh_test_guard() -> std::sync::MutexGuard<'static, ()> {
 
 pub use backend::{
     Backend, BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, BackendKind,
-    InprocBackend, InprocScheduler, Iox2Backend, ReconnectPolicy, Scheduler, ZenohBackend,
-    inproc_backend, iox2_backend, zenoh_backend,
+    InprocBackend, InprocScheduler, Iox2Backend, ReconnectPolicy, Scheduler,
+    TransportErrorClassify, TransportErrorKind, ZenohBackend, inproc_backend, iox2_backend,
+    transport_error_kind, zenoh_backend,
 };
 pub use channel::{
     BackendCapabilities, BoundaryInput, BoundaryInputRead, BoundaryOutput, BoundaryOutputSinkGuard,

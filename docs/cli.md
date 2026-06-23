@@ -1515,7 +1515,7 @@ runtime 启动时可以预注册 service endpoint，`status` 会输出每个 ser
 dataflow route 行会展示 backend 选择、thread-affinity 和传输计数：
 
 ```text
-route=source.packet_to_sink.packet from=source.packet to=sink.packet type=Packet backend=zenoh thread_affinity=send_safe static_thread_affinity=send_safe selected_reason=profile_default published_count=100 dropped_samples=0 backpressure=0 overflow=0 last_publish_ms=1717800000000 last_error=none backend_health=ready backend_recoverable=false backend_reconnect_attempt=0 backend_next_retry_unix_ms=none backend_health_error=none socket=/run/user/1000/flowrt/12345.sock
+route=source.packet_to_sink.packet from=source.packet to=sink.packet type=Packet backend=zenoh thread_affinity=send_safe static_thread_affinity=send_safe selected_reason=profile_default published_count=100 dropped_samples=0 backpressure=0 overflow=0 last_publish_ms=1717800000000 last_error=none last_error_kind=none backend_health=ready backend_recoverable=false backend_reconnect_attempt=0 backend_next_retry_unix_ms=none backend_health_error=none socket=/run/user/1000/flowrt/12345.sock
 ```
 
 `thread_affinity=scheduler_local_commit` 表示 route 的 transport commit 留在 scheduler/local
@@ -1523,16 +1523,16 @@ owner 线程执行；这不表示用户 task 被禁止并发。`thread_affinity`
 `static_thread_affinity` 都来自同一 runtime socket 关联到的 static self-description；旧
 runtime 或自描述不可用时显示 `thread_affinity=none static_thread_affinity=none`。route 行中
 `type`、`backend`、`selected_reason`、`published_count`、`dropped_samples`、`backpressure`、
-`overflow`、`last_publish_ms`、`last_error`、`backend_health`、`backend_recoverable`、
-`backend_reconnect_attempt`、`backend_next_retry_unix_ms` 和 `backend_health_error` 仍来自
-live status，不把 static schema 与 live schema 合并成一个事实源。`backend_health` 表达
+`overflow`、`last_publish_ms`、`last_error`、`last_error_kind`、`backend_health`、
+`backend_recoverable`、`backend_reconnect_attempt`、`backend_next_retry_unix_ms` 和
+`backend_health_error` 仍来自 live status，不把 static schema 与 live schema 合并成一个事实源。`backend_health` 表达
 transport endpoint 当前恢复状态，取值为 `ready`、`degraded`、`reconnecting`、`failed`
 或 `unsupported`；inproc route 默认保持 `ready`。
 对 `iox2` / `zenoh` dataflow route，transport publish 失败会同时保留 `last_error` /
-`backend_health_error`，并按该 route 的 overflow policy 进入统一 counters：
-`drop_oldest` / `drop_newest` 增加 `dropped_samples`，`block` 增加 `backpressure`，
-`error` 增加 `overflow`；backend 不支持当前构建时只更新 backend error，不把缺 SDK 记成
-queue-full。
+`last_error_kind` / `backend_health_error`。只有 backend adapter 明确报告 `queue_full` 时，
+才按该 route 的 overflow policy 进入统一 counters：`drop_oldest` / `drop_newest` 增加
+`dropped_samples`，`block` 增加 `backpressure`，`error` 增加 `overflow`。`unknown`、
+`unsupported`、`codec` 等错误只更新错误字段和 backend health，不伪装成 queue-full。
 
 ```text
 service=planner.plan_to_executor.execute client_instance=planner server_instance=executor ready=true in_flight=2 queued=1 total_requests=100 timeout=3 busy=1 unavailable=0 late_drop=2 socket=/run/user/1000/flowrt/12345.sock

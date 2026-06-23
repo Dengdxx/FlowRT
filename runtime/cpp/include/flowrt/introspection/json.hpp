@@ -160,6 +160,8 @@ inline std::string route_status_json(const IntrospectionRouteStatus &route) {
     output.append(optional_u64_json(route.last_publish_ms));
     output.append(",\"last_error\":");
     output.append(route.last_error ? json_string(*route.last_error) : "null");
+    output.append(",\"last_error_kind\":");
+    output.append(route.last_error_kind ? json_string(*route.last_error_kind) : "null");
     output.append(",\"backend_health_state\":");
     output.append(json_string(route.backend_health_state));
     output.append(",\"backend_health_error\":");

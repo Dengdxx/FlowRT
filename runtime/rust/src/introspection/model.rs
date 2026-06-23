@@ -405,6 +405,9 @@ pub struct IntrospectionRouteStatus {
     /// 最近一次 route/backend 错误。
     #[serde(default)]
     pub last_error: Option<String>,
+    /// 最近一次 route/backend 错误的 FlowRT 语义分类。
+    #[serde(default)]
+    pub last_error_kind: Option<String>,
     /// route 当前 backend health 状态。
     #[serde(default = "default_backend_health_state")]
     pub backend_health_state: String,
@@ -437,6 +440,7 @@ impl Default for IntrospectionRouteStatus {
             overflow_count: 0,
             last_publish_ms: None,
             last_error: None,
+            last_error_kind: None,
             backend_health_state: default_backend_health_state(),
             backend_health_error: None,
             backend_reconnect_attempt: 0,

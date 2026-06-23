@@ -24,7 +24,7 @@ use iceoryx2::sample::Sample;
 use crate::{
     BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, FrameCodec, Latest,
     OverflowPolicy, ReconnectPolicy, ServiceError, ServiceResult, StaleConfig, StalePolicy,
-    service::fnv1a64,
+    TransportErrorClassify, TransportErrorKind, service::fnv1a64,
 };
 
 type IpcNode = Node<ipc::Service>;
@@ -153,19 +153,34 @@ impl Drop for Iox2WakeHandle {
 /// 可选 iceoryx2 transport helper 返回的错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Iox2Error {
+    kind: TransportErrorKind,
     message: String,
 }
 
 impl Iox2Error {
     fn new(context: &str, error: impl std::fmt::Debug) -> Self {
+        Self::with_kind(TransportErrorKind::Unknown, context, format!("{error:?}"))
+    }
+
+    fn with_kind(kind: TransportErrorKind, context: &str, error: impl std::fmt::Display) -> Self {
         Self {
-            message: format!("{context}: {error:?}"),
+            kind,
+            message: format!("{context}: {error}"),
         }
+    }
+
+    fn codec(context: &str, error: impl std::fmt::Display) -> Self {
+        Self::with_kind(TransportErrorKind::Codec, context, error)
     }
 
     /// 返回错误消息。
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// 返回 FlowRT transport 错误分类。
+    pub fn kind(&self) -> TransportErrorKind {
+        self.kind
     }
 }
 
@@ -176,6 +191,12 @@ impl std::fmt::Display for Iox2Error {
 }
 
 impl std::error::Error for Iox2Error {}
+
+impl TransportErrorClassify for Iox2Error {
+    fn transport_error_kind(&self) -> TransportErrorKind {
+        self.kind
+    }
+}
 
 /// 打开 iceoryx2 publish-subscribe endpoint 时使用的 QoS 配置。
 ///
@@ -277,7 +298,8 @@ impl<const CAP: usize> Iox2FrameSlot<CAP> {
     /// 从已编码的 canonical frame 构造 slot，超出 `CAP` 时返回错误。
     pub fn try_from_frame(frame: &[u8]) -> Result<Self, Iox2Error> {
         if frame.len() > CAP {
-            return Err(Iox2Error::new(
+            return Err(Iox2Error::with_kind(
+                TransportErrorKind::ResourceExhausted,
                 "encode FlowRT iox2 frame slot",
                 format!(
                     "frame length {} exceeds iox2 frame slot capacity {CAP}",
@@ -302,7 +324,7 @@ impl<const CAP: usize> Iox2FrameSlot<CAP> {
     {
         let frame = message
             .to_frame_vec()
-            .map_err(|error| Iox2Error::new("encode FlowRT iox2 frame payload", error))?;
+            .map_err(|error| Iox2Error::codec("encode FlowRT iox2 frame payload", error))?;
         Self::try_from_frame(&frame)
     }
 
@@ -320,7 +342,7 @@ impl<const CAP: usize> Iox2FrameSlot<CAP> {
     pub fn frame(&self) -> Result<&[u8], Iox2Error> {
         let len = self.len();
         if len > CAP {
-            return Err(Iox2Error::new(
+            return Err(Iox2Error::codec(
                 "decode FlowRT iox2 frame slot",
                 format!("slot length {len} exceeds iox2 frame slot capacity {CAP}"),
             ));
@@ -334,7 +356,7 @@ impl<const CAP: usize> Iox2FrameSlot<CAP> {
         T: FrameCodec,
     {
         T::decode_frame(self.frame()?)
-            .map_err(|error| Iox2Error::new("decode FlowRT iox2 frame payload", error))
+            .map_err(|error| Iox2Error::codec("decode FlowRT iox2 frame payload", error))
     }
 }
 
@@ -1429,6 +1451,7 @@ where
     match endpoint.receive()? {
         Some(sample) => Ok(sample),
         None => Err(Iox2Error {
+            kind: TransportErrorKind::Unknown,
             message: "iceoryx2 smoke sample was not received".to_string(),
         }),
     }

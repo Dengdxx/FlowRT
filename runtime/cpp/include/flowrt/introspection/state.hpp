@@ -114,31 +114,50 @@ class IntrospectionState {
     }
 
     /**
-     * @brief 记录 transport publish 失败，并按 route overflow policy 投影到统一 counters。
+     * @brief 记录 transport publish 失败，并按 typed error kind 投影到统一 counters。
      */
     void record_route_transport_error(std::string_view name, OverflowPolicy overflow,
-                                      std::string error) const {
+                                      TransportErrorKind kind, std::string error) const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         auto &route = route_entry_locked(std::string{name});
-        switch (overflow) {
-            case OverflowPolicy::DropOldest:
-            case OverflowPolicy::DropNewest:
-                route.dropped_samples += 1U;
+        switch (kind) {
+            case TransportErrorKind::QueueFull:
+                switch (overflow) {
+                    case OverflowPolicy::DropOldest:
+                    case OverflowPolicy::DropNewest:
+                        route.dropped_samples += 1U;
+                        break;
+                    case OverflowPolicy::Block:
+                        route.backpressure_count += 1U;
+                        break;
+                    case OverflowPolicy::Error:
+                        route.overflow_count += 1U;
+                        break;
+                }
                 break;
-            case OverflowPolicy::Block:
+            case TransportErrorKind::Backpressure:
                 route.backpressure_count += 1U;
                 break;
-            case OverflowPolicy::Error:
-                route.overflow_count += 1U;
+            case TransportErrorKind::Timeout:
+            case TransportErrorKind::Disconnected:
+            case TransportErrorKind::Unavailable:
+            case TransportErrorKind::PermissionDenied:
+            case TransportErrorKind::Unsupported:
+            case TransportErrorKind::Codec:
+            case TransportErrorKind::SchemaMismatch:
+            case TransportErrorKind::ResourceExhausted:
+            case TransportErrorKind::Internal:
+            case TransportErrorKind::Unknown:
                 break;
         }
         route.last_error = error;
+        route.last_error_kind = std::string{transport_error_kind_str(kind)};
         if (route.backend_health_state.empty() || route.backend_health_state == "ready") {
             route.backend_health_state = "degraded";
             route.backend_health_error = std::move(error);
             route.backend_reconnect_attempt = 0;
             route.backend_next_retry_unix_ms = std::nullopt;
-            route.backend_recoverable = true;
+            route.backend_recoverable = transport_error_kind_recoverable(kind);
         } else if (!route.backend_health_error) {
             route.backend_health_error = std::move(error);
         }
@@ -154,15 +173,18 @@ class IntrospectionState {
         switch (error) {
             case ChannelError::Overflow:
                 reason += "overflow";
-                record_route_transport_error(name, overflow, std::move(reason));
+                record_route_transport_error(name, overflow, TransportErrorKind::QueueFull,
+                                             std::move(reason));
                 return;
             case ChannelError::Transport:
                 reason += "transport";
-                record_route_transport_error(name, overflow, std::move(reason));
+                record_route_transport_error(name, overflow, TransportErrorKind::Unknown,
+                                             std::move(reason));
                 return;
             case ChannelError::Unsupported:
                 reason += "unsupported";
-                record_route_error(name, std::move(reason));
+                record_route_transport_error(name, overflow, TransportErrorKind::Unsupported,
+                                             std::move(reason));
                 return;
         }
         record_route_error(name, std::move(reason));
@@ -175,6 +197,7 @@ class IntrospectionState {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         auto &route = route_entry_locked(std::string{name});
         route.last_error = error;
+        route.last_error_kind = std::string{transport_error_kind_str(TransportErrorKind::Unknown)};
         if (route.backend_health_state.empty() || route.backend_health_state == "ready") {
             route.backend_health_state = "degraded";
             route.backend_health_error = std::move(error);
@@ -199,8 +222,11 @@ class IntrospectionState {
         route.backend_recoverable = health.recoverable;
         if (health.state == BackendHealthState::Ready) {
             route.last_error = std::nullopt;
+            route.last_error_kind = std::nullopt;
         } else if (health.last_error) {
             route.last_error = std::move(health.last_error);
+            route.last_error_kind =
+                std::string{transport_error_kind_str(TransportErrorKind::Unknown)};
         }
     }
 

@@ -41,6 +41,82 @@ impl BackendHealthState {
     }
 }
 
+/// backend transport 错误的 FlowRT 语义分类。
+///
+/// 该枚举是 route health 映射的主键；底层 SDK 原始错误只作为诊断文本保留。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportErrorKind {
+    /// backend 明确报告发送队列或 slot 已满。
+    QueueFull,
+    /// backend 明确报告当前写入遇到背压。
+    Backpressure,
+    /// backend 操作超时。
+    Timeout,
+    /// transport session 或连接已断开。
+    Disconnected,
+    /// endpoint、session 或资源当前不可用。
+    Unavailable,
+    /// 权限不足。
+    PermissionDenied,
+    /// 当前构建或 backend 不支持该操作。
+    Unsupported,
+    /// payload 编解码失败。
+    Codec,
+    /// schema、type 或 frame layout 不匹配。
+    SchemaMismatch,
+    /// backend 资源耗尽，但未能确认是队列满。
+    ResourceExhausted,
+    /// backend 内部错误。
+    Internal,
+    /// SDK 未提供可稳定分类的错误。
+    Unknown,
+}
+
+impl TransportErrorKind {
+    /// 返回 status / diagnostics 中使用的稳定小写名称。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::QueueFull => "queue_full",
+            Self::Backpressure => "backpressure",
+            Self::Timeout => "timeout",
+            Self::Disconnected => "disconnected",
+            Self::Unavailable => "unavailable",
+            Self::PermissionDenied => "permission_denied",
+            Self::Unsupported => "unsupported",
+            Self::Codec => "codec",
+            Self::SchemaMismatch => "schema_mismatch",
+            Self::ResourceExhausted => "resource_exhausted",
+            Self::Internal => "internal",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// 返回该类错误是否可恢复；schema/payload 和 unsupported 是配置或数据错误。
+    pub const fn recoverable(self) -> bool {
+        !matches!(
+            self,
+            Self::PermissionDenied
+                | Self::Unsupported
+                | Self::Codec
+                | Self::SchemaMismatch
+                | Self::Internal
+        )
+    }
+}
+
+/// 可暴露 FlowRT transport 错误分类的 backend error。
+pub trait TransportErrorClassify {
+    /// 返回 FlowRT 语义错误分类。
+    fn transport_error_kind(&self) -> TransportErrorKind {
+        TransportErrorKind::Unknown
+    }
+}
+
+/// 从 backend error 读取 FlowRT transport 错误分类。
+pub fn transport_error_kind(error: &(impl TransportErrorClassify + ?Sized)) -> TransportErrorKind {
+    error.transport_error_kind()
+}
+
 /// backend 或 endpoint 的健康快照。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendHealthSnapshot {

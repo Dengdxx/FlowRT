@@ -8,7 +8,7 @@ use crate::recorder::{
 };
 use crate::{
     BackendHealthSnapshot, BackendHealthState, FrameCodec, FrameDescriptor, FrameLeaseStatus,
-    FramePayloadArtifact, LifecycleState, OverflowPolicy,
+    FramePayloadArtifact, LifecycleState, OverflowPolicy, TransportErrorKind,
 };
 
 use super::facts::{RuntimeObservabilityFacts, input_status_key};
@@ -782,34 +782,51 @@ impl IntrospectionState {
         route.overflow_count = route.overflow_count.saturating_add(1);
     }
 
-    /// 记录 transport publish 失败，并按 route overflow policy 投影到统一 route counters。
+    /// 记录 transport publish 失败，并按 typed error kind 投影到统一 route counters。
     pub fn record_route_transport_error(
         &self,
         name: impl AsRef<str>,
         overflow: OverflowPolicy,
+        kind: TransportErrorKind,
         error: impl Into<String>,
     ) {
         let mut inner = self.lock_inner();
         let route = route_entry(&mut inner, name.as_ref());
-        match overflow {
-            OverflowPolicy::DropOldest | OverflowPolicy::DropNewest => {
-                route.dropped_samples = route.dropped_samples.saturating_add(1);
-            }
-            OverflowPolicy::Block => {
+        match kind {
+            TransportErrorKind::QueueFull => match overflow {
+                OverflowPolicy::DropOldest | OverflowPolicy::DropNewest => {
+                    route.dropped_samples = route.dropped_samples.saturating_add(1);
+                }
+                OverflowPolicy::Block => {
+                    route.backpressure_count = route.backpressure_count.saturating_add(1);
+                }
+                OverflowPolicy::Error => {
+                    route.overflow_count = route.overflow_count.saturating_add(1);
+                }
+            },
+            TransportErrorKind::Backpressure => {
                 route.backpressure_count = route.backpressure_count.saturating_add(1);
             }
-            OverflowPolicy::Error => {
-                route.overflow_count = route.overflow_count.saturating_add(1);
-            }
+            TransportErrorKind::Timeout
+            | TransportErrorKind::Disconnected
+            | TransportErrorKind::Unavailable
+            | TransportErrorKind::PermissionDenied
+            | TransportErrorKind::Unsupported
+            | TransportErrorKind::Codec
+            | TransportErrorKind::SchemaMismatch
+            | TransportErrorKind::ResourceExhausted
+            | TransportErrorKind::Internal
+            | TransportErrorKind::Unknown => {}
         }
         let error = error.into();
         route.last_error = Some(error.clone());
+        route.last_error_kind = Some(kind.as_str().to_string());
         if route.backend_health_state.is_empty() || route.backend_health_state == "ready" {
             route.backend_health_state = BackendHealthState::Degraded.as_str().to_string();
             route.backend_health_error = Some(error);
             route.backend_reconnect_attempt = 0;
             route.backend_next_retry_unix_ms = None;
-            route.backend_recoverable = true;
+            route.backend_recoverable = kind.recoverable();
         } else if route.backend_health_error.is_none() {
             route.backend_health_error = Some(error);
         }
@@ -821,6 +838,7 @@ impl IntrospectionState {
         let route = route_entry(&mut inner, name.as_ref());
         let error = error.into();
         route.last_error = Some(error.clone());
+        route.last_error_kind = Some(TransportErrorKind::Unknown.as_str().to_string());
         if route.backend_health_state.is_empty() || route.backend_health_state == "ready" {
             route.backend_health_state = BackendHealthState::Degraded.as_str().to_string();
             route.backend_health_error = Some(error);
@@ -847,8 +865,10 @@ impl IntrospectionState {
         route.backend_recoverable = health.recoverable;
         if health.state == BackendHealthState::Ready {
             route.last_error = None;
+            route.last_error_kind = None;
         } else if let Some(error) = health.last_error {
             route.last_error = Some(error);
+            route.last_error_kind = Some(TransportErrorKind::Unknown.as_str().to_string());
         }
     }
 

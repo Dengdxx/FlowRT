@@ -181,8 +181,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   generated Rust/C++ scheduler 在 bounded `run_ticks` 下会把 pending restart 视为继续条件，
   避免 task 结果晚于 tick 预算提交时漏掉最终 restart 观测。
 - 收口残留：route health / reconnect 已统一进入 status facts，`iox2` / `zenoh` transport
-  publish 失败也会按 route overflow policy 进入 drop/backpressure/overflow counters；真实
-  backend SDK 对“queue full”和一般 transport error 的细粒度错误码仍不作为 FlowRT 语义假设。
+  publish 失败会先进入 Rust/C++ 对齐的 typed transport error kind。只有 backend 明确报告
+  `queue_full` 时才按 route overflow policy 进入 drop/backpressure/overflow counters；
+  `unknown` 等粗粒度 SDK error 只更新 `last_error_kind`、`last_error` 和 backend health。
   Rust/C++ endpoint smoke 已覆盖 peer endpoint 重启和本地 session/transport 重建后的继续收发。
   `clang-tidy` 已升级为长期 C++ static quality gate，新增 checks 必须进入 runtime、generated
   或 ABI/POD profile 并保持局部、可解释的例外纪律；FrameDescriptor `record_payload = true`
@@ -1089,10 +1090,9 @@ control-plane。参数远程控制必须支持跨机器，推荐走 zenoh contro
 status 观测，补齐多 lane 调度的语义硬化。
 
 已知后续项：当前 task health 的 backpressure/overflow 语义主要覆盖 inproc FIFO
-写入路径；`iox2` / `zenoh` route 仍主要按 backend publish error 处理。后续深化
-backend health / reconnect 时，应把 route-level backend backpressure、publish
-error 和恢复状态统一纳入 health/self-description/status，而不是继续只暴露粗粒度
-backend error。
+写入路径；`iox2` / `zenoh` route 已把 transport publish error 分类为 typed kind 并进入
+status。后续深化 backend health / reconnect 时，应继续让 backend adapter 只在 SDK
+明确识别时产出更具体 kind，不从错误字符串猜测 queue-full。
 
 FlowRT core skills 套组：入库事实源为 `.agents/skills/`，当前只落地 `frt-core-*`。
 `frt-core-*` 面向 FlowRT 仓库维护者，覆盖 RSDL/IR、codegen、runtime、backend、

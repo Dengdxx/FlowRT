@@ -404,6 +404,7 @@ fn route_backend_health_snapshot_updates_status_and_diagnostics() {
         route.last_error.as_deref(),
         Some("publish Zenoh sample: session closed")
     );
+    assert_eq!(route.last_error_kind.as_deref(), Some("unknown"));
 
     let route_diagnostic = status
         .diagnostics
@@ -438,25 +439,29 @@ fn route_backend_health_ready_clears_active_error() {
     assert_eq!(route.backend_health_state, "ready");
     assert!(route.backend_health_error.is_none());
     assert!(route.last_error.is_none());
+    assert!(route.last_error_kind.is_none());
 }
 
 #[test]
-fn route_transport_error_updates_policy_counter_and_backend_error() {
+fn route_transport_error_maps_kind_to_counters_and_backend_error() {
     let state = IntrospectionState::new();
 
     state.record_route_transport_error(
         "source.packet_to_sink.packet",
         crate::OverflowPolicy::Block,
+        crate::TransportErrorKind::QueueFull,
         "publish transport route: queue full",
     );
     state.record_route_transport_error(
         "source.packet_to_sink.packet",
         crate::OverflowPolicy::DropNewest,
+        crate::TransportErrorKind::QueueFull,
         "publish transport route: queue full",
     );
     state.record_route_transport_error(
         "source.packet_to_sink.packet",
         crate::OverflowPolicy::Error,
+        crate::TransportErrorKind::QueueFull,
         "publish transport route: queue full",
     );
 
@@ -469,10 +474,33 @@ fn route_transport_error_updates_policy_counter_and_backend_error() {
         route.last_error.as_deref(),
         Some("publish transport route: queue full")
     );
+    assert_eq!(route.last_error_kind.as_deref(), Some("queue_full"));
     assert_eq!(route.backend_health_state, "degraded");
     assert_eq!(
         route.backend_health_error.as_deref(),
         Some("publish transport route: queue full")
+    );
+
+    state.record_route_transport_error(
+        "source.unknown_to_sink.packet",
+        crate::OverflowPolicy::Error,
+        crate::TransportErrorKind::Unknown,
+        "publish transport route: sdk error",
+    );
+
+    let status = state.status();
+    let unknown_route = status
+        .routes
+        .iter()
+        .find(|route| route.name == "source.unknown_to_sink.packet")
+        .expect("unknown route should be present");
+    assert_eq!(unknown_route.dropped_samples, 0);
+    assert_eq!(unknown_route.backpressure_count, 0);
+    assert_eq!(unknown_route.overflow_count, 0);
+    assert_eq!(unknown_route.last_error_kind.as_deref(), Some("unknown"));
+    assert_eq!(
+        unknown_route.last_error.as_deref(),
+        Some("publish transport route: sdk error")
     );
 }
 

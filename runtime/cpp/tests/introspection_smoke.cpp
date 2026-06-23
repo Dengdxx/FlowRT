@@ -403,6 +403,7 @@ void assert_status_json_schema_parity_fixture() {
         .overflow_count = 3,
         .last_publish_ms = std::optional<std::uint64_t>{120U},
         .last_error = std::optional<std::string>{"queue overflow"},
+        .last_error_kind = std::optional<std::string>{"queue_full"},
         .backend_health_state = "reconnecting",
         .backend_health_error = std::optional<std::string>{"publish Zenoh sample: session closed"},
         .backend_reconnect_attempt = 2,
@@ -497,6 +498,7 @@ void assert_status_json_schema_parity_fixture() {
     assert_number_field(route, "overflow_count", "3");
     assert_number_field(route, "last_publish_ms", "120");
     assert_string_field(route, "last_error", "queue overflow");
+    assert_string_field(route, "last_error_kind", "queue_full");
     assert_string_field(route, "backend_health_state", "reconnecting");
     assert_string_field(route, "backend_health_error", "publish Zenoh sample: session closed");
     assert_number_field(route, "backend_reconnect_attempt", "2");
@@ -567,6 +569,7 @@ void assert_route_backend_health_derives_diagnostics() {
     assert(route->backend_health_state == "reconnecting");
     assert(route->backend_health_error ==
            std::optional<std::string>{"publish Zenoh sample: session closed"});
+    assert(route->last_error_kind == std::optional<std::string>{"unknown"});
     assert(route->backend_reconnect_attempt == 2U);
     assert(route->backend_next_retry_unix_ms == std::optional<std::uint64_t>{4200U});
     assert(route->backend_recoverable);
@@ -582,16 +585,19 @@ void assert_route_backend_health_derives_diagnostics() {
            std::optional<std::string>{"publish Zenoh sample: session closed"});
 }
 
-void assert_route_transport_error_derives_policy_counters() {
+void assert_route_transport_error_derives_kind_counters() {
     flowrt::IntrospectionState state;
     state.record_route_transport_error("source.packet_to_sink.packet",
                                        flowrt::OverflowPolicy::Block,
+                                       flowrt::TransportErrorKind::QueueFull,
                                        "publish transport route: queue full");
     state.record_route_transport_error("source.packet_to_sink.packet",
                                        flowrt::OverflowPolicy::DropNewest,
+                                       flowrt::TransportErrorKind::QueueFull,
                                        "publish transport route: queue full");
     state.record_route_transport_error("source.packet_to_sink.packet",
                                        flowrt::OverflowPolicy::Error,
+                                       flowrt::TransportErrorKind::QueueFull,
                                        "publish transport route: queue full");
 
     const auto status = state.status();
@@ -603,9 +609,26 @@ void assert_route_transport_error_derives_policy_counters() {
     assert(route->dropped_samples == 1U);
     assert(route->overflow_count == 1U);
     assert(route->last_error == std::optional<std::string>{"publish transport route: queue full"});
+    assert(route->last_error_kind == std::optional<std::string>{"queue_full"});
     assert(route->backend_health_state == "degraded");
     assert(route->backend_health_error ==
            std::optional<std::string>{"publish transport route: queue full"});
+
+    state.record_route_transport_error("source.unknown_to_sink.packet",
+                                       flowrt::OverflowPolicy::Error,
+                                       flowrt::TransportErrorKind::Unknown,
+                                       "publish transport route: sdk error");
+    const auto unknown_status = state.status();
+    const auto unknown_route = std::find_if(
+        unknown_status.routes.begin(), unknown_status.routes.end(),
+        [](const auto &candidate) { return candidate.name == "source.unknown_to_sink.packet"; });
+    assert(unknown_route != unknown_status.routes.end());
+    assert(unknown_route->dropped_samples == 0U);
+    assert(unknown_route->backpressure_count == 0U);
+    assert(unknown_route->overflow_count == 0U);
+    assert(unknown_route->last_error_kind == std::optional<std::string>{"unknown"});
+    assert(unknown_route->last_error ==
+           std::optional<std::string>{"publish transport route: sdk error"});
 
     state.record_route_transport_error("source.feedback_to_sink.feedback",
                                        flowrt::OverflowPolicy::Block,
@@ -617,6 +640,7 @@ void assert_route_transport_error_derives_policy_counters() {
     assert(overflow_route != overflow_status.routes.end());
     assert(overflow_route->backpressure_count == 1U);
     assert(overflow_route->overflow_count == 0U);
+    assert(overflow_route->last_error_kind == std::optional<std::string>{"queue_full"});
     assert(overflow_route->last_error ==
            std::optional<std::string>{"publish transport route: overflow"});
 }
@@ -626,7 +650,7 @@ void assert_route_transport_error_derives_policy_counters() {
 int main() {
     assert_status_json_schema_parity_fixture();
     assert_route_backend_health_derives_diagnostics();
-    assert_route_transport_error_derives_policy_counters();
+    assert_route_transport_error_derives_kind_counters();
 
     {
         auto active = std::make_shared<std::atomic_size_t>(0U);

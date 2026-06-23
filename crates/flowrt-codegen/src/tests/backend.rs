@@ -527,8 +527,11 @@ backends = ["zenoh"]
     assert!(transport_shell.contains(
         "introspection_state.record_route_backend_health(\"source.packet_to_sink.packet\", __flowrt_route_health);"
     ));
+    assert!(
+        transport_shell.contains("let __flowrt_error_kind = flowrt::transport_error_kind(&error);")
+    );
     assert!(transport_shell.contains(
-        "introspection_state.record_route_transport_error(\"source.packet_to_sink.packet\", flowrt::OverflowPolicy::DropOldest, error.to_string());"
+        "introspection_state.record_route_transport_error(\"source.packet_to_sink.packet\", flowrt::OverflowPolicy::DropOldest, __flowrt_error_kind, error.to_string());"
     ));
 
     let inproc_ir = contract_from_source(
