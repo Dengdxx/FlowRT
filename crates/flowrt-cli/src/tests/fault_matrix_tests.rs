@@ -475,6 +475,33 @@ fn fault_matrix_expectation_evaluator_accepts_route_and_failover() {
     assert!(result.passed, "{:?}", result.failures);
 }
 
+#[test]
+fn fault_matrix_run_report_preserves_failure_details_before_exit() {
+    let report = fault_matrix::runner::FaultMatrixRunReport {
+        matrix: "demo".to_string(),
+        cases: vec![fault_matrix::expect::FaultMatrixCaseResult {
+            name: "bad_case".to_string(),
+            passed: false,
+            failures: vec!["graph health expected healthy, got faulted".to_string()],
+        }],
+    };
+
+    let value = serde_json::to_value(&report).unwrap();
+
+    assert_eq!(value["matrix"], "demo");
+    assert_eq!(value["cases"][0]["name"], "bad_case");
+    assert_eq!(value["cases"][0]["passed"], false);
+    assert_eq!(
+        value["cases"][0]["failures"][0],
+        "graph health expected healthy, got faulted"
+    );
+
+    let error = report.ensure_passed().unwrap_err();
+    assert!(error.to_string().contains(
+        "fault matrix case `bad_case` failed: graph health expected healthy, got faulted"
+    ));
+}
+
 fn write_fault_matrix_cross_process_rsdl(rsdl_dir: &Path, determinism: &str) {
     std::fs::write(
         rsdl_dir.join("robot.rsdl"),

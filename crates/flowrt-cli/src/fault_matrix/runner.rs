@@ -25,6 +25,19 @@ pub(crate) struct FaultMatrixRunReport {
     pub(crate) cases: Vec<super::expect::FaultMatrixCaseResult>,
 }
 
+impl FaultMatrixRunReport {
+    pub(crate) fn ensure_passed(&self) -> Result<()> {
+        if let Some(failed) = self.cases.iter().find(|case| !case.passed) {
+            anyhow::bail!(
+                "fault matrix case `{}` failed: {}",
+                failed.name,
+                failed.failures.join("; ")
+            );
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn run_matrix(path: &Path, out_root: &Path) -> Result<FaultMatrixRunReport> {
     let matrix = parse_matrix_file(path)?;
     let mut results = Vec::with_capacity(matrix.cases.len());
@@ -46,13 +59,6 @@ pub(crate) fn run_matrix(path: &Path, out_root: &Path) -> Result<FaultMatrixRunR
             &status,
             &case.expect,
         ));
-    }
-    if let Some(failed) = results.iter().find(|case| !case.passed) {
-        anyhow::bail!(
-            "fault matrix case `{}` failed: {}",
-            failed.name,
-            failed.failures.join("; ")
-        );
     }
     Ok(FaultMatrixRunReport {
         matrix: matrix.name,

@@ -1033,6 +1033,7 @@ fn main() -> Result<()> {
                 } else {
                     println!("{json}");
                 }
+                report_value.ensure_passed()?;
             }
         },
         Command::Explain { rsdl, format } => {
