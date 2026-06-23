@@ -1164,8 +1164,11 @@ fn self_description_message_abi(
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
+    let type_name = ir_type
+        .map(|ty| ty.qualified_name.clone())
+        .unwrap_or_else(|| expectation.type_name.clone());
     SelfDescriptionMessageAbi {
-        type_name: expectation.type_name,
+        type_name,
         size_bytes: expectation.size_bytes,
         align_bytes: expectation.align_bytes,
         empty: ir_type.is_some_and(|ty| ty.empty),
@@ -1210,14 +1213,14 @@ fn self_description_message_frame(
         header_offset += header_size;
     }
     SelfDescriptionMessageFrame {
-        type_name: ty.name.clone(),
+        type_name: ty.qualified_name.clone(),
         encoding: "canonical_frame_v1".to_string(),
         header_size_bytes: frame_header_size_for_type(contract, ty),
         max_size_bytes: frame_max_size_for_type(contract, ty),
         variable: type_contains_variable_data(
             contract,
             &TypeExpr::Named {
-                name: ty.name.clone(),
+                name: ty.qualified_name.clone(),
             },
         ),
         fields,

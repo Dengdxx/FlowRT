@@ -451,18 +451,39 @@ output = ["sample:Sample"]
     )
     .unwrap();
     std::fs::write(
-        root.join("modules").join("control.rsdl"),
+        root.join("modules").join("mygo_lidar.rsdl"),
         r#"
 [module]
-name = "control"
+name = "mygo_lidar"
 
-[type.Sample]
-value = "f32"
+[type.LaserScanMsg]
+stamp_us = "u64"
+range = "f32"
+
+[type.ChassisFeedback]
+vx = "f32"
+vy = "f32"
+
+[type.ImuData]
+stamp_us = "u64"
+wz = "f32"
+
+[type.PoseMsg]
+x = "f32"
+y = "f32"
+
+[type.IekfDiagnostics]
+label = "string<max=32>"
 
 [component.processor]
 language = "cpp"
 input = ["sample:perception::Sample"]
-output = ["command:Sample"]
+output = ["scan:LaserScanMsg"]
+
+[component.estimator]
+language = "cpp"
+input = ["chassis:ChassisFeedback", "imu:ImuData"]
+output = ["pose:PoseMsg", "diagnostics:IekfDiagnostics"]
 "#,
     )
     .unwrap();
@@ -479,20 +500,50 @@ period_ms = 10
 output = ["sample"]
 
 [instance.controller]
-component = "control::processor"
+component = "mygo_lidar::processor"
 process = "control_proc"
 
 [instance.controller.task]
 trigger = "on_message"
 input = ["sample"]
-output = ["command"]
+output = ["scan"]
+
+[instance.estimator]
+component = "mygo_lidar::estimator"
+process = "control_proc"
+
+[instance.estimator.task]
+trigger = "on_message"
+input = ["chassis", "imu"]
+output = ["pose", "diagnostics"]
 
 [[bind.dataflow]]
 from = "source.sample"
 to = "controller.sample"
 channel = "latest"
 
+[[boundary.input]]
+name = "chassis_in"
+port = "estimator.chassis"
+type = "mygo_lidar::ChassisFeedback"
+
+[[boundary.input]]
+name = "imu_in"
+port = "estimator.imu"
+type = "mygo_lidar::ImuData"
+
+[[boundary.output]]
+name = "pose_out"
+port = "estimator.pose"
+type = "mygo_lidar::PoseMsg"
+
+[[boundary.output]]
+name = "diagnostics_out"
+port = "estimator.diagnostics"
+type = "mygo_lidar::IekfDiagnostics"
+
 [profile.default]
+mode = "island"
 backend = "zenoh"
 
 [target.linux]
@@ -507,7 +558,10 @@ backends = ["zenoh"]
 
     let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
     assert!(rust_messages.contains("pub struct PerceptionSample"));
-    assert!(rust_messages.contains("pub struct ControlSample"));
+    assert!(rust_messages.contains("pub struct MygoLidarLaserScanMsg"));
+    assert!(rust_messages.contains("pub struct MygoLidarChassisFeedback"));
+    assert!(rust_messages.contains("pub struct MygoLidarImuData"));
+    assert!(rust_messages.contains("pub struct MygoLidarPoseMsg"));
 
     let rust_components = artifact_content(&bundle, "rust/src/components.rs");
     assert!(rust_components.contains("pub trait PerceptionProcessor"));
@@ -522,13 +576,87 @@ backends = ["zenoh"]
     );
 
     let cpp_components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
-    assert!(cpp_components.contains("class ControlProcessorInterface"));
+    assert!(cpp_components.contains("class MygoLidarProcessorInterface"));
+    assert!(cpp_components.contains("class MygoLidarEstimatorInterface"));
     assert!(cpp_components.contains("const flowrt::Latest<PerceptionSample>& sample"));
-    assert!(cpp_components.contains("flowrt::Output<ControlSample>& command"));
+    assert!(cpp_components.contains("flowrt::Output<MygoLidarLaserScanMsg>& scan"));
     assert!(!cpp_components.contains("class ProcessorInterface"));
 
     let cpp_shell = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
-    assert!(cpp_shell.contains("std::unique_ptr<ControlProcessorInterface> controller_"));
+    assert!(cpp_shell.contains("std::unique_ptr<MygoLidarProcessorInterface> controller_"));
+
+    let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
+    assert!(
+        cpp_abi.contains("flowrt_app::MygoLidarLaserScanMsg sample_mygo_lidar_laser_scan_msg()")
+    );
+    assert!(
+        cpp_abi
+            .contains("flowrt_app::MygoLidarChassisFeedback sample_mygo_lidar_chassis_feedback()")
+    );
+
+    let rust_abi = artifact_content(&bundle, "rust/tests/message_abi.rs");
+    assert!(rust_abi.contains(
+        "fn sample_mygo_lidar_laser_scan_msg() -> flowrt_app::messages::MygoLidarLaserScanMsg"
+    ));
+    assert!(rust_abi.contains(
+        "fn sample_mygo_lidar_chassis_feedback() -> flowrt_app::messages::MygoLidarChassisFeedback"
+    ));
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let abi_types = selfdesc["message_abi"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["type_name"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let frame_types = selfdesc["message_frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["type_name"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    for canonical in [
+        "perception::Sample",
+        "mygo_lidar::LaserScanMsg",
+        "mygo_lidar::ChassisFeedback",
+        "mygo_lidar::ImuData",
+        "mygo_lidar::PoseMsg",
+        "mygo_lidar::IekfDiagnostics",
+    ] {
+        assert!(
+            abi_types.contains(canonical) || frame_types.contains(canonical),
+            "selfdesc must export ABI/frame layout for {canonical}"
+        );
+    }
+    for non_canonical in [
+        "LaserScanMsg",
+        "MygoLidarLaserScanMsg",
+        "ChassisFeedback",
+        "MygoLidarChassisFeedback",
+        "PoseMsg",
+        "MygoLidarPoseMsg",
+    ] {
+        assert!(!abi_types.contains(non_canonical));
+        assert!(!frame_types.contains(non_canonical));
+    }
+    for endpoint in selfdesc["graphs"][0]["boundary_endpoints"]
+        .as_array()
+        .unwrap()
+    {
+        let message_type = endpoint["message_type"].as_str().unwrap();
+        assert!(
+            abi_types.contains(message_type) || frame_types.contains(message_type),
+            "boundary endpoint {message_type} must have ABI/frame layout"
+        );
+    }
+    for channel in selfdesc["graphs"][0]["channels"].as_array().unwrap() {
+        let message_type = channel["message_type"].as_str().unwrap();
+        assert!(
+            abi_types.contains(message_type) || frame_types.contains(message_type),
+            "dataflow channel {message_type} must have ABI/frame layout"
+        );
+    }
 
     std::fs::remove_dir_all(root).unwrap();
 }

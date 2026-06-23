@@ -23,6 +23,10 @@ transport client，避免把 non-movable `Iox2ServiceClient` / `Iox2FrameService
 未发布 hardening 继续补齐真实运行证据：v0.25.0 iox2 focused smoke 的真实 SDK 分支会启动
 generated supervisor 并轮询 live Operation counters，覆盖 Rust `iox2_service_demo` Operation
 真实成功路径和 generated C++ bounded Operation start frame 经 iox2 定容 slot 的 build/run 路径。
+generated self-description 的 `message_abi` / `message_frames` registry 现在统一使用 Contract
+IR canonical type id（例如 `module::Type`）作为协议和 CLI 主键；C++/Rust 生成名只作为语言
+binding name。boundary endpoint、dataflow channel、record/replay 和 `flowrt pub` / `flowrt echo`
+涉及的消息类型必须能在同一 self-description 中找到 ABI 或 canonical frame layout。
 
 本版本明确长期 invariant：`iox2` 不承载无界变长或指针所有权 payload；fixed-size plain
 data 和可推导 frame 上界的 `bytes<max=N>`、`string<max=N>`、`sequence<T,max=N>` 可走
