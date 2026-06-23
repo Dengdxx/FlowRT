@@ -2157,6 +2157,196 @@ fn operation_follow_json_decodes_progress_and_result_values() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+fn operation_variable_frame_source() -> &'static str {
+    r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": 10000
+    }]
+  }],
+  "message_abi": [],
+  "message_frames": [{
+    "type_name": "PlanFeedback",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 8,
+    "max_size_bytes": 64,
+    "variable": true,
+    "fields": [{
+      "name": "label",
+      "type": "string",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 8,
+      "tail_max_bytes": 32
+    }]
+  }, {
+    "type_name": "PlanResult",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 16,
+    "max_size_bytes": 64,
+    "variable": true,
+    "fields": [{
+      "name": "label",
+      "type": "string",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 8,
+      "tail_max_bytes": 32
+    }, {
+      "name": "samples",
+      "type": "sequence<u32>",
+      "header_offset_bytes": 8,
+      "header_size_bytes": 8,
+      "tail_max_bytes": 32
+    }]
+  }]
+}
+"#
+}
+
+fn frame_with_label(label: &str) -> Vec<u8> {
+    let mut header = vec![0u8; 8];
+    let mut tail = Vec::new();
+    let label_span = flowrt::append_tail_block(&mut tail, label.as_bytes()).unwrap();
+    label_span.encode(&mut header[..8]).unwrap();
+    header.extend_from_slice(&tail);
+    header
+}
+
+fn frame_with_label_and_samples(label: &str, samples: &[u32]) -> Vec<u8> {
+    let mut header = vec![0u8; 16];
+    let mut tail = Vec::new();
+    let label_span = flowrt::append_tail_block(&mut tail, label.as_bytes()).unwrap();
+    label_span.encode(&mut header[..8]).unwrap();
+
+    let mut sample_bytes = Vec::new();
+    for sample in samples {
+        sample_bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    let samples_span = flowrt::append_tail_block(&mut tail, &sample_bytes).unwrap();
+    samples_span.encode(&mut header[8..16]).unwrap();
+
+    header.extend_from_slice(&tail);
+    header
+}
+
+#[test]
+fn operation_result_json_decodes_variable_frame_payload_value() {
+    let root = temp_test_dir("operation-cli-variable-result-json");
+    let path = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    let source = operation_variable_frame_source();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_operation_result_payload(
+        "controller.plan",
+        "111:7:3",
+        "succeeded",
+        None,
+        Some(frame_with_label_and_samples("done", &[10, 20])),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = operation_result_json(&path, "111:7:3", Some(&socket), false, None, 5000).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(value["response"], "operation_result");
+    assert_eq!(
+        value["result"]["value"],
+        serde_json::json!({"label": "done", "samples": [10, 20]})
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn operation_follow_json_decodes_variable_frame_progress_and_result_values() {
+    let root = temp_test_dir("operation-cli-variable-follow-json");
+    let path = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    let source = operation_variable_frame_source();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_operation_transition(
+        "controller.plan",
+        "111:7:3",
+        "running",
+        Some("controller.plan"),
+        Some(1500),
+    );
+    state.record_operation_progress_payload(
+        "controller.plan",
+        "111:7:3",
+        0,
+        Some(frame_with_label("half")),
+    );
+    state.record_operation_result_payload(
+        "controller.plan",
+        "111:7:3",
+        "succeeded",
+        None,
+        Some(frame_with_label_and_samples("done", &[10, 20])),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = operation_follow_json(&path, "111:7:3", Some(&socket), false, None, 5000).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(value["response"], "operation_events");
+    assert_eq!(
+        value["events"][1]["value"],
+        serde_json::json!({"label": "half"})
+    );
+    assert_eq!(
+        value["events"][2]["value"],
+        serde_json::json!({"label": "done", "samples": [10, 20]})
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn operation_cancel_without_socket_refuses_ambiguous_id_without_side_effects() {
     let root = temp_test_dir("operation-cli-ambiguous-cancel");

@@ -98,9 +98,10 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   和 `OperationObserve` typed control-plane 请求，generated C++ shell 会注册
   start/status/cancel hook，retained result payload 和 observation event page 可被
   `flowrt op result/follow` 查询。`flowrt op list/status/start/cancel/result/follow` 已支持
-  `--format json` 结构化输出；result/follow JSON 同时暴露原始 payload byte array 和按
-  self-description Message ABI 解码后的 `value`。generated Rust/C++ hidden task 会同步驱动
-  Operation runtime retained snapshot 与 introspection result/event retention 清理；
+  `--format json` 结构化输出；result/follow JSON 同时暴露原始 payload byte array，并按
+  self-description Message ABI 或 `message_frames` canonical frame 解码 `value`。
+  generated Rust/C++ hidden task 会同步驱动 Operation runtime retained snapshot 与
+  introspection result/event retention 清理；
   `result_retention_ms = 0` 不保留已完成 invocation，过期后 `op result/follow` 按 id 返回
   not found。
   C++ `ZenohOperationServer` 也提供 shared-session `open(...)`，runtime zenoh smoke 已覆盖真实
@@ -1087,7 +1088,7 @@ progress feedback 编码为 canonical Message ABI payload；`flowrt op follow <o
 --image ...` 与 `flowrt op start --follow` 本机和远程均可持续输出到 terminal。Operation
 CLI 还提供 `--format json` 结构化输出，覆盖 list/status/start/cancel/result/follow；
 result/follow JSON 会保留原始 payload byte array，并在 `value` 字段放入按 self-description
-Message ABI 解码后的对象，作为后续机器接口基线。generated Rust/C++ hidden task 会驱动
+Message ABI 或 `message_frames` canonical frame 解码后的对象，作为后续机器接口基线。generated Rust/C++ hidden task 会驱动
 Operation runtime 与 introspection 两侧 retention 清理；`result_retention_ms = 0` 不保留已
 完成 invocation，过期 result/event log 不再被 `op result/follow` 读到。Operation
 start/cancel accepted 后还会记录 `flowrt.operation.command.start.v1` /

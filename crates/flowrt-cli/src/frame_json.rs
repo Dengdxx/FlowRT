@@ -46,6 +46,12 @@ pub(crate) fn decode_message_json(
     message_type: &str,
     payload: &[u8],
 ) -> Result<String> {
+    if let Some(frame) = message_frame_layout(&self_description.message_frames, message_type)? {
+        let value = decode_frame_message_json(self_description, frame, payload)?;
+        return serde_json::to_string(&value)
+            .with_context(|| format!("failed to format `{message_type}` JSON"));
+    }
+
     if let Some(message) = message_abi_layout(&self_description.message_abi, message_type)? {
         let value = decode_fixed_message_json(&self_description.message_abi, message, payload)?;
         return serde_json::to_string(&value)
@@ -53,7 +59,7 @@ pub(crate) fn decode_message_json(
     }
 
     anyhow::bail!(
-        "FlowRT self-description does not contain Message ABI layout for `{message_type}`"
+        "FlowRT self-description does not contain Message ABI or frame layout for `{message_type}`"
     )
 }
 
@@ -153,6 +159,197 @@ fn encode_frame_field(
     }
     header[start..end].copy_from_slice(&bytes);
     Ok(())
+}
+
+fn decode_frame_message_json(
+    self_description: &SelfDescription,
+    frame: &SelfDescriptionMessageFrame,
+    payload: &[u8],
+) -> Result<Value> {
+    if frame.encoding != "canonical_frame_v1" {
+        anyhow::bail!(
+            "message frame `{}` uses unsupported encoding `{}`",
+            frame.type_name,
+            frame.encoding
+        );
+    }
+    if payload.len() < frame.header_size_bytes {
+        anyhow::bail!(
+            "payload for `{}` has {} bytes; frame header expects at least {}",
+            frame.type_name,
+            payload.len(),
+            frame.header_size_bytes
+        );
+    }
+    if let Some(max_size_bytes) = frame.max_size_bytes
+        && payload.len() > max_size_bytes
+    {
+        anyhow::bail!(
+            "payload for `{}` has {} bytes; frame max is {}",
+            frame.type_name,
+            payload.len(),
+            max_size_bytes
+        );
+    }
+
+    let header = &payload[..frame.header_size_bytes];
+    let tail = &payload[frame.header_size_bytes..];
+    let mut decoder = flowrt::FrameDecoder::new(tail);
+    let mut object = Map::new();
+    for field in &frame.fields {
+        let start = field.header_offset_bytes;
+        let end = start
+            .checked_add(field.header_size_bytes)
+            .with_context(|| format!("field `{}` header range overflows usize", field.name))?;
+        if start > header.len() || end > header.len() {
+            anyhow::bail!(
+                "field `{}` header range {}..{} exceeds frame header length {}",
+                field.name,
+                start,
+                end,
+                header.len()
+            );
+        }
+        object.insert(
+            field.name.clone(),
+            decode_frame_field_value(self_description, &mut decoder, field, &header[start..end])?,
+        );
+    }
+    decoder
+        .finish()
+        .map_err(|err| anyhow::anyhow!("message frame `{}`: {err}", frame.type_name))?;
+    Ok(Value::Object(object))
+}
+
+fn decode_frame_field_value(
+    self_description: &SelfDescription,
+    decoder: &mut flowrt::FrameDecoder<'_>,
+    field: &SelfDescriptionFrameField,
+    header: &[u8],
+) -> Result<Value> {
+    let ty = field.ty.trim();
+    if ty == "string" {
+        let block = decode_tail_block(decoder, field, header)?;
+        let text = String::from_utf8(block.to_vec())
+            .with_context(|| format!("field `{}` is not valid UTF-8", field.name))?;
+        return Ok(Value::String(text));
+    }
+    if ty == "bytes" {
+        let block = decode_tail_block(decoder, field, header)?;
+        return Ok(Value::String(encode_base64(block)));
+    }
+    if let Some(element_ty) = parse_sequence_type(ty)? {
+        let block = decode_tail_block(decoder, field, header)?;
+        let element_size = boundary_fixed_wire_size(&self_description.message_abi, element_ty)?
+            .with_context(|| {
+                format!(
+                    "field `{}` sequence element type `{}` lacks fixed Message ABI metadata",
+                    field.name, element_ty
+                )
+            })?;
+        if block.len() % element_size != 0 {
+            anyhow::bail!(
+                "field `{}` sequence byte length {} is not divisible by element wire size {}",
+                field.name,
+                block.len(),
+                element_size
+            );
+        }
+        let values = block
+            .chunks_exact(element_size)
+            .enumerate()
+            .map(|(index, chunk)| {
+                decode_fixed_value(
+                    &self_description.message_abi,
+                    element_ty,
+                    chunk,
+                    &format!("{}[{index}]", field.name),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(Value::Array(values));
+    }
+
+    if let Some(expected) = boundary_primitive_size(ty) {
+        if expected != header.len() {
+            anyhow::bail!(
+                "field `{}` type `{}` expects {expected} header bytes but self-description declares {} bytes",
+                field.name,
+                ty,
+                header.len()
+            );
+        }
+        return decode_primitive_value(ty, header, &field.name);
+    }
+
+    if let Some(nested_frame) = message_frame_layout(&self_description.message_frames, ty)? {
+        if nested_frame.header_size_bytes != header.len() {
+            anyhow::bail!(
+                "field `{}` type `{}` expects {} header bytes but self-description declares {} bytes",
+                field.name,
+                ty,
+                nested_frame.header_size_bytes,
+                header.len()
+            );
+        }
+        return decode_frame_message_json(self_description, nested_frame, header)
+            .with_context(|| format!("field `{}` expects nested `{ty}` object", field.name));
+    }
+
+    if let Some(nested) = message_abi_layout(&self_description.message_abi, ty)? {
+        if nested.size_bytes != header.len() {
+            anyhow::bail!(
+                "field `{}` type `{}` expects {} header bytes but self-description declares {} bytes",
+                field.name,
+                ty,
+                nested.size_bytes,
+                header.len()
+            );
+        }
+        return decode_fixed_message_json(&self_description.message_abi, nested, header)
+            .with_context(|| format!("field `{}` expects nested `{ty}` object", field.name));
+    }
+
+    anyhow::bail!(
+        "field `{}` has unsupported canonical frame type `{ty}`",
+        field.name
+    )
+}
+
+fn decode_tail_block<'a>(
+    decoder: &mut flowrt::FrameDecoder<'a>,
+    field: &SelfDescriptionFrameField,
+    header: &[u8],
+) -> Result<&'a [u8]> {
+    if header.len() != flowrt::VAR_SPAN_WIRE_SIZE {
+        anyhow::bail!(
+            "field `{}` type `{}` expects {} header bytes but self-description declares {} bytes",
+            field.name,
+            field.ty,
+            flowrt::VAR_SPAN_WIRE_SIZE,
+            header.len()
+        );
+    }
+    let span = flowrt::VarSpan::decode(header).map_err(|err| {
+        anyhow::anyhow!("field `{}` has invalid variable span: {err}", field.name)
+    })?;
+    let block = decoder.read_block(span).map_err(|err| {
+        anyhow::anyhow!(
+            "field `{}` has invalid variable tail block: {err}",
+            field.name
+        )
+    })?;
+    if let Some(max) = field.tail_max_bytes
+        && block.len() > max
+    {
+        anyhow::bail!(
+            "field `{}` length {} exceeds self-description tail max {}",
+            field.name,
+            block.len(),
+            max
+        );
+    }
+    Ok(block)
 }
 
 fn encode_frame_field_value(
@@ -349,6 +546,29 @@ fn decode_base64(text: &str, path: &str) -> Result<Vec<u8>> {
         }
     }
     Ok(output)
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        output.push(TABLE[(b0 >> 2) as usize] as char);
+        output.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
 }
 
 fn expect_json_object<'a>(
