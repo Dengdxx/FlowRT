@@ -104,8 +104,8 @@ pub enum FormatError {
         max: usize,
         ty: String,
     },
-    #[error("legacy bounded sequence type `{ty}` is not supported")]
-    LegacyBoundedSequence { ty: String },
+    #[error("invalid variable field max in `{ty}`")]
+    InvalidVariableMax { ty: String },
     #[error("invalid fixed array type `{ty}`")]
     InvalidFixedArrayType { ty: String },
     #[error("invalid fixed array length in `{ty}`")]
@@ -243,7 +243,7 @@ fn format_frame_field_value(
     options: FrameFormatOptions,
 ) -> Result<String, FormatError> {
     let ty = field.ty.trim();
-    if ty == "string" {
+    if is_variable_scalar_type(ty, "string")? {
         let block = frame_tail_block(field, header_bytes, tail)?;
         let text = std::str::from_utf8(block).map_err(|source| FormatError::Utf8 {
             name: field.name.clone(),
@@ -254,7 +254,7 @@ fn format_frame_field_value(
             source,
         });
     }
-    if ty == "bytes" {
+    if is_variable_scalar_type(ty, "bytes")? {
         let block = frame_tail_block(field, header_bytes, tail)?;
         return Ok(format!("0x{}", hex_bytes(block)));
     }
@@ -402,10 +402,44 @@ fn parse_sequence_type(ty: &str) -> Result<Option<&str>, FormatError> {
     else {
         return Ok(None);
     };
-    if inner.contains(",max=") {
-        return Err(FormatError::LegacyBoundedSequence { ty: ty.to_string() });
+    let inner = inner.trim();
+    let element = if let Some((element, max)) = inner.rsplit_once(",max=") {
+        let max = max
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| FormatError::InvalidVariableMax { ty: ty.to_string() })?;
+        if max == 0 {
+            return Err(FormatError::InvalidVariableMax { ty: ty.to_string() });
+        }
+        element.trim()
+    } else {
+        inner
+    };
+    if element.is_empty() {
+        return Err(FormatError::UnsupportedSequenceElement { ty: ty.to_string() });
     }
-    Ok(Some(inner.trim()))
+    Ok(Some(element))
+}
+
+fn is_variable_scalar_type(ty: &str, base: &str) -> Result<bool, FormatError> {
+    if ty == base {
+        return Ok(true);
+    }
+    let Some(max) = ty
+        .strip_prefix(base)
+        .and_then(|value| value.strip_prefix("<max="))
+        .and_then(|value| value.strip_suffix('>'))
+    else {
+        return Ok(false);
+    };
+    let max = max
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| FormatError::InvalidVariableMax { ty: ty.to_string() })?;
+    if max == 0 {
+        return Err(FormatError::InvalidVariableMax { ty: ty.to_string() });
+    }
+    Ok(true)
 }
 
 fn format_fixed_abi_value(
@@ -786,13 +820,27 @@ mod tests {
     }
 
     #[test]
-    fn legacy_bounded_sequence_returns_error() {
-        let fields = [frame_field("x", "sequence<u32,max=10>", 0, 8, None)];
+    fn format_frame_bounded_variable_fields() {
+        let fields = [
+            frame_field("name", "string<max=16>", 0, 8, Some(16)),
+            frame_field("data", "bytes<max=8>", 8, 8, Some(8)),
+            frame_field("vals", "sequence<u32,max=4>", 16, 8, Some(16)),
+        ];
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
-        let err = format_frame_fields(&fields, 8, &payload).unwrap_err();
-        assert!(matches!(err, FormatError::LegacyBoundedSequence { .. }));
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&8u32.to_le_bytes());
+        payload.extend_from_slice(&8u32.to_le_bytes());
+        payload.extend_from_slice(b"hello");
+        payload.extend_from_slice(&[0xde, 0xad, 0xbe]);
+        payload.extend_from_slice(&100u32.to_le_bytes());
+        payload.extend_from_slice(&200u32.to_le_bytes());
+
+        let result = format_frame_fields(&fields, 24, &payload).unwrap();
+
+        assert_eq!(result, "name=\"hello\",data=0xdeadbe,vals=[100,200]");
     }
 
     #[test]

@@ -605,7 +605,9 @@ worker 并发执行，只是 transport commit 留在 scheduler 线程。`flowrt 
 transport commit 线程亲和。`v0.10.1` 收紧了 CLI
 工程化细节：
 boundary input 注入优先使用 canonical frame layout，zenoh/boundary echo 优先按
-canonical frame 解码而 inproc fixed channel 继续按 native Message ABI 解码；显式
+canonical frame 解码而 inproc fixed channel 继续按 native Message ABI 解码；bounded
+`bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>` 按 generated self-description
+使用同一 canonical frame formatter；显式
 `--socket` 指向 FlowRT 管理目录内 stale runtime socket 时，self-description 和静态
 image hash 校验路径会删除已确认失效的 socket 并返回明确错误；native C++ build 现在会
 应用 host toolchain profile 的编译/链接选项，native pkg-config 通过 `PKG_CONFIG_PATH`
