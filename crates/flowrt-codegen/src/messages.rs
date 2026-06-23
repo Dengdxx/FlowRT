@@ -66,6 +66,15 @@ fn collect_type_dependencies(expr: &TypeExpr, dependencies: &mut BTreeSet<String
     }
 }
 
+fn contract_has_operation_payloads(contract: &ContractIr) -> bool {
+    contract.components.iter().any(|component| {
+        !component.operation_clients.is_empty() || !component.operation_servers.is_empty()
+    }) || contract
+        .graphs
+        .iter()
+        .any(|graph| !graph.operations.is_empty())
+}
+
 pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
@@ -77,7 +86,8 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
     let needs_wire_codec = contract_uses_backend(contract, "zenoh")
         || contract_uses_backend(contract, "iox2")
         || contract_has_variable_messages(contract)
-        || contract_has_boundary_endpoints(contract);
+        || contract_has_boundary_endpoints(contract)
+        || contract_has_operation_payloads(contract);
     let frame_descriptor_messages = frame_descriptor_message_names(contract);
     for ty in ordered_types(contract) {
         let variable_message = type_contains_variable_data(
@@ -125,7 +135,8 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
     let needs_wire_codec = contract_uses_backend(contract, "zenoh")
         || contract_uses_backend(contract, "iox2")
         || contract_has_variable_messages(contract)
-        || contract_has_boundary_endpoints(contract);
+        || contract_has_boundary_endpoints(contract)
+        || contract_has_operation_payloads(contract);
     let ordered_types = ordered_types(contract);
     let needs_zero_copy_derive = needs_iox2_type_name
         && ordered_types.iter().any(|ty| {

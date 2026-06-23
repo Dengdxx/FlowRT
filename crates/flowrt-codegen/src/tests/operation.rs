@@ -118,6 +118,43 @@ fn rust_operation_server_handler_method_is_generated() {
     );
 }
 
+/// Operation goal/feedback/result 进入 runtime 与 CLI control-plane payload，inproc 也需要
+/// fixed message WireCodec 才能通过 FrameCodec 自动实现。
+#[test]
+fn operation_fixed_messages_emit_frame_codec_primitives_for_inproc() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+
+    let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+    assert!(
+        rust_messages.contains("impl flowrt::WireCodec for PlanGoal"),
+        "Rust Operation goal must implement WireCodec for FrameCodec.\n\n{rust_messages}"
+    );
+    assert!(
+        rust_messages.contains("impl flowrt::WireCodec for PlanFeedback"),
+        "Rust Operation feedback must implement WireCodec for progress publish payloads.\n\n{rust_messages}"
+    );
+    assert!(
+        rust_messages.contains("impl flowrt::WireCodec for PlanResult"),
+        "Rust Operation result must implement WireCodec for result payloads.\n\n{rust_messages}"
+    );
+
+    let cpp_source = RUST_OPERATION_RSDL.replace("language = \"rust\"", "language = \"cpp\"");
+    let cpp_contract = contract_from_source(&cpp_source);
+    let cpp_bundle = emit_artifacts(&cpp_contract).unwrap();
+    let cpp_messages = artifact_content(&cpp_bundle, "cpp/include/flowrt_app/messages.hpp");
+    assert!(
+        cpp_messages.contains("static constexpr std::size_t wire_size() noexcept"),
+        "C++ fixed Operation messages must expose wire codec methods for FrameCodec.\n\n{cpp_messages}"
+    );
+    assert!(
+        cpp_messages.contains("static PlanGoal decode_wire")
+            && cpp_messages.contains("static PlanFeedback decode_wire")
+            && cpp_messages.contains("static PlanResult decode_wire"),
+        "C++ Operation goal/feedback/result must all be decodable from canonical wire payloads.\n\n{cpp_messages}"
+    );
+}
+
 /// Runtime shell 必须把 Operation lower 成稳定命名的内部 endpoint，并注入 client handle。
 #[test]
 fn rust_runtime_shell_lowers_operation_to_internal_endpoints() {
