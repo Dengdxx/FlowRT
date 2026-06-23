@@ -106,6 +106,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   C++ `ZenohOperationServer` 也提供 shared-session `open(...)`，runtime zenoh smoke 已覆盖真实
   SDK path 下 remote Operation `status`、`operation_start`、`operation_status`、
   `operation_cancel`、`operation_result` 和 `operation_observe` queryable。
+  `flowrt-cli` 远程 Operation JSON 回归测试用显式 loopback zenoh client/server session 覆盖
+  `start/status/cancel/result/follow` 输出、runtime target 和 typed progress/result payload
+  解码，避免只由底层 runtime helper 证明远程 queryable。
   Operation start/cancel accepted 后会进入 recorder command event，`flowrt replay --file
   <recording.mcap>` 可读取 operation command timeline 并重新驱动 start/cancel；
   progress/result/error 仍只作为 observation evidence，不参与重放。

@@ -137,7 +137,7 @@ impl ZenohParamsServer {
 
 /// 远程 Operation queryable 服务端。
 ///
-/// 注册到 zenoh session 后，响应远程 Operation status/cancel 请求，复用本机
+/// 注册到 zenoh session 后，响应远程 Operation 控制面请求，复用本机
 /// `IntrospectionState` 的 invocation 查找、handler registry 和 cached state fallback。
 pub struct ZenohOperationServer {
     key_expr: String,

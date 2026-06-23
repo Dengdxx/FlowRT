@@ -38,5 +38,6 @@ use zenoh::Wait;
 mod echo;
 mod live_params;
 mod pub_cmd;
+mod remote_operation;
 mod remote_params;
 mod replay;

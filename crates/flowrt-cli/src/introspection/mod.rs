@@ -1480,19 +1480,37 @@ pub(crate) fn remote_operation_start_json(
     runtime_key_expr: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> Result<String> {
+    let session = open_zenoh_operation_session()?;
+    remote_operation_start_json_with_session(
+        &session,
+        image,
+        name,
+        raw_json,
+        runtime_key_expr,
+        timeout_ms,
+    )
+}
+
+pub(crate) fn remote_operation_start_json_with_session(
+    session: &zenoh::Session,
+    image: &Path,
+    name: &str,
+    raw_json: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<String> {
     let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
     let operation = find_operation_endpoint(&self_description, name)?;
     let payload = encode_boundary_json(&self_description, name, &operation.goal_type, raw_json)?;
     let request_timeout_ms = 5000;
-    let session = open_zenoh_operation_session()?;
     let runtime = select_remote_operation_runtime_for_request(
-        &session,
+        session,
         &self_description_hash,
         runtime_key_expr,
         request_timeout_ms,
     )?;
     let response = flowrt::request_remote_operation_start(
-        &session,
+        session,
         &runtime.key_expr,
         name,
         payload,
@@ -3456,14 +3474,30 @@ pub(crate) fn remote_operation_status_json(
     timeout_ms: u64,
 ) -> Result<String> {
     let session = open_zenoh_operation_session()?;
-    let runtime = select_remote_operation_runtime_for_request(
+    remote_operation_status_json_with_session(
         &session,
+        self_description_hash,
+        operation_id,
+        runtime_key_expr,
+        timeout_ms,
+    )
+}
+
+pub(crate) fn remote_operation_status_json_with_session(
+    session: &zenoh::Session,
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let runtime = select_remote_operation_runtime_for_request(
+        session,
         self_description_hash,
         runtime_key_expr,
         timeout_ms,
     )?;
     let response = flowrt::request_remote_operation_status(
-        &session,
+        session,
         &runtime.key_expr,
         operation_id,
         timeout_ms,
@@ -3548,14 +3582,30 @@ pub(crate) fn remote_operation_cancel_json(
     timeout_ms: u64,
 ) -> Result<String> {
     let session = open_zenoh_operation_session()?;
-    let runtime = select_remote_operation_runtime_for_request(
+    remote_operation_cancel_json_with_session(
         &session,
+        self_description_hash,
+        operation_id,
+        runtime_key_expr,
+        timeout_ms,
+    )
+}
+
+pub(crate) fn remote_operation_cancel_json_with_session(
+    session: &zenoh::Session,
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let runtime = select_remote_operation_runtime_for_request(
+        session,
         self_description_hash,
         runtime_key_expr,
         timeout_ms,
     )?;
     let response = flowrt::request_remote_operation_cancel(
-        &session,
+        session,
         &runtime.key_expr,
         operation_id,
         timeout_ms,
@@ -3637,14 +3687,32 @@ fn remote_operation_result_json(
     timeout_ms: u64,
 ) -> Result<String> {
     let session = open_zenoh_operation_session()?;
-    let runtime = select_remote_operation_runtime_for_request(
+    remote_operation_result_json_with_session(
         &session,
+        self_description,
+        self_description_hash,
+        operation_id,
+        runtime_key_expr,
+        timeout_ms,
+    )
+}
+
+pub(crate) fn remote_operation_result_json_with_session(
+    session: &zenoh::Session,
+    self_description: &SelfDescription,
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let runtime = select_remote_operation_runtime_for_request(
+        session,
         self_description_hash,
         runtime_key_expr,
         timeout_ms,
     )?;
     let response = flowrt::request_remote_operation_result(
-        &session,
+        session,
         &runtime.key_expr,
         operation_id,
         timeout_ms,
@@ -3740,8 +3808,26 @@ fn remote_operation_follow_json(
     timeout_ms: u64,
 ) -> Result<String> {
     let session = open_zenoh_operation_session()?;
-    let runtime = select_remote_operation_runtime_for_request(
+    remote_operation_follow_json_with_session(
         &session,
+        self_description,
+        self_description_hash,
+        operation_id,
+        runtime_key_expr,
+        timeout_ms,
+    )
+}
+
+pub(crate) fn remote_operation_follow_json_with_session(
+    session: &zenoh::Session,
+    self_description: &SelfDescription,
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let runtime = select_remote_operation_runtime_for_request(
+        session,
         self_description_hash,
         runtime_key_expr,
         timeout_ms,
@@ -3750,7 +3836,7 @@ fn remote_operation_follow_json(
     let mut all_events = Vec::new();
     let terminal = loop {
         let response = flowrt::request_remote_operation_observe(
-            &session,
+            session,
             &runtime.key_expr,
             operation_id,
             cursor,
