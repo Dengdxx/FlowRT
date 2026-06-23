@@ -23,6 +23,9 @@ generated dataflow、Service、Operation 和 bounded variable frame Rust/C++ she
 v0.25.0 iox2 focused smoke 的真实 SDK 分支会启动 generated supervisor 并轮询 live
 Operation counters，覆盖 Rust `iox2_service_demo` Operation 真实成功路径和 generated C++
 bounded Operation start frame 经 iox2 定容 slot 的 build/run 路径。
+Release Candidate workflow 会在该 smoke 前按 `scripts/deps.lock` 准备 locked
+`iceoryx2-cxx` C++ SDK prefix，并通过 `CMAKE_PREFIX_PATH` 提供给 source-tree generated
+C++ build，避免真实 SDK 分支依赖尚未生成的 deb package。
 generated self-description 的 `message_abi` / `message_frames` registry 现在统一使用 Contract
 IR canonical type id（例如 `module::Type`）作为协议和 CLI 主键；C++/Rust 生成名只作为语言
 binding name。boundary endpoint、dataflow channel、record/replay 和 `flowrt pub` / `flowrt echo`

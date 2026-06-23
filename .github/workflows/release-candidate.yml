@@ -552,7 +552,29 @@ jobs:
       - name: 安装 iceoryx2 构建依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++
+          sudo apt-get install -y cmake ninja-build g++ git dpkg-dev
+
+      - name: 缓存 CI iceoryx2 C++ SDK
+        uses: actions/cache@v4
+        with:
+          path: build/ci-iox2-cpp-sdk
+          key: flowrt-ci-iox2-cpp-sdk-${{ matrix.arch }}-${{ hashFiles('scripts/deps.lock', 'scripts/prepare-ci-iox2-cpp-sdk.sh') }}
+
+      - name: 准备 CI iceoryx2 C++ SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sdk_prefix="$(scripts/prepare-ci-iox2-cpp-sdk.sh)"
+          multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+          cmake_prefix_path="${sdk_prefix}:${sdk_prefix}/lib/${multiarch}/cmake"
+          if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
+            cmake_prefix_path="${cmake_prefix_path}:${CMAKE_PREFIX_PATH}"
+          fi
+          {
+            printf 'FLOWRT_CI_IOX2_CPP_SDK=%s\n' "$sdk_prefix"
+            printf 'CMAKE_PREFIX_PATH=%s\n' "$cmake_prefix_path"
+          } >> "$GITHUB_ENV"
 
       - name: v0.25.0 iox2 service/operation smoke
         shell: bash
