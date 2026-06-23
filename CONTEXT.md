@@ -5,24 +5,24 @@
 
 ## 当前版本背景
 
-当前 `master` 在 `v0.26.0 Transport Compile Evidence Matrix` 发布后继续做未发布硬化：
-不新增 RSDL、Contract IR 或 runtime 用户语义，只补强 generated shell 真编译证据网、
-Operation control-plane、record/replay command 投影、自描述嵌入生成与离线包 SDK 下载失败
-路径。用户侧仍只看到 FlowRT typed Service / Operation API 和常规
-`Vec` / `String` / `std::vector` / `std::string` 消息字段；`iox2` / `zenoh` 仍是
-FlowRT runtime API 之下的 backend 实现细节。
+当前 workspace 准备 `v0.27.0 Operation Control Plane Completion` 发布：本版本把
+`v0.26.0` 后的未发布 hardening 收束为 Operation control-plane、自描述 Message identity、
+record/replay command 投影、fault matrix 证据和 bounded variable frame 编解码闭环。不新增
+RSDL、Contract IR 或 runtime 用户语义；用户侧仍只看到 FlowRT typed Service / Operation
+API 和常规 `Vec` / `String` / `std::vector` / `std::string` 消息字段；`iox2` /
+`zenoh` 仍是 FlowRT runtime API 之下的 backend 实现细节。
 
-当前 workspace 版本为 `0.26.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
-CHANGELOG v0.26.0 release 段已随 tag 同步；后续变更记录在 `## 未发布`。`scripts/test-codegen-compile.sh`
-现在覆盖代表性 iox2 / zenoh generated dataflow、Service、Operation 和 bounded variable
-frame Rust/C++ shell 的真实编译，并先由覆盖自检确认所有带 runtime shell snapshot 的
-golden case 都已入网。C++ iox2 Service / Operation client handle 改为绑定 shared
-transport client，避免把 non-movable `Iox2ServiceClient` / `Iox2FrameServiceClient` 放入
-`std::optional`；C++ zenoh Service / Operation 在缺少 zenoh SDK 时不再引用底层
-`::zenoh::Session` 类型，继续走 runtime fail-fast overload。
-未发布 hardening 继续补齐真实运行证据：v0.25.0 iox2 focused smoke 的真实 SDK 分支会启动
-generated supervisor 并轮询 live Operation counters，覆盖 Rust `iox2_service_demo` Operation
-真实成功路径和 generated C++ bounded Operation start frame 经 iox2 定容 slot 的 build/run 路径。
+当前 workspace 版本为 `0.27.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
+CHANGELOG v0.27.0 release 段随发布分支同步；后续变更记录在 `## 未发布`。
+`scripts/test-v0270-operation-control-plane-smoke.sh` 是本版本 focused gate，覆盖
+Operation CLI、远程 zenoh queryable、bounded variable frame payload、fault matrix
+多 boundary input replay source、self-description canonical message identity 和 generated
+Operation 关键接线。`scripts/test-codegen-compile.sh` 继续覆盖代表性 iox2 / zenoh
+generated dataflow、Service、Operation 和 bounded variable frame Rust/C++ shell 的真实编译，
+并先由覆盖自检确认所有带 runtime shell snapshot 的 golden case 都已入网。
+v0.25.0 iox2 focused smoke 的真实 SDK 分支会启动 generated supervisor 并轮询 live
+Operation counters，覆盖 Rust `iox2_service_demo` Operation 真实成功路径和 generated C++
+bounded Operation start frame 经 iox2 定容 slot 的 build/run 路径。
 generated self-description 的 `message_abi` / `message_frames` registry 现在统一使用 Contract
 IR canonical type id（例如 `module::Type`）作为协议和 CLI 主键；C++/Rust 生成名只作为语言
 binding name。boundary endpoint、dataflow channel、record/replay 和 `flowrt pub` / `flowrt echo`
@@ -37,7 +37,15 @@ profile/default backend；profile 默认 `iox2` 遇到无界 payload edge 时自
 `zenoh`；显式 `backend = "iox2"` 遇到无界 payload 时由 validator fail-fast。有界 frame
 publish/call 超出字段上界时返回包含字段名与上界的错误，不截断。
 
-上一发布线为 `v0.25.2 Transport Route Health`：不新增 RSDL、Contract IR 或 runtime
+上一发布线为 `v0.26.0 Transport Compile Evidence Matrix`：不新增 RSDL、Contract IR 或
+runtime 用户语义，只把 generated shell 真编译证据网扩展到代表性 iox2 / zenoh dataflow、
+Service、Operation 和 bounded variable frame Rust/C++ shell。C++ iox2 Service /
+Operation client handle 改为绑定 shared transport client，避免把 non-movable
+`Iox2ServiceClient` / `Iox2FrameServiceClient` 放入 `std::optional`；C++ zenoh
+Service / Operation 在缺少 zenoh SDK 时不再引用底层 `::zenoh::Session` 类型，继续走
+runtime fail-fast overload。
+
+再上一发布线为 `v0.25.2 Transport Route Health`：不新增 RSDL、Contract IR 或 runtime
 用户语义，只把既有 transport dataflow publish 结果纳入与 inproc FIFO 对齐的 route health
 观测。transport dataflow publish 失败会按 route overflow policy 投影到统一 route counters：
 `drop_oldest` / `drop_newest` 增加 `dropped_samples`，`block` 增加 `backpressure`，
@@ -84,8 +92,8 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   空消息需区分口径：显式 `empty = true` 已支持零长度 wire payload；未声明
   `empty = true` 的隐式空 message struct 仍由 validator 拒绝。
 - 反馈环 init：literal init 仍限全 primitive 字段消息；嵌套字段和数组字段初值留待后续。
-- Operation 控制面：generated Operation runtime 已支持 inproc、zenoh，并在本版本接入
-  iox2；`flowrt op list/status/cancel` 是本机 introspection 控制面。未发布版本已接入
+- Operation 控制面：generated Operation runtime 已支持 inproc、zenoh，并在 v0.25.0 接入
+  iox2；`flowrt op list/status/cancel` 是本机 introspection 控制面。v0.27.0 已接入
   本机 `flowrt op start` 基座和 `OperationStatus` by id 请求，可用 self-description
   Message ABI 编码 goal JSON 并经 introspection socket 启动 generated Rust/C++ Operation，
   也可用 returned `operation_id` 精确查询 live invocation status。远程 zenoh Operation
@@ -144,7 +152,7 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   穷尽矩阵，新增 transport 分支仍需要按依赖可用性补 smoke 或显式 fail-fast 证据。
 - 故障注入：`status_error`、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop` 已进入 test-only deterministic injection / fault matrix 路径；生产随机
-  / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。未发布版本已修复
+  / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。v0.27.0 已修复
   `flowrt fault-matrix run` 的 replay source payload 生成：matrix runner 会为每个
   boundary input 按 Contract IR canonical frame layout 写入默认零值 payload，避免 fixed 或
   bounded variable frame boundary 以空 payload 或漏驱动伪装成有效回放样本。`fault-matrix
@@ -873,6 +881,12 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.23.1` | Backend Route Health Unification：`iox2` / `zenoh` dataflow route 的 endpoint `BackendHealthSnapshot` 进入 introspection route facts，`flowrt status` route 行展示 `backend_health_state`、错误、重连 attempt、下一次 retry 和 recoverable 状态；Rust generated shell 在 transport publish 后记录 route backend health，C++ runtime JSON / diagnostics 镜像字段；新增 route health focused smoke。 |
 | `v0.23.2` | C++ clang-tidy Gate：新增仓库级 `.clang-tidy` 与 focused smoke，CI 安装 clang-tidy 后 lint C++ runtime 默认 translation units 和 generated `cpp_counter_demo` runtime shell；首版启用低噪声 checks，关闭高噪声 ABI/POD/generic generated capture 不适配项。 |
 | `v0.23.3` | 既有缺口收束：global tick determinism、跨进程 FIFO feedback、standby failover、graph health metrics、fault injection kind、Operation zenoh/policy/retention、FrameDescriptor payload record、tracing exporter 和 C v0 params snapshot 完成本版实现或 validator fail-fast；新增 v0.23.3 focused smoke 与 readiness adapter。 |
+| `v0.24.0` | Fault Matrix Completion：把 global tick、fault injection kind、route health、standby failover 和 graph health 组合成可运行、可校验、可发布把关的 test-only fault matrix 证据。 |
+| `v0.25.0` | iox2 Service/Operation Transport：native Rust/C++ generated Service 与 Operation control path 支持 iox2，并放行有界 variable frame over iox2 定容 slot。 |
+| `v0.25.1` | Transport Evidence Hardening：真实 SDK 可用时构建 `zenoh_service_demo` 与 `iox2_service_demo`，补齐 generated transport app 多架构编译证据。 |
+| `v0.25.2` | Transport Route Health：transport dataflow publish 失败按 route overflow policy 进入统一 route health counters，Rust/C++ status schema 对齐。 |
+| `v0.26.0` | Transport Compile Evidence Matrix：codegen compile net 覆盖代表性 iox2 / zenoh dataflow、Service、Operation 和 bounded variable frame Rust/C++ shell。 |
+| `v0.27.0` | Operation Control Plane Completion：本机/远程 Operation start/status/cancel/result/follow、record/replay command、自描述 canonical message identity、fault matrix 多 boundary input 和 bounded frame CLI 编解码收束进发布门禁。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -1096,7 +1110,7 @@ Operation 观测路径沿用 FlowRT 自描述和本机 introspection socket：se
 内部 lowering refs；runtime status 记录 ready/running/queued、当前 operation id、
 当前 state、owner、deadline、成功/失败/取消/超时/抢占计数、最近事件、最近错误和
 最近状态转换时间；record 输出 state change、progress、result 和 error 事件；
-`flowrt op list/status/cancel` 提供本机观测和 cooperative cancel 控制面。未发布版本把
+`flowrt op list/status/cancel` 提供本机观测和 cooperative cancel 控制面。v0.27.0 把
 本机 `flowrt op start` 和 `OperationStatus` by id 接入同一 introspection command-plane：
 CLI 使用 self-description Message ABI 把 goal JSON 编码为 canonical payload，generated
 Rust/C++ shell 注册 start/status hook，并复用 typed Operation client 与 `OperationControl`
@@ -1105,7 +1119,7 @@ Rust/C++ shell 注册 start/status hook，并复用 typed Operation client 与 `
 `flowrt/op/<package>/<selfdesc_hash>/<pid>`；generated Rust/C++ shell 都会暴露该
 queryable，C++ inproc/iox2 app 仅在生成 CMake 找到 `zenohcxx::zenohc` 时启用 remote
 server，缺少 SDK 不影响本机 socket 控制面；C++ runtime 还提供 shared-session `open(...)`
-入口并由 zenoh SDK smoke 验证 query/reply JSON path。未发布版本还接入了 `OperationResult`
+入口并由 zenoh SDK smoke 验证 query/reply JSON path。v0.27.0 还接入了 `OperationResult`
 introspection 请求：generated Rust/C++ worker 不再丢弃 `OperationHandlerResult::Succeeded`
 返回值，而是把 typed result 编码为 canonical Message ABI payload，scheduler hidden task
 投影到 retained introspection result；`flowrt op result <operation_id> --image ...` 本机和

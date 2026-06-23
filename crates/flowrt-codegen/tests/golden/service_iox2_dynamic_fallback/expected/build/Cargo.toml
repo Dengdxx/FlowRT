@@ -11,7 +11,7 @@ name = "flowrt_app"
 path = "../rust/src/lib.rs"
 
 [dependencies]
-flowrt = { version = "0.26", features = ["iox2", "zenoh"] }
+flowrt = { version = "0.27", features = ["iox2", "zenoh"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

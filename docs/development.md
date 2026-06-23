@@ -37,6 +37,16 @@ variable frame generated shell 做语法或 crate 真编译；默认临时工作
 真实 SDK demo build/run：compile net 证明生成物可编译，`zenoh_service_demo`、
 `iox2_service_demo` 等安装后或 SDK smoke 才证明依赖解析、链接和运行路径可用。
 
+operation control-plane completion smoke：
+
+```bash
+scripts/test-v0270-operation-control-plane-smoke.sh
+```
+
+该 smoke 聚焦 `v0.27.0` 的发布缺口：本机/远程 Operation CLI、bounded variable frame
+payload 编解码、fault matrix 多 boundary input replay source、self-description canonical
+message identity 和 generated Operation 关键接线。
+
 VSCode / clangd：
 
 ```bash
