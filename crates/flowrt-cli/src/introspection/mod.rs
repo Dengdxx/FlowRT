@@ -1150,6 +1150,180 @@ pub(crate) fn operation_list(image: Option<&Path>, socket: Option<&Path>) -> Res
     Ok(operation_topology_summary(&self_description))
 }
 
+pub(crate) fn operation_list_json(image: Option<&Path>, socket: Option<&Path>) -> Result<String> {
+    let self_description = match image {
+        Some(image) => load_self_description(image)?,
+        None => {
+            let (self_description, _hash, _socket) = load_echo_context_from_live_socket(socket)?;
+            self_description
+        }
+    };
+    let operations = self_description
+        .graphs
+        .iter()
+        .flat_map(|graph| graph.operations.iter())
+        .collect::<Vec<_>>();
+    operation_json(&serde_json::json!({
+        "response": "operation_list",
+        "package": self_description.package.name,
+        "operations": operations,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct OperationStatusJsonEntry {
+    socket: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation: Option<flowrt::IntrospectionOperationStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn operation_json<T: Serialize>(value: &T) -> Result<String> {
+    serde_json::to_string_pretty(value).context("序列化 Operation JSON 失败")
+}
+
+fn operation_json_value_with_target(
+    response: &str,
+    operation_id: Option<&str>,
+    operation: &flowrt::IntrospectionOperationStatus,
+    socket: Option<&Path>,
+    runtime: Option<&RemoteRuntimeEntry>,
+) -> Result<String> {
+    let mut value = serde_json::json!({
+        "response": response,
+        "operation": operation,
+    });
+    if let Some(operation_id) = operation_id {
+        value["operation_id"] = serde_json::Value::String(operation_id.to_string());
+    }
+    if let Some(socket) = socket {
+        value["socket"] = serde_json::Value::String(socket.display().to_string());
+    }
+    if let Some(runtime) = runtime {
+        value["runtime"] = serde_json::Value::String(runtime.to_string());
+    }
+    operation_json(&value)
+}
+
+fn operation_started_json_value(
+    started: &flowrt::IntrospectionOperationStartStatus,
+    socket: Option<&Path>,
+    runtime: Option<&RemoteRuntimeEntry>,
+) -> Result<String> {
+    let mut value = serde_json::json!({
+        "response": "operation_started",
+        "operation_id": started.operation_id,
+        "operation": started.operation,
+    });
+    if let Some(socket) = socket {
+        value["socket"] = serde_json::Value::String(socket.display().to_string());
+    }
+    if let Some(runtime) = runtime {
+        value["runtime"] = serde_json::Value::String(runtime.to_string());
+    }
+    operation_json(&value)
+}
+
+fn decoded_operation_payload_value(
+    self_description: &SelfDescription,
+    operation_name: &str,
+    payload: &[u8],
+    payload_kind: &str,
+) -> Result<serde_json::Value> {
+    let operation = find_operation_endpoint(self_description, operation_name)?;
+    let message_type = match payload_kind {
+        "progress" => &operation.feedback_type,
+        "result" => &operation.result_type,
+        _ => anyhow::bail!("unknown Operation payload kind `{payload_kind}`"),
+    };
+    let raw_json = decode_message_json(self_description, message_type, payload)?;
+    serde_json::from_str(&raw_json).with_context(|| {
+        format!("decoded Operation `{operation_name}` {payload_kind} payload is not JSON")
+    })
+}
+
+fn operation_result_json_value(
+    self_description: &SelfDescription,
+    result: &flowrt::IntrospectionOperationResult,
+) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(result).context("序列化 Operation result JSON 失败")?;
+    if let Some(payload) = &result.payload {
+        let decoded = decoded_operation_payload_value(
+            self_description,
+            &result.operation,
+            payload,
+            "result",
+        )?;
+        value["value"] = decoded;
+    }
+    Ok(value)
+}
+
+fn operation_event_json_value(
+    self_description: &SelfDescription,
+    event: &flowrt::IntrospectionOperationEvent,
+) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(event).context("序列化 Operation event JSON 失败")?;
+    if let Some(payload) = &event.payload {
+        match event.kind.as_str() {
+            "progress" | "result" => {
+                let decoded = decoded_operation_payload_value(
+                    self_description,
+                    &event.operation,
+                    payload,
+                    &event.kind,
+                )?;
+                value["value"] = decoded;
+            }
+            _ => {}
+        }
+    }
+    Ok(value)
+}
+
+fn operation_result_json_response(
+    self_description: &SelfDescription,
+    result: &flowrt::IntrospectionOperationResult,
+    runtime: Option<&RemoteRuntimeEntry>,
+) -> Result<String> {
+    let mut value = serde_json::json!({
+        "response": "operation_result",
+        "result": operation_result_json_value(self_description, result)?,
+    });
+    if let Some(runtime) = runtime {
+        value["runtime"] = serde_json::Value::String(runtime.to_string());
+    }
+    operation_json(&value)
+}
+
+fn operation_events_json_response(
+    self_description: &SelfDescription,
+    operation_id: &str,
+    events: &[flowrt::IntrospectionOperationEvent],
+    next_sequence: u64,
+    terminal: bool,
+    runtime: Option<&RemoteRuntimeEntry>,
+) -> Result<String> {
+    let events = events
+        .iter()
+        .map(|event| operation_event_json_value(self_description, event))
+        .collect::<Result<Vec<_>>>()?;
+    let mut value = serde_json::json!({
+        "response": "operation_events",
+        "operation_id": operation_id,
+        "events": events,
+        "next_sequence": next_sequence,
+        "terminal": terminal,
+    });
+    if let Some(runtime) = runtime {
+        value["runtime"] = serde_json::Value::String(runtime.to_string());
+    }
+    operation_json(&value)
+}
+
 pub(crate) fn operation_start(
     image: &Path,
     name: &str,
@@ -1176,6 +1350,55 @@ pub(crate) fn operation_start(
                 started.operation_id,
                 format_operation_status(&started.operation, Some(&socket))
             ))
+        }
+        Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+            anyhow::bail!(
+                "failed to start FlowRT operation `{}` on `{}`: {}",
+                name,
+                socket.display(),
+                message
+            )
+        }
+        Ok(_) => {
+            anyhow::bail!(
+                "failed to start FlowRT operation `{}` on `{}`: unexpected introspection response",
+                name,
+                socket.display()
+            )
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "failed to start FlowRT operation `{}` on `{}`: {}",
+                name,
+                socket.display(),
+                error
+            )
+        }
+    }
+}
+
+pub(crate) fn operation_start_json(
+    image: &Path,
+    name: &str,
+    raw_json: &str,
+    socket: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let operation = find_operation_endpoint(&self_description, name)?;
+    let payload = encode_boundary_json(&self_description, name, &operation.goal_type, raw_json)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    match flowrt::request_operation_start_with_timeout(
+        &socket,
+        name,
+        payload,
+        timeout_ms,
+        Some("flowrt.cli".to_string()),
+        LOCAL_INTROSPECTION_TIMEOUT,
+    ) {
+        Ok(flowrt::IntrospectionResponse::OperationStarted { handshake, started }) => {
+            ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+            operation_started_json_value(&started, Some(&socket), None)
         }
         Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
             anyhow::bail!(
@@ -1250,6 +1473,48 @@ pub(crate) fn remote_operation_start(
     }
 }
 
+pub(crate) fn remote_operation_start_json(
+    image: &Path,
+    name: &str,
+    raw_json: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let operation = find_operation_endpoint(&self_description, name)?;
+    let payload = encode_boundary_json(&self_description, name, &operation.goal_type, raw_json)?;
+    let request_timeout_ms = 5000;
+    let session = open_zenoh_operation_session()?;
+    let runtime = select_remote_operation_runtime_for_request(
+        &session,
+        &self_description_hash,
+        runtime_key_expr,
+        request_timeout_ms,
+    )?;
+    let response = flowrt::request_remote_operation_start(
+        &session,
+        &runtime.key_expr,
+        name,
+        payload,
+        timeout_ms,
+        Some("flowrt.cli".to_string()),
+        request_timeout_ms,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!("failed to start remote operation `{name}` via `{runtime}`: {error}")
+    })?;
+    match response {
+        flowrt::IntrospectionResponse::OperationStarted { handshake, started } => {
+            ensure_remote_handshake(&handshake, &self_description_hash, &runtime)?;
+            operation_started_json_value(&started, None, Some(&runtime))
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!("failed to start remote operation `{name}` via `{runtime}`: {message}");
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
 fn find_operation_endpoint<'a>(
     self_description: &'a SelfDescription,
     name: &str,
@@ -1276,6 +1541,65 @@ pub(crate) fn operation_status_summary(
         None => discover_cli_runtime_sockets()?,
     };
     operation_status_summary_for_sockets(name, sockets)
+}
+
+pub(crate) fn operation_status_json(socket: Option<&Path>, name: Option<&str>) -> Result<String> {
+    let sockets = match socket {
+        Some(socket) => vec![socket.to_path_buf()],
+        None => discover_cli_runtime_sockets()?,
+    };
+    if let Some(operation_id) = name
+        && looks_like_operation_id(operation_id)
+    {
+        return operation_status_by_id_json_for_sockets(operation_id, sockets);
+    }
+
+    let mut entries = Vec::new();
+    for socket in sockets {
+        match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
+            Ok(flowrt::IntrospectionResponse::Status { status, .. }) => {
+                for operation in status.operations {
+                    if name.is_none_or(|name| operation.name == name) {
+                        entries.push(OperationStatusJsonEntry {
+                            socket: socket.display().to_string(),
+                            operation_id: None,
+                            operation: Some(operation),
+                            error: None,
+                        });
+                    }
+                }
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                entries.push(OperationStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    operation_id: None,
+                    operation: None,
+                    error: Some(message),
+                });
+            }
+            Ok(_) => {
+                entries.push(OperationStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    operation_id: None,
+                    operation: None,
+                    error: Some("unexpected introspection response".to_string()),
+                });
+            }
+            Err(error) => {
+                entries.push(OperationStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    operation_id: None,
+                    operation: None,
+                    error: Some(error.to_string()),
+                });
+            }
+        }
+    }
+    operation_json(&serde_json::json!({
+        "response": "operation_status",
+        "name": name,
+        "entries": entries,
+    }))
 }
 
 pub(crate) fn operation_status_summary_for_sockets(
@@ -1368,6 +1692,58 @@ fn operation_status_by_id_for_sockets(operation_id: &str, sockets: Vec<PathBuf>)
     }
 }
 
+fn operation_status_by_id_json_for_sockets(
+    operation_id: &str,
+    sockets: Vec<PathBuf>,
+) -> Result<String> {
+    let mut entries = Vec::new();
+    for socket in sockets {
+        match flowrt::request_operation_status_with_timeout(
+            &socket,
+            operation_id,
+            LOCAL_INTROSPECTION_TIMEOUT,
+        ) {
+            Ok(flowrt::IntrospectionResponse::OperationValue { operation, .. }) => {
+                entries.push(OperationStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    operation_id: Some(operation_id.to_string()),
+                    operation: Some(operation),
+                    error: None,
+                });
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                entries.push(OperationStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    operation_id: Some(operation_id.to_string()),
+                    operation: None,
+                    error: Some(message),
+                });
+            }
+            Ok(_) => {
+                entries.push(OperationStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    operation_id: Some(operation_id.to_string()),
+                    operation: None,
+                    error: Some("unexpected introspection response".to_string()),
+                });
+            }
+            Err(error) => {
+                entries.push(OperationStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    operation_id: Some(operation_id.to_string()),
+                    operation: None,
+                    error: Some(error.to_string()),
+                });
+            }
+        }
+    }
+    operation_json(&serde_json::json!({
+        "response": "operation_status",
+        "operation_id": operation_id,
+        "entries": entries,
+    }))
+}
+
 fn looks_like_operation_id(value: &str) -> bool {
     let mut parts = value.split(':');
     let Some(operation_key) = parts.next() else {
@@ -1391,6 +1767,67 @@ pub(crate) fn operation_cancel(operation_id: &str, socket: Option<&Path>) -> Res
     }
     let sockets = discover_cli_runtime_sockets()?;
     operation_cancel_for_sockets(operation_id, sockets)
+}
+
+pub(crate) fn operation_cancel_json(operation_id: &str, socket: Option<&Path>) -> Result<String> {
+    if let Some(socket) = socket {
+        return operation_cancel_on_socket_json(operation_id, socket);
+    }
+    let sockets = discover_cli_runtime_sockets()?;
+    let mut candidates = Vec::new();
+    let mut errors = Vec::new();
+    for socket in sockets {
+        match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
+            Ok(flowrt::IntrospectionResponse::Status { status, .. }) => {
+                if status.operations.iter().any(|operation| {
+                    operation
+                        .current_operation_ids
+                        .iter()
+                        .any(|id| id == operation_id)
+                }) {
+                    candidates.push(socket);
+                }
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                errors.push(format!("{}: {message}", socket.display()));
+            }
+            Ok(_) => {
+                errors.push(format!(
+                    "{}: unexpected introspection response",
+                    socket.display()
+                ));
+            }
+            Err(error) => {
+                errors.push(format!("{}: {error}", socket.display()));
+            }
+        }
+    }
+    match candidates.len() {
+        0 => {
+            if errors.is_empty() {
+                anyhow::bail!("no live FlowRT process reports operation `{operation_id}`")
+            }
+            anyhow::bail!(
+                "no live FlowRT process reports operation `{}`; status errors: {}",
+                operation_id,
+                errors.join("; ")
+            )
+        }
+        1 => {
+            let socket = candidates.remove(0);
+            operation_cancel_on_socket_json(operation_id, &socket)
+        }
+        _ => {
+            let sockets = candidates
+                .iter()
+                .map(|socket| socket.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "multiple live FlowRT processes report operation `{operation_id}`: {sockets}; pass `--socket <path>` to choose one"
+            )
+        }
+    }
 }
 
 pub(crate) fn operation_cancel_for_sockets(
@@ -1490,6 +1927,47 @@ fn operation_cancel_on_socket(operation_id: &str, socket: &Path) -> Result<Strin
     }
 }
 
+fn operation_cancel_on_socket_json(operation_id: &str, socket: &Path) -> Result<String> {
+    match flowrt::request_operation_cancel_with_timeout(
+        socket,
+        operation_id,
+        LOCAL_INTROSPECTION_TIMEOUT,
+    ) {
+        Ok(flowrt::IntrospectionResponse::OperationValue { operation, .. }) => {
+            operation_json_value_with_target(
+                "operation_value",
+                Some(operation_id),
+                &operation,
+                Some(socket),
+                None,
+            )
+        }
+        Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+            anyhow::bail!(
+                "failed to cancel FlowRT operation `{}` on `{}`: {}",
+                operation_id,
+                socket.display(),
+                message
+            )
+        }
+        Ok(_) => {
+            anyhow::bail!(
+                "failed to cancel FlowRT operation `{}` on `{}`: unexpected introspection response",
+                operation_id,
+                socket.display()
+            )
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "failed to cancel FlowRT operation `{}` on `{}`: {}",
+                operation_id,
+                socket.display(),
+                error
+            )
+        }
+    }
+}
+
 pub(crate) fn operation_result(
     image: &Path,
     operation_id: &str,
@@ -1518,6 +1996,61 @@ pub(crate) fn operation_result(
         Ok(flowrt::IntrospectionResponse::OperationResult { handshake, result }) => {
             ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
             format_operation_result(&self_description, &result)
+        }
+        Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+            anyhow::bail!(
+                "failed to get FlowRT operation result `{}` from `{}`: {}",
+                operation_id,
+                socket.display(),
+                message
+            )
+        }
+        Ok(_) => {
+            anyhow::bail!(
+                "failed to get FlowRT operation result `{}` from `{}`: unexpected introspection response",
+                operation_id,
+                socket.display()
+            )
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "failed to get FlowRT operation result `{}` from `{}`: {}",
+                operation_id,
+                socket.display(),
+                error
+            )
+        }
+    }
+}
+
+pub(crate) fn operation_result_json(
+    image: &Path,
+    operation_id: &str,
+    socket: Option<&Path>,
+    remote: bool,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    if remote {
+        return remote_operation_result_json(
+            &self_description,
+            &self_description_hash,
+            operation_id,
+            runtime_key_expr,
+            timeout_ms,
+        );
+    }
+
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    match flowrt::request_operation_result_with_timeout(
+        &socket,
+        operation_id,
+        LOCAL_INTROSPECTION_TIMEOUT,
+    ) {
+        Ok(flowrt::IntrospectionResponse::OperationResult { handshake, result }) => {
+            ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+            operation_result_json_response(&self_description, &result, None)
         }
         Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
             anyhow::bail!(
@@ -1622,6 +2155,90 @@ pub(crate) fn operation_follow(
         }
     }
     Ok(lines.join("\n"))
+}
+
+pub(crate) fn operation_follow_json(
+    image: &Path,
+    operation_id: &str,
+    socket: Option<&Path>,
+    remote: bool,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    if remote {
+        return remote_operation_follow_json(
+            &self_description,
+            &self_description_hash,
+            operation_id,
+            runtime_key_expr,
+            timeout_ms,
+        );
+    }
+
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let mut cursor = 0;
+    let mut all_events = Vec::new();
+    let terminal = loop {
+        let response = flowrt::request_operation_observe_with_timeout(
+            &socket,
+            operation_id,
+            cursor,
+            Some(64),
+            LOCAL_INTROSPECTION_TIMEOUT,
+        );
+        match response {
+            Ok(flowrt::IntrospectionResponse::OperationEvents {
+                handshake,
+                events,
+                next_sequence,
+                terminal: response_terminal,
+                ..
+            }) => {
+                ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+                let event_count = events.len();
+                all_events.extend(events);
+                cursor = next_sequence;
+                if response_terminal && event_count < 64 {
+                    break response_terminal;
+                }
+                if event_count == 0 {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                anyhow::bail!(
+                    "failed to follow FlowRT operation `{}` from `{}`: {}",
+                    operation_id,
+                    socket.display(),
+                    message
+                )
+            }
+            Ok(_) => {
+                anyhow::bail!(
+                    "failed to follow FlowRT operation `{}` from `{}`: unexpected introspection response",
+                    operation_id,
+                    socket.display()
+                )
+            }
+            Err(error) => {
+                anyhow::bail!(
+                    "failed to follow FlowRT operation `{}` from `{}`: {}",
+                    operation_id,
+                    socket.display(),
+                    error
+                )
+            }
+        }
+    };
+    operation_events_json_response(
+        &self_description,
+        operation_id,
+        &all_events,
+        cursor,
+        terminal,
+        None,
+    )
 }
 
 fn format_operation_result(
@@ -2832,6 +3449,51 @@ pub(crate) fn remote_operation_status(
     }
 }
 
+pub(crate) fn remote_operation_status_json(
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let session = open_zenoh_operation_session()?;
+    let runtime = select_remote_operation_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
+    let response = flowrt::request_remote_operation_status(
+        &session,
+        &runtime.key_expr,
+        operation_id,
+        timeout_ms,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!("failed to get remote operation `{operation_id}` from `{runtime}`: {error}")
+    })?;
+    match response {
+        flowrt::IntrospectionResponse::OperationValue {
+            handshake,
+            operation,
+        } => {
+            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            operation_json_value_with_target(
+                "operation_value",
+                Some(operation_id),
+                &operation,
+                None,
+                Some(&runtime),
+            )
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to get remote operation `{operation_id}` from `{runtime}`: {message}"
+            );
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
 /// 请求远程 runtime 取消 Operation invocation。
 pub(crate) fn remote_operation_cancel(
     self_description_hash: &str,
@@ -2879,6 +3541,53 @@ pub(crate) fn remote_operation_cancel(
     }
 }
 
+pub(crate) fn remote_operation_cancel_json(
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let session = open_zenoh_operation_session()?;
+    let runtime = select_remote_operation_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
+    let response = flowrt::request_remote_operation_cancel(
+        &session,
+        &runtime.key_expr,
+        operation_id,
+        timeout_ms,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "failed to cancel remote operation `{operation_id}` via `{runtime}`: {error}"
+        )
+    })?;
+    match response {
+        flowrt::IntrospectionResponse::OperationValue {
+            handshake,
+            operation,
+        } => {
+            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            operation_json_value_with_target(
+                "operation_value",
+                Some(operation_id),
+                &operation,
+                None,
+                Some(&runtime),
+            )
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to cancel remote operation `{operation_id}` via `{runtime}`: {message}"
+            );
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
 /// 请求远程 runtime Operation invocation result。
 fn remote_operation_result(
     self_description: &SelfDescription,
@@ -2910,6 +3619,45 @@ fn remote_operation_result(
             ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
             eprintln!("target: {runtime}");
             format_operation_result(self_description, &result)
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to get remote operation result `{operation_id}` from `{runtime}`: {message}"
+            );
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
+fn remote_operation_result_json(
+    self_description: &SelfDescription,
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let session = open_zenoh_operation_session()?;
+    let runtime = select_remote_operation_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
+    let response = flowrt::request_remote_operation_result(
+        &session,
+        &runtime.key_expr,
+        operation_id,
+        timeout_ms,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "failed to get remote operation result `{operation_id}` from `{runtime}`: {error}"
+        )
+    })?;
+    match response {
+        flowrt::IntrospectionResponse::OperationResult { handshake, result } => {
+            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            operation_result_json_response(self_description, &result, Some(&runtime))
         }
         flowrt::IntrospectionResponse::Error { message, .. } => {
             anyhow::bail!(
@@ -2982,6 +3730,73 @@ fn remote_operation_follow(
     }
     eprintln!("target: {runtime}");
     Ok(lines.join("\n"))
+}
+
+fn remote_operation_follow_json(
+    self_description: &SelfDescription,
+    self_description_hash: &str,
+    operation_id: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
+    let session = open_zenoh_operation_session()?;
+    let runtime = select_remote_operation_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
+    let mut cursor = 0;
+    let mut all_events = Vec::new();
+    let terminal = loop {
+        let response = flowrt::request_remote_operation_observe(
+            &session,
+            &runtime.key_expr,
+            operation_id,
+            cursor,
+            Some(64),
+            timeout_ms,
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to follow remote operation `{operation_id}` from `{runtime}`: {error}"
+            )
+        })?;
+        match response {
+            flowrt::IntrospectionResponse::OperationEvents {
+                handshake,
+                events,
+                next_sequence,
+                terminal: response_terminal,
+                ..
+            } => {
+                ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+                let event_count = events.len();
+                all_events.extend(events);
+                cursor = next_sequence;
+                if response_terminal && event_count < 64 {
+                    break response_terminal;
+                }
+                if event_count == 0 {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            flowrt::IntrospectionResponse::Error { message, .. } => {
+                anyhow::bail!(
+                    "failed to follow remote operation `{operation_id}` from `{runtime}`: {message}"
+                );
+            }
+            _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+        }
+    };
+    operation_events_json_response(
+        self_description,
+        operation_id,
+        &all_events,
+        cursor,
+        terminal,
+        Some(&runtime),
+    )
 }
 
 fn remote_params_set_with_target(

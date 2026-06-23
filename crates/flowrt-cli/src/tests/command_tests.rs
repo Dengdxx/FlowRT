@@ -1308,13 +1308,19 @@ fn cli_parses_operation_commands() {
     ])
     .unwrap();
     let Command::Op {
-        command: OpCommand::List { image, socket },
+        command:
+            OpCommand::List {
+                image,
+                socket,
+                format,
+            },
     } = list_cli.command
     else {
         panic!("op list should parse into Command::Op")
     };
     assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
     assert_eq!(socket, None);
+    assert_eq!(format, OperationOutputFormat::Text);
 
     let status_cli = Cli::try_parse_from([
         "flowrt",
@@ -1334,6 +1340,7 @@ fn cli_parses_operation_commands() {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             },
     } = status_cli.command
     else {
@@ -1345,6 +1352,7 @@ fn cli_parses_operation_commands() {
     assert_eq!(runtime, None);
     assert!(!remote);
     assert_eq!(timeout_ms, 5000);
+    assert_eq!(format, OperationOutputFormat::Text);
 
     let start_cli = Cli::try_parse_from([
         "flowrt",
@@ -1373,6 +1381,7 @@ fn cli_parses_operation_commands() {
                 remote,
                 timeout_ms,
                 follow,
+                format,
             },
     } = start_cli.command
     else {
@@ -1387,6 +1396,7 @@ fn cli_parses_operation_commands() {
     assert!(!remote);
     assert_eq!(timeout_ms, Some(2500));
     assert!(!follow);
+    assert_eq!(format, OperationOutputFormat::Text);
 
     let remote_start_cli = Cli::try_parse_from([
         "flowrt",
@@ -1416,6 +1426,7 @@ fn cli_parses_operation_commands() {
                 remote,
                 timeout_ms,
                 follow,
+                format,
             },
     } = remote_start_cli.command
     else {
@@ -1430,6 +1441,7 @@ fn cli_parses_operation_commands() {
     assert!(remote);
     assert_eq!(timeout_ms, Some(2500));
     assert!(!follow);
+    assert_eq!(format, OperationOutputFormat::Text);
 
     let cancel_cli = Cli::try_parse_from([
         "flowrt",
@@ -1449,6 +1461,7 @@ fn cli_parses_operation_commands() {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             },
     } = cancel_cli.command
     else {
@@ -1460,6 +1473,7 @@ fn cli_parses_operation_commands() {
     assert_eq!(runtime, None);
     assert!(!remote);
     assert_eq!(timeout_ms, 5000);
+    assert_eq!(format, OperationOutputFormat::Text);
 
     let result_cli = Cli::try_parse_from([
         "flowrt",
@@ -1481,6 +1495,7 @@ fn cli_parses_operation_commands() {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             },
     } = result_cli.command
     else {
@@ -1492,6 +1507,26 @@ fn cli_parses_operation_commands() {
     assert_eq!(runtime, None);
     assert!(!remote);
     assert_eq!(timeout_ms, 5000);
+    assert_eq!(format, OperationOutputFormat::Text);
+
+    let result_json_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "result",
+        "111:7:3",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--format",
+        "json",
+    ])
+    .unwrap();
+    let Command::Op {
+        command: OpCommand::Result { format, .. },
+    } = result_json_cli.command
+    else {
+        panic!("op result --format json should parse into Command::Op")
+    };
+    assert_eq!(format, OperationOutputFormat::Json);
 
     let follow_cli = Cli::try_parse_from([
         "flowrt",
@@ -1513,6 +1548,7 @@ fn cli_parses_operation_commands() {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             },
     } = follow_cli.command
     else {
@@ -1524,6 +1560,7 @@ fn cli_parses_operation_commands() {
     assert_eq!(runtime, None);
     assert!(!remote);
     assert_eq!(timeout_ms, 5000);
+    assert_eq!(format, OperationOutputFormat::Text);
 
     let remote_status_cli = Cli::try_parse_from([
         "flowrt",
@@ -1548,6 +1585,7 @@ fn cli_parses_operation_commands() {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             },
     } = remote_status_cli.command
     else {
@@ -1559,6 +1597,7 @@ fn cli_parses_operation_commands() {
     assert_eq!(runtime.as_deref(), Some("flowrt/op/robot/hash1/42"));
     assert!(remote);
     assert_eq!(timeout_ms, 2500);
+    assert_eq!(format, OperationOutputFormat::Text);
 }
 
 #[test]
@@ -1583,6 +1622,19 @@ fn cli_parses_status_json_format() {
 
     assert!(!live_only);
     assert_eq!(format, StatusFormat::Json);
+}
+
+#[test]
+fn operation_start_follow_json_combines_started_and_events() {
+    let started = r#"{"response":"operation_started","operation_id":"111:7:3"}"#;
+    let follow = r#"{"response":"operation_events","operation_id":"111:7:3","events":[],"next_sequence":1,"terminal":true}"#;
+
+    let output = combine_operation_start_follow_json(started, follow).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(value["response"], "operation_start_follow");
+    assert_eq!(value["started"]["operation_id"], "111:7:3");
+    assert_eq!(value["follow"]["terminal"], true);
 }
 
 #[test]

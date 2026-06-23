@@ -1419,6 +1419,12 @@ fn self_description_summary_displays_operation_endpoints() {
     assert!(list.contains("backend=inproc"));
     assert!(list.contains("operation_clients: plan:PlanGoal->PlanFeedback->PlanResult"));
 
+    let json_output = operation_list_json(Some(&path), None).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json_output).unwrap();
+    assert_eq!(value["response"], "operation_list");
+    assert_eq!(value["package"], "op_demo");
+    assert_eq!(value["operations"][0]["name"], "controller.plan");
+
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1635,11 +1641,26 @@ fn operation_cli_status_and_cancel_use_runtime_socket() {
     assert!(status_by_id.contains("operation=controller.plan"));
     assert!(status_by_id.contains("state=cancel_requested"));
 
+    let status_json = operation_status_json(Some(&socket), Some("111:7:3")).unwrap();
+    let status_value: serde_json::Value = serde_json::from_str(&status_json).unwrap();
+    assert_eq!(status_value["response"], "operation_status");
+    assert_eq!(status_value["operation_id"], "111:7:3");
+    assert_eq!(
+        status_value["entries"][0]["operation"]["name"],
+        "controller.plan"
+    );
+
     let canceled = operation_cancel("111:7:3", Some(&socket)).unwrap();
     assert!(canceled.contains("operation=controller.plan"));
     assert!(canceled.contains("operation_id=111:7:3"));
     assert!(canceled.contains("state=cancel_requested"));
     assert!(canceled.contains("canceled=0"));
+
+    let cancel_json = operation_cancel_json("111:7:3", Some(&socket)).unwrap();
+    let cancel_value: serde_json::Value = serde_json::from_str(&cancel_json).unwrap();
+    assert_eq!(cancel_value["response"], "operation_value");
+    assert_eq!(cancel_value["operation_id"], "111:7:3");
+    assert_eq!(cancel_value["operation"]["name"], "controller.plan");
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);
@@ -1745,6 +1766,19 @@ fn operation_start_encodes_goal_json_and_returns_operation_id() {
     assert!(output.contains("operation=controller.plan"));
     assert!(output.contains("state=starting"));
 
+    let json_output = operation_start_json(
+        &path,
+        "controller.plan",
+        r#"{"target":7}"#,
+        Some(&socket),
+        Some(2500),
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json_output).unwrap();
+    assert_eq!(value["response"], "operation_started");
+    assert_eq!(value["operation_id"], "111:7:3");
+    assert_eq!(value["operation"]["name"], "controller.plan");
+
     drop(server);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1821,6 +1855,89 @@ fn operation_result_decodes_payload_json() {
     assert!(output.contains("operation_id=111:7:3"));
     assert!(output.contains("state=succeeded"));
     assert!(output.contains("result={\"accepted\":true}"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn operation_result_json_decodes_payload_value() {
+    let root = temp_test_dir("operation-cli-result-json");
+    let path = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": 10000
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "PlanResult",
+    "size_bytes": 1,
+    "align_bytes": 1,
+    "fields": [{
+      "name": "accepted",
+      "type": "bool",
+      "offset_bytes": 0,
+      "size_bytes": 1,
+      "align_bytes": 1
+    }]
+  }]
+}
+"#;
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_operation_result_payload(
+        "controller.plan",
+        "111:7:3",
+        "succeeded",
+        None,
+        Some(vec![1]),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = operation_result_json(&path, "111:7:3", Some(&socket), false, None, 5000).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(value["response"], "operation_result");
+    assert_eq!(value["result"]["operation_id"], "111:7:3");
+    assert_eq!(value["result"]["state"], "succeeded");
+    assert_eq!(value["result"]["payload"], serde_json::json!([1]));
+    assert_eq!(
+        value["result"]["value"],
+        serde_json::json!({"accepted": true})
+    );
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);
@@ -1922,6 +2039,119 @@ fn operation_follow_decodes_progress_and_result_json() {
     assert!(output.contains("operation_id=111:7:3 state=running"));
     assert!(output.contains("operation_id=111:7:3 progress_sequence=0 progress={\"progress\":7}"));
     assert!(output.contains("operation_id=111:7:3 state=succeeded result={\"accepted\":true}"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn operation_follow_json_decodes_progress_and_result_values() {
+    let root = temp_test_dir("operation-cli-follow-json");
+    let path = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": 10000
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "PlanFeedback",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "progress",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }, {
+    "type_name": "PlanResult",
+    "size_bytes": 1,
+    "align_bytes": 1,
+    "fields": [{
+      "name": "accepted",
+      "type": "bool",
+      "offset_bytes": 0,
+      "size_bytes": 1,
+      "align_bytes": 1
+    }]
+  }]
+}
+"#;
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_operation_transition(
+        "controller.plan",
+        "111:7:3",
+        "running",
+        Some("controller.plan"),
+        Some(1500),
+    );
+    state.record_operation_progress_payload(
+        "controller.plan",
+        "111:7:3",
+        0,
+        Some(vec![7, 0, 0, 0]),
+    );
+    state.record_operation_result_payload(
+        "controller.plan",
+        "111:7:3",
+        "succeeded",
+        None,
+        Some(vec![1]),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = operation_follow_json(&path, "111:7:3", Some(&socket), false, None, 5000).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(value["response"], "operation_events");
+    assert_eq!(value["operation_id"], "111:7:3");
+    assert_eq!(value["terminal"], true);
+    assert_eq!(value["events"][0]["kind"], "state");
+    assert_eq!(value["events"][1]["kind"], "progress");
+    assert_eq!(
+        value["events"][1]["value"],
+        serde_json::json!({"progress": 7})
+    );
+    assert_eq!(value["events"][2]["kind"], "result");
+    assert_eq!(
+        value["events"][2]["value"],
+        serde_json::json!({"accepted": true})
+    );
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);

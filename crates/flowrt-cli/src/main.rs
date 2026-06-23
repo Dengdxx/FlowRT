@@ -39,9 +39,12 @@ use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd
 use introspection::{
     EchoFormatOptions, EchoSelection, echo_channel, echo_channel_follow, echo_channels,
     echo_channels_follow, live_hz_summary, live_status_json, live_status_summary,
-    load_self_description, operation_cancel, operation_follow, operation_list, operation_result,
-    operation_start, operation_status_summary, params_get, params_list, params_set,
-    params_set_from_file, remote_operation_cancel, remote_operation_start, remote_operation_status,
+    load_self_description, operation_cancel, operation_cancel_json, operation_follow,
+    operation_follow_json, operation_list, operation_list_json, operation_result,
+    operation_result_json, operation_start, operation_start_json, operation_status_json,
+    operation_status_summary, params_get, params_list, params_set, params_set_from_file,
+    remote_operation_cancel, remote_operation_cancel_json, remote_operation_start,
+    remote_operation_start_json, remote_operation_status, remote_operation_status_json,
     remote_params_get, remote_params_list, remote_params_set, remote_params_set_from_file,
     self_description_nodes, self_description_summary,
 };
@@ -658,6 +661,10 @@ enum OpCommand {
         /// 显式指定 runtime introspection socket。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = OperationOutputFormat::Text)]
+        format: OperationOutputFormat,
     },
 
     /// 查看 live Operation 健康状态。
@@ -684,6 +691,10 @@ enum OpCommand {
         /// 远程发现和请求超时毫秒。
         #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
         timeout_ms: u64,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = OperationOutputFormat::Text)]
+        format: OperationOutputFormat,
     },
 
     /// 启动 live Operation invocation。
@@ -722,6 +733,10 @@ enum OpCommand {
         /// start accepted 后持续输出 progress/state/result，直到 terminal。
         #[arg(long)]
         follow: bool,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = OperationOutputFormat::Text)]
+        format: OperationOutputFormat,
     },
 
     /// 取消 live Operation invocation。
@@ -748,6 +763,10 @@ enum OpCommand {
         /// 远程发现和请求超时毫秒。
         #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
         timeout_ms: u64,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = OperationOutputFormat::Text)]
+        format: OperationOutputFormat,
     },
 
     /// 读取 live Operation invocation 的 retained result。
@@ -774,6 +793,10 @@ enum OpCommand {
         /// 远程发现和请求超时毫秒。
         #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
         timeout_ms: u64,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = OperationOutputFormat::Text)]
+        format: OperationOutputFormat,
     },
 
     /// 跟随 live Operation invocation 的 progress/state/result。
@@ -800,6 +823,10 @@ enum OpCommand {
         /// 远程发现和请求超时毫秒。
         #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
         timeout_ms: u64,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = OperationOutputFormat::Text)]
+        format: OperationOutputFormat,
     },
 }
 
@@ -922,6 +949,13 @@ enum ExplainFormat {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 enum StatusFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+enum OperationOutputFormat {
     #[default]
     Text,
     Json,
@@ -1513,8 +1547,20 @@ fn main() -> Result<()> {
             }
         },
         Command::Op { command } => match command {
-            OpCommand::List { image, socket } => {
-                println!("{}", operation_list(image.as_deref(), socket.as_deref())?);
+            OpCommand::List {
+                image,
+                socket,
+                format,
+            } => {
+                let output = match format {
+                    OperationOutputFormat::Text => {
+                        operation_list(image.as_deref(), socket.as_deref())?
+                    }
+                    OperationOutputFormat::Json => {
+                        operation_list_json(image.as_deref(), socket.as_deref())?
+                    }
+                };
+                println!("{output}");
             }
             OpCommand::Status {
                 name,
@@ -1523,6 +1569,7 @@ fn main() -> Result<()> {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             } => {
                 let remote_runtime = control_plane_remote_runtime_arg(
                     "op status",
@@ -1536,15 +1583,21 @@ fn main() -> Result<()> {
                     let operation_id = name
                         .as_deref()
                         .context("`flowrt op status --remote` requires `<operation_id>`")?;
-                    println!(
-                        "{}",
-                        remote_operation_status(
+                    let output = match format {
+                        OperationOutputFormat::Text => remote_operation_status(
                             &hash,
                             operation_id,
                             remote_runtime.as_deref(),
-                            timeout_ms
-                        )?
-                    );
+                            timeout_ms,
+                        )?,
+                        OperationOutputFormat::Json => remote_operation_status_json(
+                            &hash,
+                            operation_id,
+                            remote_runtime.as_deref(),
+                            timeout_ms,
+                        )?,
+                    };
+                    println!("{output}");
                 } else {
                     if image.is_some() {
                         anyhow::bail!(
@@ -1552,10 +1605,15 @@ fn main() -> Result<()> {
                              omit it for local live status"
                         );
                     }
-                    println!(
-                        "{}",
-                        operation_status_summary(socket.as_deref(), name.as_deref())?
-                    );
+                    let output = match format {
+                        OperationOutputFormat::Text => {
+                            operation_status_summary(socket.as_deref(), name.as_deref())?
+                        }
+                        OperationOutputFormat::Json => {
+                            operation_status_json(socket.as_deref(), name.as_deref())?
+                        }
+                    };
+                    println!("{output}");
                 }
             }
             OpCommand::Start {
@@ -1568,6 +1626,7 @@ fn main() -> Result<()> {
                 remote,
                 timeout_ms,
                 follow,
+                format,
             } => {
                 let remote_runtime = control_plane_remote_runtime_arg(
                     "op start",
@@ -1587,45 +1646,108 @@ fn main() -> Result<()> {
                     _ => anyhow::bail!("pass exactly one of `--json` or `--file`"),
                 };
                 if remote {
-                    let output = remote_operation_start(
-                        &image,
-                        &name,
-                        &raw_json,
-                        remote_runtime.as_deref(),
-                        timeout_ms,
-                    )?;
-                    println!("{output}");
+                    let output = match format {
+                        OperationOutputFormat::Text => remote_operation_start(
+                            &image,
+                            &name,
+                            &raw_json,
+                            remote_runtime.as_deref(),
+                            timeout_ms,
+                        )?,
+                        OperationOutputFormat::Json => remote_operation_start_json(
+                            &image,
+                            &name,
+                            &raw_json,
+                            remote_runtime.as_deref(),
+                            timeout_ms,
+                        )?,
+                    };
                     if follow {
-                        let operation_id = parse_started_operation_id(&output)?;
-                        println!(
-                            "{}",
-                            operation_follow(
+                        let operation_id = parse_started_operation_id_for_format(&output, format)?;
+                        let follow_output = match format {
+                            OperationOutputFormat::Text => operation_follow(
                                 &image,
-                                operation_id,
+                                &operation_id,
                                 None,
                                 true,
                                 remote_runtime.as_deref(),
-                                5000
-                            )?
-                        );
+                                5000,
+                            )?,
+                            OperationOutputFormat::Json => operation_follow_json(
+                                &image,
+                                &operation_id,
+                                None,
+                                true,
+                                remote_runtime.as_deref(),
+                                5000,
+                            )?,
+                        };
+                        match format {
+                            OperationOutputFormat::Text => {
+                                println!("{output}");
+                                println!("{follow_output}");
+                            }
+                            OperationOutputFormat::Json => {
+                                println!(
+                                    "{}",
+                                    combine_operation_start_follow_json(&output, &follow_output)?
+                                );
+                            }
+                        }
+                    } else {
+                        println!("{output}");
                     }
                 } else {
-                    let output =
-                        operation_start(&image, &name, &raw_json, socket.as_deref(), timeout_ms)?;
-                    println!("{output}");
+                    let output = match format {
+                        OperationOutputFormat::Text => operation_start(
+                            &image,
+                            &name,
+                            &raw_json,
+                            socket.as_deref(),
+                            timeout_ms,
+                        )?,
+                        OperationOutputFormat::Json => operation_start_json(
+                            &image,
+                            &name,
+                            &raw_json,
+                            socket.as_deref(),
+                            timeout_ms,
+                        )?,
+                    };
                     if follow {
-                        let operation_id = parse_started_operation_id(&output)?;
-                        println!(
-                            "{}",
-                            operation_follow(
+                        let operation_id = parse_started_operation_id_for_format(&output, format)?;
+                        let follow_output = match format {
+                            OperationOutputFormat::Text => operation_follow(
                                 &image,
-                                operation_id,
+                                &operation_id,
                                 socket.as_deref(),
                                 false,
                                 None,
-                                5000
-                            )?
-                        );
+                                5000,
+                            )?,
+                            OperationOutputFormat::Json => operation_follow_json(
+                                &image,
+                                &operation_id,
+                                socket.as_deref(),
+                                false,
+                                None,
+                                5000,
+                            )?,
+                        };
+                        match format {
+                            OperationOutputFormat::Text => {
+                                println!("{output}");
+                                println!("{follow_output}");
+                            }
+                            OperationOutputFormat::Json => {
+                                println!(
+                                    "{}",
+                                    combine_operation_start_follow_json(&output, &follow_output)?
+                                );
+                            }
+                        }
+                    } else {
+                        println!("{output}");
                     }
                 }
             }
@@ -1636,6 +1758,7 @@ fn main() -> Result<()> {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             } => {
                 let remote_runtime = control_plane_remote_runtime_arg(
                     "op cancel",
@@ -1646,15 +1769,21 @@ fn main() -> Result<()> {
                 if remote {
                     let image = require_image_for_remote(image.as_deref())?;
                     let hash = introspection::self_description_hash_for_image(&image)?;
-                    println!(
-                        "{}",
-                        remote_operation_cancel(
+                    let output = match format {
+                        OperationOutputFormat::Text => remote_operation_cancel(
                             &hash,
                             &operation_id,
                             remote_runtime.as_deref(),
-                            timeout_ms
-                        )?
-                    );
+                            timeout_ms,
+                        )?,
+                        OperationOutputFormat::Json => remote_operation_cancel_json(
+                            &hash,
+                            &operation_id,
+                            remote_runtime.as_deref(),
+                            timeout_ms,
+                        )?,
+                    };
+                    println!("{output}");
                 } else {
                     if image.is_some() {
                         anyhow::bail!(
@@ -1662,7 +1791,15 @@ fn main() -> Result<()> {
                              omit it for local live cancel"
                         );
                     }
-                    println!("{}", operation_cancel(&operation_id, socket.as_deref())?);
+                    let output = match format {
+                        OperationOutputFormat::Text => {
+                            operation_cancel(&operation_id, socket.as_deref())?
+                        }
+                        OperationOutputFormat::Json => {
+                            operation_cancel_json(&operation_id, socket.as_deref())?
+                        }
+                    };
+                    println!("{output}");
                 }
             }
             OpCommand::Result {
@@ -1672,6 +1809,7 @@ fn main() -> Result<()> {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             } => {
                 let remote_runtime = control_plane_remote_runtime_arg(
                     "op result",
@@ -1684,17 +1822,25 @@ fn main() -> Result<()> {
                 } else {
                     require_image_for_local(image.as_deref())?
                 };
-                println!(
-                    "{}",
-                    operation_result(
+                let output = match format {
+                    OperationOutputFormat::Text => operation_result(
                         &image,
                         &operation_id,
                         socket.as_deref(),
                         remote,
                         remote_runtime.as_deref(),
                         timeout_ms,
-                    )?
-                );
+                    )?,
+                    OperationOutputFormat::Json => operation_result_json(
+                        &image,
+                        &operation_id,
+                        socket.as_deref(),
+                        remote,
+                        remote_runtime.as_deref(),
+                        timeout_ms,
+                    )?,
+                };
+                println!("{output}");
             }
             OpCommand::Follow {
                 operation_id,
@@ -1703,6 +1849,7 @@ fn main() -> Result<()> {
                 runtime,
                 remote,
                 timeout_ms,
+                format,
             } => {
                 let remote_runtime = control_plane_remote_runtime_arg(
                     "op follow",
@@ -1715,17 +1862,25 @@ fn main() -> Result<()> {
                 } else {
                     require_image_for_local(image.as_deref())?
                 };
-                println!(
-                    "{}",
-                    operation_follow(
+                let output = match format {
+                    OperationOutputFormat::Text => operation_follow(
                         &image,
                         &operation_id,
                         socket.as_deref(),
                         remote,
                         remote_runtime.as_deref(),
-                        timeout_ms
-                    )?
-                );
+                        timeout_ms,
+                    )?,
+                    OperationOutputFormat::Json => operation_follow_json(
+                        &image,
+                        &operation_id,
+                        socket.as_deref(),
+                        remote,
+                        remote_runtime.as_deref(),
+                        timeout_ms,
+                    )?,
+                };
+                println!("{output}");
             }
         },
         Command::Status { live_only, format } => {
@@ -1797,6 +1952,37 @@ fn parse_started_operation_id(output: &str) -> Result<&str> {
         .split_whitespace()
         .find_map(|field| field.strip_prefix("operation_id="))
         .context("operation start output did not contain operation_id")
+}
+
+fn parse_started_operation_id_for_format(
+    output: &str,
+    format: OperationOutputFormat,
+) -> Result<String> {
+    match format {
+        OperationOutputFormat::Text => parse_started_operation_id(output).map(str::to_string),
+        OperationOutputFormat::Json => {
+            let value: serde_json::Value =
+                serde_json::from_str(output).context("operation start JSON output is invalid")?;
+            value
+                .get("operation_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .context("operation start JSON output did not contain operation_id")
+        }
+    }
+}
+
+fn combine_operation_start_follow_json(started: &str, follow: &str) -> Result<String> {
+    let started: serde_json::Value =
+        serde_json::from_str(started).context("operation start JSON output is invalid")?;
+    let follow: serde_json::Value =
+        serde_json::from_str(follow).context("operation follow JSON output is invalid")?;
+    serde_json::to_string_pretty(&serde_json::json!({
+        "response": "operation_start_follow",
+        "started": started,
+        "follow": follow,
+    }))
+    .context("序列化 Operation start/follow JSON 失败")
 }
 
 #[cfg(test)]

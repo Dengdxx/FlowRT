@@ -39,12 +39,12 @@ flowrt params list --image <path> [--socket <path>] [--remote] [--runtime <key_e
 flowrt params get <instance.param> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt params set <instance.param> <json-value> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt params set --file <path/to/params.json> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
-flowrt op list [--image <path>] [--socket <path>]
-flowrt op status [operation|operation_id] [--socket <path>] [--image <path> --remote] [--runtime <key_expr>] [--timeout-ms <ms>]
-flowrt op start <operation> (--json <goal-json>|--file <goal-json-file>) --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--follow]
-flowrt op cancel <operation_id> [--socket <path>] [--image <path> --remote] [--runtime <key_expr>] [--timeout-ms <ms>]
-flowrt op result <operation_id> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
-flowrt op follow <operation_id> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
+flowrt op list [--image <path>] [--socket <path>] [--format <text|json>]
+flowrt op status [operation|operation_id] [--socket <path>] [--image <path> --remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--format <text|json>]
+flowrt op start <operation> (--json <goal-json>|--file <goal-json-file>) --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--follow] [--format <text|json>]
+flowrt op cancel <operation_id> [--socket <path>] [--image <path> --remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--format <text|json>]
+flowrt op result <operation_id> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--format <text|json>]
+flowrt op follow <operation_id> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>] [--format <text|json>]
 flowrt status [--live-only] [--format <text|json>]
 flowrt hz [channel] [--socket <path>] [--window-ms <ms>]
 flowrt record --output <path/to/run.mcap> [--socket <path>] [--duration <10s|500ms|2m>] [--channel <name>] [--operation <name>] [--all] [--force]
@@ -1303,9 +1303,20 @@ flowrt op result 111:7:3 --image flowrt/selfdesc/selfdesc.json --socket /run/use
 flowrt op result 111:7:3 --image flowrt/selfdesc/selfdesc.json --remote --runtime flowrt/op/robot/hash/12345
 flowrt op follow 111:7:3 --image flowrt/selfdesc/selfdesc.json --socket /run/user/1000/flowrt/12345.sock
 flowrt op follow 111:7:3 --image flowrt/selfdesc/selfdesc.json --remote --runtime flowrt/op/robot/hash/12345
+flowrt op result 111:7:3 --image flowrt/selfdesc/selfdesc.json --format json
+flowrt op follow 111:7:3 --image flowrt/selfdesc/selfdesc.json --format json
 ```
 
 `op` 面向 Operation 的观测和基础控制。Operation 是 typed long-running command，不是 Service 别名；生成器会把 Operation lower 成内部 start/cancel/status service 与 feedback/result channel，但用户和 CLI 的主视图仍是 Operation。
+
+所有 `op` 子命令默认输出稳定 text；`--format json` 输出结构化 JSON，供脚本、agent 或测试
+消费。`op start --json` 仍表示 goal 输入 JSON；Operation 输出格式统一使用 `--format json`。
+JSON 输出的 `response` 字段区分 `operation_list`、`operation_status`、`operation_started`、
+`operation_value`、`operation_result` 和 `operation_events`。`op result` / `op follow`
+会保留原始 `payload` byte array，并在 `value` 字段给出按 self-description Message ABI
+解码后的 JSON 对象。`op start --follow --format json` 输出单个
+`operation_start_follow` JSON 文档，内部包含 `started` 和 `follow` 两个对象。远程 text
+输出继续在 stderr 打印 `target:`；远程 JSON 输出把命中 runtime 写入 `runtime` 字段。
 
 Operation runtime 生命周期固定为：
 
