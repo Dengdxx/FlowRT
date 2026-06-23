@@ -1376,31 +1376,26 @@ pub(crate) fn rust_type(expr: &TypeExpr) -> String {
 }
 
 /// 反馈边播种值的 Rust 表达式。`init` 为 `None` 时回退到 `<Type>::default()`；给出时按
-/// 源消息（validator 已保证为全 primitive 字段的命名消息）构造字面量。
+/// 源消息（validator 已保证为 fixed-size plain data）在零值上做 sparse overlay。
 pub(crate) fn rust_feedback_seed_value(
     contract: &ContractIr,
     ty: &TypeExpr,
     init: Option<&flowrt_ir::ParamValue>,
 ) -> String {
     let default = || format!("{}::default()", rust_type(ty));
-    let (Some(flowrt_ir::ParamValue::Table(values)), TypeExpr::Named { name }) = (init, ty) else {
+    let Some(init) = init else {
         return default();
     };
-    let message = type_by_name(contract, name);
-    let mut parts = Vec::with_capacity(message.fields.len());
-    for field in &message.fields {
-        let (Some(value), TypeExpr::Primitive { name: primitive }) =
-            (values.get(&field.name), &field.ty)
-        else {
-            return default();
-        };
-        parts.push(format!(
-            "{}: {}",
-            field.name,
-            rust_primitive_literal(*primitive, value)
-        ));
+    let mut assigns = Vec::new();
+    rust_feedback_seed_assignments(contract, ty, init, "__seed", &mut assigns);
+    if assigns.is_empty() {
+        return default();
     }
-    format!("{} {{ {} }}", rust_type(ty), parts.join(", "))
+    format!(
+        "{{ let mut __seed = {}::default(); {} __seed }}",
+        rust_type(ty),
+        assigns.join(" ")
+    )
 }
 
 /// 反馈边播种值的 C++ 表达式。回退到 `<Type>{}`；给出 init 时用一个 IIFE 默认构造后逐字段
@@ -1412,27 +1407,171 @@ pub(crate) fn cpp_feedback_seed_value(
     init: Option<&flowrt_ir::ParamValue>,
 ) -> String {
     let default = || format!("{}{{}}", cpp_type(ty));
-    let (Some(flowrt_ir::ParamValue::Table(values)), TypeExpr::Named { name }) = (init, ty) else {
+    let Some(init) = init else {
         return default();
     };
-    let message = type_by_name(contract, name);
-    let mut assigns = String::new();
-    for field in &message.fields {
-        let (Some(value), TypeExpr::Primitive { name: primitive }) =
-            (values.get(&field.name), &field.ty)
-        else {
-            return default();
-        };
-        assigns.push_str(&format!(
-            "__seed.{} = {}; ",
-            field.name,
-            cpp_primitive_literal(*primitive, value)
-        ));
+    let mut assigns = Vec::new();
+    cpp_feedback_seed_assignments(contract, ty, init, "__seed", &mut assigns);
+    if assigns.is_empty() {
+        return default();
     }
     format!(
-        "[]{{ {ty} __seed{{}}; {assigns}return __seed; }}()",
+        "[]{{ {ty} __seed{{}}; {assigns} return __seed; }}()",
+        assigns = assigns.join(" "),
         ty = cpp_type(ty)
     )
+}
+
+fn rust_feedback_seed_assignments(
+    contract: &ContractIr,
+    ty: &TypeExpr,
+    value: &flowrt_ir::ParamValue,
+    path: &str,
+    assigns: &mut Vec<String>,
+) {
+    match ty {
+        TypeExpr::Primitive { name } => {
+            assigns.push(format!(
+                "{path} = {};",
+                rust_primitive_literal(*name, value)
+            ));
+        }
+        TypeExpr::Named { name } => {
+            let flowrt_ir::ParamValue::Table(values) = value else {
+                return;
+            };
+            let message = type_by_name(contract, name);
+            for field in &message.fields {
+                if let Some(field_value) = values.get(&field.name) {
+                    rust_feedback_seed_assignments(
+                        contract,
+                        &field.ty,
+                        field_value,
+                        &format!("{path}.{}", field.name),
+                        assigns,
+                    );
+                }
+            }
+        }
+        TypeExpr::Array { .. } => {
+            if let Some(expr) = rust_feedback_literal_expr(contract, ty, value) {
+                assigns.push(format!("{path} = {expr};"));
+            }
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {}
+    }
+}
+
+fn cpp_feedback_seed_assignments(
+    contract: &ContractIr,
+    ty: &TypeExpr,
+    value: &flowrt_ir::ParamValue,
+    path: &str,
+    assigns: &mut Vec<String>,
+) {
+    match ty {
+        TypeExpr::Primitive { name } => {
+            assigns.push(format!("{path} = {};", cpp_primitive_literal(*name, value)));
+        }
+        TypeExpr::Named { name } => {
+            let flowrt_ir::ParamValue::Table(values) = value else {
+                return;
+            };
+            let message = type_by_name(contract, name);
+            for field in &message.fields {
+                if let Some(field_value) = values.get(&field.name) {
+                    cpp_feedback_seed_assignments(
+                        contract,
+                        &field.ty,
+                        field_value,
+                        &format!("{path}.{}", field.name),
+                        assigns,
+                    );
+                }
+            }
+        }
+        TypeExpr::Array { .. } => {
+            if let Some(expr) = cpp_feedback_literal_expr(contract, ty, value) {
+                assigns.push(format!("{path} = {expr};"));
+            }
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {}
+    }
+}
+
+fn rust_feedback_literal_expr(
+    contract: &ContractIr,
+    ty: &TypeExpr,
+    value: &flowrt_ir::ParamValue,
+) -> Option<String> {
+    match ty {
+        TypeExpr::Primitive { name } => Some(rust_primitive_literal(*name, value)),
+        TypeExpr::Named { .. } => {
+            let mut assigns = Vec::new();
+            rust_feedback_seed_assignments(contract, ty, value, "__seed", &mut assigns);
+            if assigns.is_empty() {
+                return Some(format!("{}::default()", rust_type(ty)));
+            }
+            Some(format!(
+                "{{ let mut __seed = {}::default(); {} __seed }}",
+                rust_type(ty),
+                assigns.join(" ")
+            ))
+        }
+        TypeExpr::Array { element, .. } => {
+            let flowrt_ir::ParamValue::Array(values) = value else {
+                return None;
+            };
+            let items = values
+                .iter()
+                .map(|item| rust_feedback_literal_expr(contract, element, item))
+                .collect::<Option<Vec<_>>>()?;
+            Some(format!("[{}]", items.join(", ")))
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            None
+        }
+    }
+}
+
+fn cpp_feedback_literal_expr(
+    contract: &ContractIr,
+    ty: &TypeExpr,
+    value: &flowrt_ir::ParamValue,
+) -> Option<String> {
+    match ty {
+        TypeExpr::Primitive { name } => Some(cpp_primitive_literal(*name, value)),
+        TypeExpr::Named { .. } => {
+            let mut assigns = Vec::new();
+            cpp_feedback_seed_assignments(contract, ty, value, "__seed", &mut assigns);
+            if assigns.is_empty() {
+                return Some(format!("{}{{}}", cpp_type(ty)));
+            }
+            Some(format!(
+                "[]{{ {ty} __seed{{}}; {assigns} return __seed; }}()",
+                ty = cpp_type(ty),
+                assigns = assigns.join(" ")
+            ))
+        }
+        TypeExpr::Array { element, len } => {
+            let flowrt_ir::ParamValue::Array(values) = value else {
+                return None;
+            };
+            let items = values
+                .iter()
+                .map(|item| cpp_feedback_literal_expr(contract, element, item))
+                .collect::<Option<Vec<_>>>()?;
+            Some(format!(
+                "std::array<{}, {}>{{{}}}",
+                cpp_type(element),
+                len,
+                items.join(", ")
+            ))
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            None
+        }
+    }
 }
 
 /// 单个 primitive 字段的 Rust 字面量。整型加类型后缀避免推断歧义；浮点加 `f32`/`f64` 后缀

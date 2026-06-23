@@ -410,6 +410,127 @@ fn accepts_feedback_init_matching_type() {
     validate_contract(&ir).unwrap();
 }
 
+fn nested_feedback_init_source(init: &str) -> String {
+    format!(
+        r#"
+[package]
+name = "nested_feedback_demo"
+rsdl_version = "0.1"
+
+[type.Pose]
+x = "f64"
+y = "f64"
+
+[type.State]
+pose = "Pose"
+covariance = "[f64; 4]"
+quality = "u8"
+
+[component.accumulator]
+language = "rust"
+input = ["prev:State"]
+output = ["next:State"]
+
+[instance.accumulator]
+component = "accumulator"
+
+[instance.accumulator.task]
+trigger = "periodic"
+period_ms = 10
+input = ["prev"]
+output = ["next"]
+
+[[bind.dataflow]]
+from = "accumulator.next"
+to = "accumulator.prev"
+channel = "latest"
+feedback = true
+init = {init}
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#
+    )
+}
+
+#[test]
+fn accepts_feedback_init_nested_struct_and_fixed_array_sparse_overlay() {
+    let ir = contract_of(&nested_feedback_init_source(
+        "{ pose = { x = 1.0 }, covariance = [1.0, 0.0, 0.0, 1.0] }",
+    ));
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_feedback_init_fixed_array_length_mismatch() {
+    let ir = contract_of(&nested_feedback_init_source(
+        "{ covariance = [1.0, 0.0, 0.0] }",
+    ));
+    let report = validate_contract(&ir).expect_err("short fixed-array init should fail");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("array length")),
+        "unexpected errors: {:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn rejects_feedback_init_variable_frame_field() {
+    let source = r#"
+[package]
+name = "variable_feedback_demo"
+rsdl_version = "0.1"
+
+[type.State]
+label = "string<max=8>"
+
+[component.accumulator]
+language = "rust"
+input = ["prev:State"]
+output = ["next:State"]
+
+[instance.accumulator]
+component = "accumulator"
+
+[instance.accumulator.task]
+trigger = "periodic"
+period_ms = 10
+input = ["prev"]
+output = ["next"]
+
+[[bind.dataflow]]
+from = "accumulator.next"
+to = "accumulator.prev"
+channel = "latest"
+feedback = true
+init = { label = "boot" }
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let ir = contract_of(source);
+    let report = validate_contract(&ir).expect_err("variable-frame init should fail");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("variable frame")),
+        "unexpected errors: {:?}",
+        report.errors
+    );
+}
+
 #[test]
 fn rejects_feedback_init_unknown_field() {
     let ir = contract_of(&feedback_source(

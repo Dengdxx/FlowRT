@@ -2143,7 +2143,9 @@ backends = ["inproc"]
     );
     let rust_bundle = emit_artifacts(&rust_ir).expect("rust feedback init should emit");
     let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
-    assert!(rust_shell.contains(".publish_at(State { x: 1.5f64 }, 0);"));
+    assert!(rust_shell.contains(
+        ".publish_at({ let mut __seed = State::default(); __seed.x = 1.5f64; __seed }, 0);"
+    ));
 
     let cpp_ir = contract_from_source(
         r#"
@@ -2186,6 +2188,76 @@ backends = ["inproc"]
     let cpp_bundle = emit_artifacts(&cpp_ir).expect("cpp feedback init should emit");
     let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
     assert!(cpp_shell.contains("__seed.x = 1.5; return __seed; }(), 0);"));
+}
+
+#[test]
+fn emit_seeds_feedback_nested_struct_and_fixed_array_init_both_languages() {
+    let source = |language: &str| {
+        format!(
+            r#"
+[package]
+name = "nested_feedback_demo"
+rsdl_version = "0.1"
+
+[type.Pose]
+x = "f64"
+y = "f64"
+
+[type.State]
+pose = "Pose"
+covariance = "[f64; 4]"
+quality = "u8"
+
+[component.accumulator]
+language = "{language}"
+input = ["prev:State"]
+output = ["next:State"]
+
+[instance.accumulator]
+component = "accumulator"
+
+[instance.accumulator.task]
+trigger = "periodic"
+period_ms = 10
+input = ["prev"]
+output = ["next"]
+
+[[bind.dataflow]]
+from = "accumulator.next"
+to = "accumulator.prev"
+channel = "latest"
+feedback = true
+init = {{ pose = {{ x = 1.0 }}, covariance = [1.0, 0.0, 0.0, 1.0] }}
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["{language}"]
+backends = ["inproc"]
+"#
+        )
+    };
+
+    let rust_ir = contract_from_source(&source("rust"));
+    let rust_bundle = emit_artifacts(&rust_ir).expect("rust nested feedback init should emit");
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(
+        rust_shell.contains(
+            "{ let mut __seed = State::default(); __seed.pose.x = 1f64; __seed.covariance = [1f64, 0f64, 0f64, 1f64]; __seed }"
+        ),
+        "Rust seed should overlay nested struct and fixed array fields on the default value.\n\n{rust_shell}"
+    );
+
+    let cpp_ir = contract_from_source(&source("cpp"));
+    let cpp_bundle = emit_artifacts(&cpp_ir).expect("cpp nested feedback init should emit");
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(
+        cpp_shell.contains(
+            "__seed.pose.x = 1.0; __seed.covariance = std::array<double, 4>{1.0, 0.0, 0.0, 1.0}; return __seed;"
+        ),
+        "C++ seed should overlay nested struct and fixed array fields on the default value.\n\n{cpp_shell}"
+    );
 }
 
 #[test]

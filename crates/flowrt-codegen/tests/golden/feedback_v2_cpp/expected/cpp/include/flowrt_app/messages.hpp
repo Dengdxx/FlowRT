@@ -20,8 +20,17 @@ struct Cmd {
     bool operator==(const Cmd&) const = default;
 };
 
-struct State {
+struct Pose {
     double x{};
+    double y{};
+
+    bool operator==(const Pose&) const = default;
+};
+
+struct State {
+    Pose pose{};
+    std::array<double, 4> covariance{};
+    std::uint8_t quality{};
 
     bool operator==(const State&) const = default;
 };

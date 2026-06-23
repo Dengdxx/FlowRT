@@ -2,11 +2,11 @@
 
 #[used]
 #[unsafe(link_section = ".flowrt.selfdesc")]
-static FLOWRT_SELF_DESCRIPTION: [u8; 6720] = *br#"{
+static FLOWRT_SELF_DESCRIPTION: [u8; 8397] = *br#"{
   "self_description_version": "0.1",
   "ir_version": "0.1",
   "schema_version": "0.1",
-  "source_hash": "2e80bda41ff3e06f8a8a2e264e816e72d9c9ce6d8475644e84841cf9f680865c",
+  "source_hash": "64383c73bebe50f0f717273a84ae9e57cb8b6005885b7e2646a2f46d8eecb7a5",
   "artifact": {
     "mode": "strict",
     "temporary_island": false,
@@ -256,8 +256,8 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 6720] = *br#"{
       ]
     },
     {
-      "type_name": "State",
-      "size_bytes": 8,
+      "type_name": "Pose",
+      "size_bytes": 16,
       "align_bytes": 8,
       "empty": false,
       "fields": [
@@ -267,6 +267,42 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 6720] = *br#"{
           "offset_bytes": 0,
           "size_bytes": 8,
           "align_bytes": 8
+        },
+        {
+          "name": "y",
+          "type": "f64",
+          "offset_bytes": 8,
+          "size_bytes": 8,
+          "align_bytes": 8
+        }
+      ]
+    },
+    {
+      "type_name": "State",
+      "size_bytes": 56,
+      "align_bytes": 8,
+      "empty": false,
+      "fields": [
+        {
+          "name": "pose",
+          "type": "Pose",
+          "offset_bytes": 0,
+          "size_bytes": 16,
+          "align_bytes": 8
+        },
+        {
+          "name": "covariance",
+          "type": "[f64; 4]",
+          "offset_bytes": 16,
+          "size_bytes": 32,
+          "align_bytes": 8
+        },
+        {
+          "name": "quality",
+          "type": "u8",
+          "offset_bytes": 48,
+          "size_bytes": 1,
+          "align_bytes": 1
         }
       ]
     }
@@ -289,10 +325,10 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 6720] = *br#"{
       ]
     },
     {
-      "type_name": "State",
+      "type_name": "Pose",
       "encoding": "canonical_frame_v1",
-      "header_size_bytes": 8,
-      "max_size_bytes": 8,
+      "header_size_bytes": 16,
+      "max_size_bytes": 16,
       "variable": false,
       "fields": [
         {
@@ -300,6 +336,43 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 6720] = *br#"{
           "type": "f64",
           "header_offset_bytes": 0,
           "header_size_bytes": 8,
+          "tail_max_bytes": null
+        },
+        {
+          "name": "y",
+          "type": "f64",
+          "header_offset_bytes": 8,
+          "header_size_bytes": 8,
+          "tail_max_bytes": null
+        }
+      ]
+    },
+    {
+      "type_name": "State",
+      "encoding": "canonical_frame_v1",
+      "header_size_bytes": 49,
+      "max_size_bytes": 49,
+      "variable": false,
+      "fields": [
+        {
+          "name": "pose",
+          "type": "Pose",
+          "header_offset_bytes": 0,
+          "header_size_bytes": 16,
+          "tail_max_bytes": null
+        },
+        {
+          "name": "covariance",
+          "type": "[f64; 4]",
+          "header_offset_bytes": 16,
+          "header_size_bytes": 32,
+          "tail_max_bytes": null
+        },
+        {
+          "name": "quality",
+          "type": "u8",
+          "header_offset_bytes": 48,
+          "header_size_bytes": 1,
           "tail_max_bytes": null
         }
       ]
@@ -315,5 +388,5 @@ pub fn self_description_json() -> &'static str {
 
 #[allow(dead_code)]
 pub fn self_description_hash() -> &'static str {
-    "69213fec72a69c6c7838a0f25b41c18b400a679f842381af6f633d7d650430ad"
+    "bc6c8d83f03b8c65c358c2c13ecadd8a7a49d2dd2449ae68b081aff8486e66c9"
 }

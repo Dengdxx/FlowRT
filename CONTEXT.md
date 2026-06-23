@@ -102,7 +102,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - Message ABI：maps、recursive structures 和 language-specific ownership types 仍不支持。
   空消息需区分口径：显式 `empty = true` 已支持零长度 wire payload；未声明
   `empty = true` 的隐式空 message struct 仍由 validator 拒绝。
-- 反馈环 init：literal init 仍限全 primitive 字段消息；嵌套字段和数组字段初值留待后续。
+- 反馈环 init：literal init 支持 fixed-size plain data 的 sparse nested struct overlay；
+  struct 字段可省略并保留零值，fixed array 一旦出现必须完整给出。variable frame 字段仍不
+  允许进入 feedback init。
 - Operation 控制面：generated Operation runtime 已支持 inproc、zenoh，并在 v0.25.0 接入
   iox2；`flowrt op list/status/cancel` 是本机 introspection 控制面。v0.27.0 已接入
   本机 `flowrt op start` 基座和 `OperationStatus` by id 请求，可用 self-description
@@ -893,7 +895,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.18.1` | Codegen 验证加固（纯内部质量版本，零用户语义变更）：codegen golden 等价 harness 锁定整份生成输出 + 生成工程真编译网（C++ `g++ -fsyntax-only`、Rust `cargo check`）纳入开发回路与 CI，堵 v0.17/v0.18 连续两版漏发的 codegen 编译错类缺口；overflow/stale/trigger 映射去重至 `runtime_plan`；`[workspace.lints.clippy]` 现代化 forward-guard。C++ clang-tidy 门禁暂缓。 |
 | `v0.19.0` | Multi-Sensor Synchronization：RSDL `[[sync]]` 组把一个 instance 的 ≥2 路输入按 sample-time（event-time）对齐成同步集，经 `on_synchronized` trigger 投递给融合组件。runtime `flowrt::Synchronizer` 原语（Rust+C++，latest-aligned approx-window v1，DropLate）跨语言位级一致；codegen 两语言接线，golden+编译网真编译把关。最优匹配（ROS2 ApproximateTime 式）、late-policy 变体、跨机 drift 各自另立后续版本。 |
 | `v0.20.0` | Feedback Loops / Cyclic Graphs：`[[bind.dataflow]]` 回边标 `feedback = true` 建模为单位延迟 z⁻¹，消费者读上游上一拍输出。codegen 拓扑排序剔除回边断环（图退化为 DAG）+ run 启动期对回边 channel 播种零初值，两语言一致，runtime 零改动；validator 校验 feedback 边仅 latest/同进程/必须真正闭环。golden+编译网真编译把关，示例 `examples/feedback_loop_demo`。v1 仅零初值/单拍/同进程；literal 初值、fifo N 拍、跨进程延迟环各自另立后续版本。 |
-| `v0.20.1` | Feedback Loops v2：回边新增 `init`（按源消息类型播种 literal 初值）与 `fifo` + `depth = N`（N 拍延迟）。validator 放宽为允许 latest(1 拍) 或 fifo(N 拍)，按源消息 TypeIr 递归类型校验 init，fifo 反馈要求两端 periodic 等周期；codegen 两语言播种 literal/N 份。golden `feedback_v2_rust/cpp`+编译网真编译。init 仅支持全 primitive 字段消息；跨进程延迟环仍留待多机/容错版本。 |
+| `v0.20.1` | Feedback Loops v2：回边新增 `init`（按源消息类型播种 literal 初值）与 `fifo` + `depth = N`（N 拍延迟）。validator 放宽为允许 latest(1 拍) 或 fifo(N 拍)，按源消息 TypeIr 递归类型校验 init，fifo 反馈要求两端 periodic 等周期；codegen 两语言播种 literal/N 份。golden `feedback_v2_rust/cpp`+编译网真编译。该版本 init 仅支持全 primitive 字段消息；v0.27.1 hardening 起补齐 sparse nested struct overlay 和完整 fixed array，跨进程延迟环仍留待多机/容错版本。 |
 | `v0.21.x` | 图级容错 / 生命周期（patch 线 5 切片）：生命周期状态机底座 / 进程内隔离重启 / 降级数据语义 / 图级 health 聚合 + 受控停机 / 跨进程反馈环。 |
 | `v0.22.0` | Deterministic Fault Injection：test-only 注入 overlay 在 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，跑遍 0.21.x 全部故障反应策略并验证可复现。codegen 两语言 per-task 计数器 + 注入门（gated，非注入字节不漂移）；validator 守 scheduled-only / ≥1 boundary input(island) / 单进程 / canonical；golden + 编译网 + focused smoke。确定性经 golden 锁定的计数驱动门 ∘ v0.17/v0.18 回放内核证明，不另做 CLI MCAP 往返。Error-only、单进程、startup/shutdown 与跨进程注入留待后续。 |
 | `v0.22.1` | Reserved Keyword Naming：validator 拒绝 field / port / service port / operation port / instance / task 等生成代码标识符撞 Rust 2024 或 C++ 保留关键字，保留 `profile.default` 等非标识符名称合法。focused smoke 接入 release gate。 |
@@ -1052,8 +1054,9 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   隐式当合法反馈。
 - `v0.20.1` 补齐反馈环 v2：回边 `init`（literal 初值）与 `fifo` + `depth = N`（N 拍延迟），fifo
   反馈强制两端等周期。**跨进程延迟环明确留待多机 / 图级容错版本**（断环 + 播种须过 supervisor /
-  transport 边界，与跨进程 determinism、健康传播强耦合）；反馈 `init` 的嵌套 / 数组字段初值也留后续。
-  做到那一版时从此处接续，不要重新发明跨进程反馈语义。
+  transport 边界，与跨进程 determinism、健康传播强耦合）；v0.27.1 hardening 已把反馈
+  `init` 扩展到 sparse nested struct overlay 和完整 fixed array，variable frame init 仍拒绝。
+  做跨进程严格延迟那一版时从此处接续，不要重新发明跨进程反馈语义。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 

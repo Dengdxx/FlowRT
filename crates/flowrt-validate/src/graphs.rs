@@ -1715,7 +1715,7 @@ fn validate_feedback_binds(
             )));
         }
 
-        // init 初值必须与源消息类型匹配（v2 仅支持全 primitive 字段的消息）。
+        // init 初值必须与源消息类型匹配；具体 fixed-size plain data 边界由递归校验函数把关。
         if let Some(init) = &bind.init {
             match resolve_port(components, instances, &bind.from, PortDirection::Output) {
                 Ok(port) => {
@@ -1787,8 +1787,10 @@ fn feedback_endpoint_period(
         .and_then(|task| task.period_ms)
 }
 
-/// 递归校验反馈边 init 初值与源消息类型匹配。v2 仅支持顶层 `Named` 消息且其字段全为
-/// primitive：init 必须为表、字段集合与消息完全一致、每个值与字段 primitive 类型兼容。
+/// 递归校验反馈边 init 初值与源消息类型匹配。
+///
+/// `init` 是目标消息零值上的 sparse overlay：struct 字段可省略，fixed array 一旦出现必须
+/// 完整给出，variable frame 字段不进入 feedback init 范围。
 fn check_feedback_init(
     init: &ParamValue,
     ty: &TypeExpr,
@@ -1816,6 +1818,16 @@ fn check_feedback_init(
         return;
     };
 
+    for field in &message.fields {
+        if type_expr_contains_variable_frame(&field.ty, types_by_name) {
+            errors.push(ValidationError::new(format!(
+                "feedback bind `{edge}` init field `{}` has variable frame type `{}`; feedback init only supports fixed-size plain data",
+                field.name,
+                field.ty.canonical_syntax()
+            )));
+        }
+    }
+
     let field_names = message
         .fields
         .iter()
@@ -1829,51 +1841,156 @@ fn check_feedback_init(
         }
     }
 
-    for field in &message.fields {
-        let Some(value) = values.get(&field.name) else {
+    for (key, value) in values {
+        if let Some(field) = message.fields.iter().find(|field| field.name == *key) {
+            check_feedback_literal_value(value, &field.ty, types_by_name, edge, key, errors);
+        }
+    }
+}
+
+fn check_feedback_literal_value(
+    value: &ParamValue,
+    ty: &TypeExpr,
+    types_by_name: &BTreeMap<&str, &TypeIr>,
+    edge: &str,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    match ty {
+        TypeExpr::Primitive { name } => {
+            if !param_value_matches_primitive(value, *name) {
+                errors.push(ValidationError::new(format!(
+                    "feedback bind `{edge}` init field `{path}` value does not match type `{}`",
+                    ty.canonical_syntax()
+                )));
+            }
+        }
+        TypeExpr::Named { name } => {
+            let Some(message) = types_by_name.get(name.as_str()) else {
+                errors.push(ValidationError::new(format!(
+                    "feedback bind `{edge}` init field `{path}` references unknown message type `{name}`"
+                )));
+                return;
+            };
+            let ParamValue::Table(values) = value else {
+                errors.push(ValidationError::new(format!(
+                    "feedback bind `{edge}` init field `{path}` must be a table for message `{name}`"
+                )));
+                return;
+            };
+            let field_names = message
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<BTreeSet<_>>();
+            for key in values.keys() {
+                if !field_names.contains(key.as_str()) {
+                    errors.push(ValidationError::new(format!(
+                        "feedback bind `{edge}` init field `{path}` has unknown field `{key}` for message `{name}`"
+                    )));
+                }
+            }
+            for (key, nested_value) in values {
+                if let Some(field) = message.fields.iter().find(|field| field.name == *key) {
+                    check_feedback_literal_value(
+                        nested_value,
+                        &field.ty,
+                        types_by_name,
+                        edge,
+                        &format!("{path}.{key}"),
+                        errors,
+                    );
+                }
+            }
+        }
+        TypeExpr::Array { element, len } => {
+            let ParamValue::Array(values) = value else {
+                errors.push(ValidationError::new(format!(
+                    "feedback bind `{edge}` init field `{path}` must be an array for type `{}`",
+                    ty.canonical_syntax()
+                )));
+                return;
+            };
+            if values.len() != *len {
+                errors.push(ValidationError::new(format!(
+                    "feedback bind `{edge}` init field `{path}` array length mismatch: expected {len}, got {}",
+                    values.len()
+                )));
+                return;
+            }
+            for (index, item) in values.iter().enumerate() {
+                check_feedback_literal_value(
+                    item,
+                    element,
+                    types_by_name,
+                    edge,
+                    &format!("{path}[{index}]"),
+                    errors,
+                );
+            }
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             errors.push(ValidationError::new(format!(
-                "feedback bind `{edge}` init missing field `{}` for message `{name}`",
-                field.name
-            )));
-            continue;
-        };
-        let TypeExpr::Primitive { name: primitive } = &field.ty else {
-            errors.push(ValidationError::new(format!(
-                "feedback bind `{edge}` init field `{}` has non-primitive type `{}`; v2 仅支持 primitive 字段初值",
-                field.name,
-                field.ty.canonical_syntax()
-            )));
-            continue;
-        };
-        if !param_value_matches_primitive(value, *primitive) {
-            errors.push(ValidationError::new(format!(
-                "feedback bind `{edge}` init field `{}` value does not match type `{}`",
-                field.name,
-                field.ty.canonical_syntax()
+                "feedback bind `{edge}` init field `{path}` has variable frame type `{}`; feedback init only supports fixed-size plain data",
+                ty.canonical_syntax()
             )));
         }
     }
 }
 
-/// init 字面值与 primitive 字段类型是否兼容：整型字段收整数，浮点字段收浮点或整数，
-/// bool 字段收 bool。
+fn type_expr_contains_variable_frame(
+    ty: &TypeExpr,
+    types_by_name: &BTreeMap<&str, &TypeIr>,
+) -> bool {
+    match ty {
+        TypeExpr::Primitive { .. } => false,
+        TypeExpr::Array { element, .. } => {
+            type_expr_contains_variable_frame(element, types_by_name)
+        }
+        TypeExpr::Named { name } => types_by_name.get(name.as_str()).is_some_and(|message| {
+            message
+                .fields
+                .iter()
+                .any(|field| type_expr_contains_variable_frame(&field.ty, types_by_name))
+        }),
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            true
+        }
+    }
+}
+
+/// init 字面值与 primitive 字段类型是否兼容：整型字段收整数并校验 bit width，浮点字段收有限浮点
+/// 或整数，bool 字段收 bool。
 fn param_value_matches_primitive(value: &ParamValue, primitive: PrimitiveType) -> bool {
     match primitive {
         PrimitiveType::Bool => matches!(value, ParamValue::Bool(_)),
-        PrimitiveType::F32 | PrimitiveType::F64 => {
-            matches!(value, ParamValue::Float(_) | ParamValue::Integer(_))
+        PrimitiveType::F32 => match value {
+            ParamValue::Float(value) => {
+                value.is_finite() && *value >= f32::MIN as f64 && *value <= f32::MAX as f64
+            }
+            ParamValue::Integer(_) => true,
+            _ => false,
+        },
+        PrimitiveType::F64 => match value {
+            ParamValue::Float(value) => value.is_finite(),
+            ParamValue::Integer(_) => true,
+            _ => false,
+        },
+        PrimitiveType::U8 => integer_in_range(value, 0, u8::MAX as i64),
+        PrimitiveType::U16 => integer_in_range(value, 0, u16::MAX as i64),
+        PrimitiveType::U32 => integer_in_range(value, 0, u32::MAX as i64),
+        PrimitiveType::U64 | PrimitiveType::U128 => {
+            matches!(value, ParamValue::Integer(value) if *value >= 0)
         }
-        PrimitiveType::U8
-        | PrimitiveType::U16
-        | PrimitiveType::U32
-        | PrimitiveType::U64
-        | PrimitiveType::U128
-        | PrimitiveType::I8
-        | PrimitiveType::I16
-        | PrimitiveType::I32
-        | PrimitiveType::I64
-        | PrimitiveType::I128 => matches!(value, ParamValue::Integer(_)),
+        PrimitiveType::I8 => integer_in_range(value, i8::MIN as i64, i8::MAX as i64),
+        PrimitiveType::I16 => integer_in_range(value, i16::MIN as i64, i16::MAX as i64),
+        PrimitiveType::I32 => integer_in_range(value, i32::MIN as i64, i32::MAX as i64),
+        PrimitiveType::I64 | PrimitiveType::I128 => matches!(value, ParamValue::Integer(_)),
     }
+}
+
+fn integer_in_range(value: &ParamValue, min: i64, max: i64) -> bool {
+    matches!(value, ParamValue::Integer(value) if *value >= min && *value <= max)
 }
 
 /// 在前向邻接图中判断 `start` 是否能到达 `goal`。

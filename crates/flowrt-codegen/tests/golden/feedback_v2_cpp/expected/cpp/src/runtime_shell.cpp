@@ -707,7 +707,7 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
     flowrt::ScheduleWaiter scheduler_events;
     introspection_state.set_self_description_json(std::string{flowrt_app::self_description_json()});
     this->introspection_probe_bind_0 = register_introspection_channel(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", std::optional<std::size_t>{8});
-    this->introspection_probe_bind_1 = register_introspection_channel(introspection_state, "plant.state_to_controller.state", "State", std::optional<std::size_t>{8});
+    this->introspection_probe_bind_1 = register_introspection_channel(introspection_state, "plant.state_to_controller.state", "State", std::optional<std::size_t>{56});
     auto introspection_server = flowrt::spawn_status_server(
         flowrt::IntrospectionIdentity{
             .self_description_hash = std::string{flowrt_app::self_description_hash()},
@@ -717,8 +717,8 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
         },
         introspection_state);
     (void)introspection_server;
-    bind_1_.push_at([]{ State __seed{}; __seed.x = 1.0; return __seed; }(), 0);
-    bind_1_.push_at([]{ State __seed{}; __seed.x = 1.0; return __seed; }(), 0);
+    bind_1_.push_at([]{ State __seed{}; __seed.pose.x = 1.0; __seed.covariance = std::array<double, 4>{1.0, 0.0, 0.0, 1.0}; return __seed; }(), 0);
+    bind_1_.push_at([]{ State __seed{}; __seed.pose.x = 1.0; __seed.covariance = std::array<double, 4>{1.0, 0.0, 0.0, 1.0}; return __seed; }(), 0);
     bool controller_initialized = false;
     bool controller_started = false;
     introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
@@ -1133,7 +1133,7 @@ flowrt::Status App::run_process_main(const flowrt::Backend& backend, std::option
     flowrt::ScheduleWaiter scheduler_events;
     introspection_state.set_self_description_json(std::string{flowrt_app::self_description_json()});
     this->introspection_probe_bind_0 = register_introspection_channel(introspection_state, "controller.cmd_to_plant.cmd", "Cmd", std::optional<std::size_t>{8});
-    this->introspection_probe_bind_1 = register_introspection_channel(introspection_state, "plant.state_to_controller.state", "State", std::optional<std::size_t>{8});
+    this->introspection_probe_bind_1 = register_introspection_channel(introspection_state, "plant.state_to_controller.state", "State", std::optional<std::size_t>{56});
     auto introspection_server = flowrt::spawn_status_server(
         flowrt::IntrospectionIdentity{
             .self_description_hash = std::string{flowrt_app::self_description_hash()},
@@ -1143,8 +1143,8 @@ flowrt::Status App::run_process_main(const flowrt::Backend& backend, std::option
         },
         introspection_state);
     (void)introspection_server;
-    bind_1_.push_at([]{ State __seed{}; __seed.x = 1.0; return __seed; }(), 0);
-    bind_1_.push_at([]{ State __seed{}; __seed.x = 1.0; return __seed; }(), 0);
+    bind_1_.push_at([]{ State __seed{}; __seed.pose.x = 1.0; __seed.covariance = std::array<double, 4>{1.0, 0.0, 0.0, 1.0}; return __seed; }(), 0);
+    bind_1_.push_at([]{ State __seed{}; __seed.pose.x = 1.0; __seed.covariance = std::array<double, 4>{1.0, 0.0, 0.0, 1.0}; return __seed; }(), 0);
     bool controller_initialized = false;
     bool controller_started = false;
     introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);

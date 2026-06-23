@@ -1059,9 +1059,10 @@ init = { x = 1.0 }
 flowrt check examples/feedback_loop_demo/rsdl/robot.rsdl
 ```
 
-v1 范围：仅同进程（inproc）反馈，且 init 仅支持全 primitive 字段的消息；嵌套/数组
-字段初值、跨进程延迟环留后续。validator 拒绝 `feedback` 加在不真正闭合环路的回边、
-跨进程，以及 fifo 反馈两端周期不等或缺 `depth`。
+当前同进程反馈支持 fixed-size plain data 的 typed literal 初值：struct 字段按零值 seed 做
+sparse overlay，嵌套 struct 递归套用同一规则；fixed array 一旦出现必须完整给出；variable
+frame 字段仍不支持作为反馈初值。跨进程严格延迟环留后续。validator 拒绝 `feedback`
+加在不真正闭合环路的回边、跨进程，以及 fifo 反馈两端周期不等或缺 `depth`。
 
 ## 添加新示例
 

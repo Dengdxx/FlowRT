@@ -5,8 +5,14 @@ rsdl_version = "0.1"
 [type.Cmd]
 u = "f64"
 
-[type.State]
+[type.Pose]
 x = "f64"
+y = "f64"
+
+[type.State]
+pose = "Pose"
+covariance = "[f64; 4]"
+quality = "u8"
 
 [component.controller]
 language = "rust"
@@ -48,7 +54,7 @@ channel = "fifo"
 depth = 2
 overflow = "drop_oldest"
 feedback = true
-init = { x = 1.0 }
+init = { pose = { x = 1.0 }, covariance = [1.0, 0.0, 0.0, 1.0] }
 
 [profile.default]
 backend = "inproc"

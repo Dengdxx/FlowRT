@@ -65,7 +65,8 @@ void write_fixture(std::string_view name, const std::array<std::uint8_t, N>& byt
 }
 
 constexpr std::array<std::uint8_t, 8> EXPECTED_CMD_BYTES{{0, 0, 0, 0, 0, 0, 2, 64}};
-constexpr std::array<std::uint8_t, 8> EXPECTED_STATE_BYTES{{0, 0, 0, 0, 0, 0, 2, 64}};
+constexpr std::array<std::uint8_t, 16> EXPECTED_POSE_BYTES{{0, 0, 0, 0, 0, 0, 2, 64, 0, 0, 0, 0, 0, 0, 10, 64}};
+constexpr std::array<std::uint8_t, 56> EXPECTED_STATE_BYTES{{0, 0, 0, 0, 0, 0, 2, 64, 0, 0, 0, 0, 0, 0, 10, 64, 0, 0, 0, 0, 0, 0, 10, 64, 0, 0, 0, 0, 0, 0, 10, 64, 0, 0, 0, 0, 0, 0, 10, 64, 0, 0, 0, 0, 0, 0, 10, 64, 4, 0, 0, 0, 0, 0, 0, 0}};
 
 flowrt_app::Cmd sample_cmd() {
     flowrt_app::Cmd value{};
@@ -74,10 +75,20 @@ flowrt_app::Cmd sample_cmd() {
     return value;
 }
 
+flowrt_app::Pose sample_pose() {
+    flowrt_app::Pose value{};
+    std::memset(&value, 0, sizeof(value));
+    value.x = 2.25;
+    value.y = 3.25;
+    return value;
+}
+
 flowrt_app::State sample_state() {
     flowrt_app::State value{};
     std::memset(&value, 0, sizeof(value));
-    value.x = 2.25;
+    value.pose = sample_pose();
+    value.covariance = [] { auto value = std::array<double, 4>{}; value.fill(3.25); return value; }();
+    value.quality = std::uint8_t{4};
     return value;
 }
 
@@ -93,13 +104,28 @@ void test_cmd_message_abi() {
     write_fixture("cmd.bin", bytes_of(sample_cmd()));
 }
 
+void test_pose_message_abi() {
+    static_assert(std::is_standard_layout_v<flowrt_app::Pose>);
+    static_assert(std::is_trivially_copyable_v<flowrt_app::Pose>);
+    static_assert(sizeof(flowrt_app::Pose) == 16);
+    static_assert(alignof(flowrt_app::Pose) == 8);
+    assert_default_bytes_zero<flowrt_app::Pose>();
+    static_assert(offsetof(flowrt_app::Pose, x) == 0);
+    static_assert(offsetof(flowrt_app::Pose, y) == 8);
+    assert_byte_roundtrip(sample_pose());
+    assert_sample_bytes(sample_pose(), EXPECTED_POSE_BYTES);
+    write_fixture("pose.bin", bytes_of(sample_pose()));
+}
+
 void test_state_message_abi() {
     static_assert(std::is_standard_layout_v<flowrt_app::State>);
     static_assert(std::is_trivially_copyable_v<flowrt_app::State>);
-    static_assert(sizeof(flowrt_app::State) == 8);
+    static_assert(sizeof(flowrt_app::State) == 56);
     static_assert(alignof(flowrt_app::State) == 8);
     assert_default_bytes_zero<flowrt_app::State>();
-    static_assert(offsetof(flowrt_app::State, x) == 0);
+    static_assert(offsetof(flowrt_app::State, pose) == 0);
+    static_assert(offsetof(flowrt_app::State, covariance) == 16);
+    static_assert(offsetof(flowrt_app::State, quality) == 48);
     assert_byte_roundtrip(sample_state());
     assert_sample_bytes(sample_state(), EXPECTED_STATE_BYTES);
     write_fixture("state.bin", bytes_of(sample_state()));
@@ -109,6 +135,7 @@ void test_state_message_abi() {
 
 int main() {
     test_cmd_message_abi();
+    test_pose_message_abi();
     test_state_message_abi();
     return 0;
 }

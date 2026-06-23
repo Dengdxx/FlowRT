@@ -6,7 +6,7 @@ impl crate::components::Controller for Controller {
         state: flowrt::Latest<'_, crate::messages::State>,
         cmd: &mut flowrt::Output<crate::messages::Cmd>,
     ) -> flowrt::Status {
-        let x = state.as_ref().map(|s| s.x).unwrap_or(0.0);
+        let x = state.as_ref().map(|s| s.pose.x).unwrap_or(0.0);
         cmd.write(crate::messages::Cmd { u: -x });
         flowrt::Status::Ok
     }
@@ -20,7 +20,9 @@ impl crate::components::Plant for Plant {
         state: &mut flowrt::Output<crate::messages::State>,
     ) -> flowrt::Status {
         let u = cmd.as_ref().map(|c| c.u).unwrap_or(0.0);
-        state.write(crate::messages::State { x: u });
+        let mut next = crate::messages::State::default();
+        next.pose.x = u;
+        state.write(next);
         flowrt::Status::Ok
     }
 }

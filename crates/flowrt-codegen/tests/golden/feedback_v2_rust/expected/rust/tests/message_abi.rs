@@ -37,7 +37,8 @@ fn assert_sample_bytes<T: Copy>(value: T, expected: &[u8]) {
 }
 
 const EXPECTED_CMD_BYTES: &[u8] = &[0, 0, 0, 0, 0, 0, 2, 64];
-const EXPECTED_STATE_BYTES: &[u8] = &[0, 0, 0, 0, 0, 0, 2, 64];
+const EXPECTED_POSE_BYTES: &[u8] = &[0, 0, 0, 0, 0, 0, 2, 64, 0, 0, 0, 0, 0, 0, 10, 64];
+const EXPECTED_STATE_BYTES: &[u8] = &[0, 0, 0, 0, 0, 0, 2, 64, 0, 0, 0, 0, 0, 0, 10, 64, 0, 0, 0, 0, 0, 0, 10, 64, 0, 0, 0, 0, 0, 0, 10, 64, 0, 0, 0, 0, 0, 0, 10, 64, 0, 0, 0, 0, 0, 0, 10, 64, 4, 0, 0, 0, 0, 0, 0, 0];
 
 fn sample_cmd() -> flowrt_app::messages::Cmd {
     let mut value = flowrt_app::messages::Cmd::default();
@@ -45,9 +46,18 @@ fn sample_cmd() -> flowrt_app::messages::Cmd {
     value
 }
 
+fn sample_pose() -> flowrt_app::messages::Pose {
+    let mut value = flowrt_app::messages::Pose::default();
+    value.x = 2.25f64;
+    value.y = 3.25f64;
+    value
+}
+
 fn sample_state() -> flowrt_app::messages::State {
     let mut value = flowrt_app::messages::State::default();
-    value.x = 2.25f64;
+    value.pose = sample_pose();
+    value.covariance = [3.25f64; 4];
+    value.quality = 4u8;
     value
 }
 
@@ -62,11 +72,24 @@ fn cmd_message_abi() {
 }
 
 #[test]
+fn pose_message_abi() {
+    assert_eq!(std::mem::size_of::<flowrt_app::messages::Pose>(), 16);
+    assert_eq!(std::mem::align_of::<flowrt_app::messages::Pose>(), 8);
+    assert_default_bytes_zero::<flowrt_app::messages::Pose>();
+    assert_eq!(std::mem::offset_of!(flowrt_app::messages::Pose, x), 0);
+    assert_eq!(std::mem::offset_of!(flowrt_app::messages::Pose, y), 8);
+    assert_byte_roundtrip(sample_pose());
+    assert_sample_bytes(sample_pose(), EXPECTED_POSE_BYTES);
+}
+
+#[test]
 fn state_message_abi() {
-    assert_eq!(std::mem::size_of::<flowrt_app::messages::State>(), 8);
+    assert_eq!(std::mem::size_of::<flowrt_app::messages::State>(), 56);
     assert_eq!(std::mem::align_of::<flowrt_app::messages::State>(), 8);
     assert_default_bytes_zero::<flowrt_app::messages::State>();
-    assert_eq!(std::mem::offset_of!(flowrt_app::messages::State, x), 0);
+    assert_eq!(std::mem::offset_of!(flowrt_app::messages::State, pose), 0);
+    assert_eq!(std::mem::offset_of!(flowrt_app::messages::State, covariance), 16);
+    assert_eq!(std::mem::offset_of!(flowrt_app::messages::State, quality), 48);
     assert_byte_roundtrip(sample_state());
     assert_sample_bytes(sample_state(), EXPECTED_STATE_BYTES);
 }

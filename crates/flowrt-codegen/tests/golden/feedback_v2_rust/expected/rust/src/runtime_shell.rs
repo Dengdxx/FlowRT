@@ -682,7 +682,7 @@ impl App {
             message_type: "Cmd".to_string(),
             ..Default::default()
         });
-        let introspection_probe_bind_1 = register_introspection_channel(&introspection_state, "plant.state_to_controller.state", "State", Some(8));
+        let introspection_probe_bind_1 = register_introspection_channel(&introspection_state, "plant.state_to_controller.state", "State", Some(56));
         let _ = app.introspection_probe_bind_1.set(introspection_probe_bind_1);
         introspection_state.register_route(flowrt::IntrospectionRouteStatus {
             name: "plant.state_to_controller.state".to_string(),
@@ -700,8 +700,8 @@ impl App {
             message_type: "State".to_string(),
             ..Default::default()
         });
-        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at(State { x: 1f64 }, 0);
-        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at(State { x: 1f64 }, 0);
+        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at({ let mut __seed = State::default(); __seed.pose.x = 1f64; __seed.covariance = [1f64, 0f64, 0f64, 1f64]; __seed }, 0);
+        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at({ let mut __seed = State::default(); __seed.pose.x = 1f64; __seed.covariance = [1f64, 0f64, 0f64, 1f64]; __seed }, 0);
         let _introspection_server = flowrt::spawn_status_server(
             flowrt::IntrospectionIdentity {
                 self_description_hash: selfdesc::self_description_hash().to_string(),
@@ -1196,7 +1196,7 @@ impl App {
             message_type: "Cmd".to_string(),
             ..Default::default()
         });
-        let introspection_probe_bind_1 = register_introspection_channel(&introspection_state, "plant.state_to_controller.state", "State", Some(8));
+        let introspection_probe_bind_1 = register_introspection_channel(&introspection_state, "plant.state_to_controller.state", "State", Some(56));
         let _ = app.introspection_probe_bind_1.set(introspection_probe_bind_1);
         introspection_state.register_route(flowrt::IntrospectionRouteStatus {
             name: "plant.state_to_controller.state".to_string(),
@@ -1214,8 +1214,8 @@ impl App {
             message_type: "State".to_string(),
             ..Default::default()
         });
-        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at(State { x: 1f64 }, 0);
-        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at(State { x: 1f64 }, 0);
+        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at({ let mut __seed = State::default(); __seed.pose.x = 1f64; __seed.covariance = [1f64, 0f64, 0f64, 1f64]; __seed }, 0);
+        let _ = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at({ let mut __seed = State::default(); __seed.pose.x = 1f64; __seed.covariance = [1f64, 0f64, 0f64, 1f64]; __seed }, 0);
         let _introspection_server = flowrt::spawn_status_server(
             flowrt::IntrospectionIdentity {
                 self_description_hash: selfdesc::self_description_hash().to_string(),
