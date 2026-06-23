@@ -269,3 +269,31 @@ fn supervisor_terminates_active_children_when_run_ticks_reached() {
     assert!(supervised.finished);
     assert_eq!(supervised.state, "completed");
 }
+
+#[cfg(unix)]
+#[test]
+fn supervisor_allows_run_limited_child_to_exit_before_terminate() {
+    let child = Command::new("sh")
+        .arg("-c")
+        .arg("sleep 0.2")
+        .spawn()
+        .unwrap();
+    let mut supervised = supervised_child_for_test("bounded_run", child);
+    supervised.last_tick_count = Some(3);
+    let supervisor_state = IntrospectionState::new();
+
+    let result = supervise_children(
+        &supervisor_state,
+        std::slice::from_mut(&mut supervised),
+        Some(3),
+        &ShutdownToken::new_for_test(),
+        None,
+    );
+
+    assert!(
+        result.is_ok(),
+        "supervisor run limit should allow bounded child exit: {result:?}"
+    );
+    assert!(supervised.finished);
+    assert_eq!(supervised.exit_code, Some(0));
+}

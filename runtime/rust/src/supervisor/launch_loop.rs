@@ -41,6 +41,8 @@ const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const TICK_STALE_AFTER_MS: u64 = 1_000;
 /// supervisor 主动终止子进程时等待其自行退出的宽限时间。
 const CHILD_TERMINATE_GRACE: Duration = Duration::from_millis(500);
+/// bounded run 达成后等待子进程自行走完 shutdown/status 写出的宽限时间。
+const RUN_LIMIT_NATURAL_EXIT_GRACE: Duration = Duration::from_millis(1_500);
 /// 主动终止子进程时的轮询间隔。
 const CHILD_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -495,11 +497,13 @@ pub(super) fn supervise_children(
     shutdown: &ShutdownToken,
     status_dir: Option<&Path>,
 ) -> Result<(), String> {
+    let mut run_limit_reached_at: Option<Instant> = None;
     while children.iter().any(|child| !child.finished) {
         if shutdown.is_requested() {
             terminate_active_children(supervisor_state, children, "shutdown");
             return Ok(());
         }
+        let completing_run_limit = run_limit_reached_at.is_some();
         let mut failed_to_propagate = Vec::new();
         for child in children.iter_mut() {
             if child.finished || child.next_restart_unix_ms.is_some() {
@@ -520,7 +524,11 @@ pub(super) fn supervise_children(
                     );
                 } else if status.success() {
                     child.finished = true;
-                    child.state = "exited".to_string();
+                    child.state = if completing_run_limit {
+                        "completed".to_string()
+                    } else {
+                        "exited".to_string()
+                    };
                 } else {
                     child.finished = true;
                     child.state = "failed".to_string();
@@ -537,8 +545,13 @@ pub(super) fn supervise_children(
             propagate_process_failure(supervisor_state, children, &failed_process);
         }
         if run_ticks_satisfied(children, run_ticks) {
-            terminate_active_children(supervisor_state, children, "completed");
-            return Ok(());
+            let reached_at = run_limit_reached_at.get_or_insert_with(Instant::now);
+            if reached_at.elapsed() >= RUN_LIMIT_NATURAL_EXIT_GRACE {
+                terminate_active_children(supervisor_state, children, "completed");
+                return Ok(());
+            }
+        } else {
+            run_limit_reached_at = None;
         }
         let (spawned_names, ready_names) = child_dependency_snapshot(children);
         for child in children.iter_mut() {
