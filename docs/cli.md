@@ -743,7 +743,8 @@ profile、跨进程 `global_tick` 守门、注入目标和 expectation 拼写。
 `run` 逐 case 生成 test-only 产物、构建并运行 generated app 或 generated supervisor。
 CLI 会为 case 设置 `FLOWRT_STATUS_OUT` 并生成 replay source，进程退出后读取最终
 status snapshot，再校验 graph / instance / route / failover 期望。任一 case 失败时，
-命令退出非零；传入 `--report` 时写出 JSON 报告。
+命令退出非零；传入 `--report` 时写出 JSON 报告。单个 case 执行失败也会进入报告中的
+failed case，不会让整个矩阵在写报告前提前中断。
 
 matrix replay source 只驱动第一个 input boundary 的默认激励样本；payload 按该 boundary
 type 的 Contract IR canonical frame layout 写成可解码零值。fixed message 使用 wire-size

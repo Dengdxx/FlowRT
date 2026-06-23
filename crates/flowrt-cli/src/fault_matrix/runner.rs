@@ -42,28 +42,41 @@ pub(crate) fn run_matrix(path: &Path, out_root: &Path) -> Result<FaultMatrixRunR
     let matrix = parse_matrix_file(path)?;
     let mut results = Vec::with_capacity(matrix.cases.len());
     for case in &matrix.cases {
-        let case_dir = out_root.join(&matrix.name).join(&case.name);
-        let status_out = case_dir.join("status.json");
-        std::fs::create_dir_all(&case_dir).with_context(|| {
-            format!("failed to create matrix case dir `{}`", case_dir.display())
-        })?;
-        run_case(path, &matrix, case, &case_dir, &status_out)?;
-        let status_text = std::fs::read_to_string(&status_out).with_context(|| {
-            format!("failed to read status snapshot `{}`", status_out.display())
-        })?;
-        let status: serde_json::Value = serde_json::from_str(&status_text).with_context(|| {
-            format!("failed to parse status snapshot `{}`", status_out.display())
-        })?;
-        results.push(super::expect::evaluate_expectations(
-            &case.name,
-            &status,
-            &case.expect,
-        ));
+        results.push(match run_and_evaluate_case(path, &matrix, case, out_root) {
+            Ok(result) => result,
+            Err(error) => super::expect::FaultMatrixCaseResult {
+                name: case.name.clone(),
+                passed: false,
+                failures: vec![format!("case execution failed: {error:#}")],
+            },
+        });
     }
     Ok(FaultMatrixRunReport {
         matrix: matrix.name,
         cases: results,
     })
+}
+
+fn run_and_evaluate_case(
+    matrix_path: &Path,
+    matrix: &FaultMatrix,
+    case: &FaultMatrixCase,
+    out_root: &Path,
+) -> Result<super::expect::FaultMatrixCaseResult> {
+    let case_dir = out_root.join(&matrix.name).join(&case.name);
+    let status_out = case_dir.join("status.json");
+    std::fs::create_dir_all(&case_dir)
+        .with_context(|| format!("failed to create matrix case dir `{}`", case_dir.display()))?;
+    run_case(matrix_path, matrix, case, &case_dir, &status_out)?;
+    let status_text = std::fs::read_to_string(&status_out)
+        .with_context(|| format!("failed to read status snapshot `{}`", status_out.display()))?;
+    let status: serde_json::Value = serde_json::from_str(&status_text)
+        .with_context(|| format!("failed to parse status snapshot `{}`", status_out.display()))?;
+    Ok(super::expect::evaluate_expectations(
+        &case.name,
+        &status,
+        &case.expect,
+    ))
 }
 
 fn run_case(

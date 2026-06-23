@@ -136,7 +136,7 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   `flowrt fault-matrix run` 的 replay source payload 生成：matrix runner 会按 boundary input
   的 Contract IR canonical frame layout 写入默认零值 payload，避免 fixed 或 bounded variable
   frame boundary 以空 payload 伪装成有效回放样本。`fault-matrix run --report` 在 expectation
-  失败时也会先写出完整 case JSON report，再按失败 case 返回非零退出。
+  失败或单个 case 执行失败时也会先写出完整 case JSON report，再按失败 case 返回非零退出。
 - 收口残留：route health / reconnect 已统一进入 status facts，`iox2` / `zenoh` transport
   publish 失败也会按 route overflow policy 进入 drop/backpressure/overflow counters；真实
   backend SDK 对“queue full”和一般 transport error 的细粒度错误码仍不作为 FlowRT 语义假设。

@@ -502,6 +502,69 @@ fn fault_matrix_run_report_preserves_failure_details_before_exit() {
     ));
 }
 
+#[test]
+fn fault_matrix_run_report_records_case_execution_error() {
+    let dir = temp_test_dir("fault-matrix-case-execution-error");
+    std::fs::create_dir_all(&dir).unwrap();
+    let matrix = dir.join("fault-matrix.toml");
+    std::fs::write(
+        &matrix,
+        r#"
+[matrix]
+name = "execution_error"
+rsdl = "rsdl/missing.rsdl"
+profile = "deterministic"
+run_ticks = 3
+mode = "run"
+
+[[case]]
+name = "missing_rsdl_a"
+
+[[case.inject]]
+kind = "status_error"
+instance = "controller"
+task = "main"
+invocations = [1]
+
+[case.expect.graph]
+graph_health = "healthy"
+
+[[case]]
+name = "missing_rsdl_b"
+
+[[case.inject]]
+kind = "panic"
+instance = "controller"
+task = "main"
+invocations = [1]
+
+[case.expect.graph]
+graph_health = "healthy"
+"#,
+    )
+    .unwrap();
+
+    let report = fault_matrix::runner::run_matrix(&matrix, &dir.join("out")).unwrap();
+
+    assert_eq!(report.matrix, "execution_error");
+    assert_eq!(report.cases.len(), 2);
+    assert_eq!(report.cases[0].name, "missing_rsdl_a");
+    assert_eq!(report.cases[1].name, "missing_rsdl_b");
+    for case in &report.cases {
+        assert!(!case.passed);
+        assert!(
+            case.failures[0].contains("case execution failed"),
+            "{:?}",
+            case.failures
+        );
+        assert!(
+            case.failures[0].contains("missing.rsdl"),
+            "{:?}",
+            case.failures
+        );
+    }
+}
+
 fn write_fault_matrix_cross_process_rsdl(rsdl_dir: &Path, determinism: &str) {
     std::fs::write(
         rsdl_dir.join("robot.rsdl"),
