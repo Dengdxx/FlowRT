@@ -152,6 +152,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   v0.25.0 iox2 focused smoke 的真实 SDK 分支已从一次性 status snapshot 改为 live status
   轮询，同时新增 generated C++ bounded Operation app 的 build/run 验证，证明
   `string<max=N>` Operation start goal 会在真实 C++ iox2 control-plane 中按上界内样例运行。
+  Release Candidate demo smoke 会用 `profile_switch_demo --profile iox2` 覆盖无 dataflow bind、
+  但 output-only Rust component 使用 named message 类型时 generated shell 仍能导入消息类型并
+  完成 release build。
   generated Rust shell / reference stub 也已清理 `-D warnings` 下的 unused、dead-code、
   import 和 parens 告警；`global_tick` 外部 tick shell 不再为 simulated replay 路径生成
   unused `scheduler_now_ms` / `observed_data_generation`。但这仍不等同于所有 profile、target

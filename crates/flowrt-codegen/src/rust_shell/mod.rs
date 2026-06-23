@@ -7,7 +7,9 @@ mod scheduler_emit;
 pub(crate) mod service_emit;
 mod step_emit;
 
-use flowrt_ir::{ComponentIr, ContractIr, DeterminismMode, LanguageKind, TaskConcurrency};
+use flowrt_ir::{
+    ComponentIr, ContractIr, DeterminismMode, LanguageKind, TaskConcurrency, TypeExpr,
+};
 
 use crate::runtime_plan::{
     active_boundaries_for_instances, bind_runtime_plans, boundary_runtime_plans,
@@ -46,6 +48,32 @@ fn selected_profile_uses_global_tick(contract: &ContractIr) -> bool {
         .profiles
         .first()
         .is_some_and(|profile| profile.determinism.mode == DeterminismMode::GlobalTick)
+}
+
+fn rust_component_ports_need_message_import(
+    contract: &ContractIr,
+    instances: &[&flowrt_ir::InstanceIr],
+) -> bool {
+    instances.iter().any(|instance| {
+        let component = component_by_name(contract, &instance.component.name);
+        component
+            .inputs
+            .iter()
+            .chain(component.outputs.iter())
+            .any(|port| type_expr_uses_named_message(&port.ty))
+    })
+}
+
+fn type_expr_uses_named_message(expr: &TypeExpr) -> bool {
+    match expr {
+        TypeExpr::Named { .. } => true,
+        TypeExpr::Array { element, .. } | TypeExpr::VarSequence { element, .. } => {
+            type_expr_uses_named_message(element)
+        }
+        TypeExpr::Primitive { .. } | TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {
+            false
+        }
+    }
 }
 
 pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
@@ -147,6 +175,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     let needs_message_import = !bind_plans.is_empty()
         || !bridge_plans.is_empty()
         || !active_boundaries_for_instances(&boundary_plans, &order).is_empty()
+        || rust_component_ports_need_message_import(contract, &order)
         || service_runtime_plans(contract, graph)
             .iter()
             .any(|plan| plan.backend.0 != "zenoh")

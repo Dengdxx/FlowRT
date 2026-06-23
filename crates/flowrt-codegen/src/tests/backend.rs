@@ -69,6 +69,49 @@ backends = ["iox2"]
 }
 
 #[test]
+fn rust_iox2_output_only_shell_imports_message_types() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "profile_switch_demo"
+rsdl_version = "0.1"
+
+[type.Counter]
+value = "u32"
+
+[component.worker]
+language = "rust"
+output = ["counter:Counter"]
+
+[instance.worker]
+component = "worker"
+process = "main"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 1
+output = ["counter"]
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        rust_shell.contains("use crate::messages::*;"),
+        "output-only Rust shells still reference message types when creating output slots.\n\n{rust_shell}"
+    );
+    assert!(rust_shell.contains("flowrt::Output::<Counter>::new();"));
+}
+
+#[test]
 fn enables_flowrt_iox2_feature_when_profile_selects_iox2() {
     let ir = contract_from_source(
         r#"
