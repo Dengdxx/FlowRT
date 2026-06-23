@@ -1504,6 +1504,7 @@ pub(crate) fn cargo_manifest_with_runtime_patch(
     };
     if is_repo_rust_runtime_dir(runtime_dir)? {
         write_cargo_offline_config(out_dir)?;
+        write_repo_cargo_lock(out_dir)?;
     }
     write_cargo_vendor_config(out_dir, runtime_dir)?;
     if generated.contains("[patch.crates-io]") {
@@ -1552,6 +1553,19 @@ pub(crate) fn write_cargo_offline_config(out_dir: &Path) -> Result<()> {
     let config_path = cargo_dir.join("config.toml");
     fs::write(&config_path, "[net]\noffline = true\n")
         .with_context(|| format!("failed to write `{}`", config_path.display()))
+}
+
+pub(crate) fn write_repo_cargo_lock(out_dir: &Path) -> Result<()> {
+    let repo_lock = repo_root_dir()?.join("Cargo.lock");
+    let generated_lock = out_dir.join("build").join("Cargo.lock");
+    fs::copy(&repo_lock, &generated_lock).with_context(|| {
+        format!(
+            "failed to copy repository Cargo.lock `{}` to `{}`",
+            repo_lock.display(),
+            generated_lock.display()
+        )
+    })?;
+    Ok(())
 }
 
 pub(crate) fn flowrt_private_prefix_from_runtime_dir(runtime_dir: &Path) -> Option<PathBuf> {

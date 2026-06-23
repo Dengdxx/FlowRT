@@ -60,6 +60,8 @@ flowrt = { version = "0.24" }
             .expect("repo runtime patch should force generated Cargo offline");
     let content = std::fs::read_to_string(&patched_manifest).unwrap();
     let config = std::fs::read_to_string(build_dir.join(".cargo").join("config.toml")).unwrap();
+    let lock = std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap();
+    let repo_lock = std::fs::read_to_string(repo_root_dir().unwrap().join("Cargo.lock")).unwrap();
     let invocation = cargo_build_invocation(
         &patched_manifest,
         "robot-flowrt-app",
@@ -71,6 +73,7 @@ flowrt = { version = "0.24" }
     .expect("cargo invocation should read generated offline config");
 
     assert!(content.contains("[patch.crates-io]"));
+    assert_eq!(lock, repo_lock);
     assert!(config.contains("[net]"));
     assert!(config.contains("offline = true"));
     assert!(invocation.args.iter().any(|arg| arg == "--offline"));
