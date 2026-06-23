@@ -228,13 +228,13 @@ fn decode_frame_field_value(
     header: &[u8],
 ) -> Result<Value> {
     let ty = field.ty.trim();
-    if ty == "string" {
+    if is_variable_scalar_type(ty, "string")? {
         let block = decode_tail_block(decoder, field, header)?;
         let text = String::from_utf8(block.to_vec())
             .with_context(|| format!("field `{}` is not valid UTF-8", field.name))?;
         return Ok(Value::String(text));
     }
-    if ty == "bytes" {
+    if is_variable_scalar_type(ty, "bytes")? {
         let block = decode_tail_block(decoder, field, header)?;
         return Ok(Value::String(encode_base64(block)));
     }
@@ -359,13 +359,13 @@ fn encode_frame_field_value(
     value: &Value,
 ) -> Result<Vec<u8>> {
     let ty = field.ty.trim();
-    if ty == "string" {
+    if is_variable_scalar_type(ty, "string")? {
         let text = value
             .as_str()
             .with_context(|| format!("field `{}` expects JSON string", field.name))?;
         return encode_tail_span(tail, field, text.as_bytes());
     }
-    if ty == "bytes" {
+    if is_variable_scalar_type(ty, "bytes")? {
         let bytes = decode_bytes_json(value, &field.name)?;
         return encode_tail_span(tail, field, &bytes);
     }
@@ -1016,8 +1016,42 @@ fn parse_sequence_type(ty: &str) -> Result<Option<&str>> {
     else {
         return Ok(None);
     };
-    if inner.contains(",max=") {
-        anyhow::bail!("legacy bounded sequence type `{ty}` is not supported");
+    let inner = inner.trim();
+    let element = if let Some((element, max)) = inner.rsplit_once(",max=") {
+        let max = max
+            .trim()
+            .parse::<usize>()
+            .with_context(|| format!("invalid bounded sequence max in `{ty}`"))?;
+        if max == 0 {
+            anyhow::bail!("bounded sequence max in `{ty}` must be greater than 0");
+        }
+        element.trim()
+    } else {
+        inner
+    };
+    if element.is_empty() {
+        anyhow::bail!("invalid sequence element type in `{ty}`");
     }
-    Ok(Some(inner.trim()))
+    Ok(Some(element))
+}
+
+fn is_variable_scalar_type(ty: &str, base: &str) -> Result<bool> {
+    if ty == base {
+        return Ok(true);
+    }
+    let Some(max) = ty
+        .strip_prefix(base)
+        .and_then(|value| value.strip_prefix("<max="))
+        .and_then(|value| value.strip_suffix('>'))
+    else {
+        return Ok(false);
+    };
+    let max = max
+        .trim()
+        .parse::<usize>()
+        .with_context(|| format!("invalid `{base}` max in `{ty}`"))?;
+    if max == 0 {
+        anyhow::bail!("`{base}` max in `{ty}` must be greater than 0");
+    }
+    Ok(true)
 }
