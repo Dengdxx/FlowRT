@@ -160,6 +160,74 @@ int main() {
             std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
         auto key_expr = flowrt::zenoh::operation_key_expr("robot", "hash", 42U);
         flowrt::IntrospectionState state;
+        state.register_operation_start_handler(
+            "controller.plan",
+            [state](std::vector<std::uint8_t> payload, std::optional<std::uint64_t> timeout_ms,
+                    std::optional<std::string> owner)
+                -> std::variant<flowrt::IntrospectionOperationStartStatus, std::string> {
+                assert((payload == std::vector<std::uint8_t>{10U, 20U}));
+                assert(timeout_ms == std::optional<std::uint64_t>{77U});
+                assert(owner == std::optional<std::string>{"cli"});
+                state.record_operation_transition(
+                    "controller.plan", "222:8:4", "accepted",
+                    std::optional<std::string_view>{"controller.plan"},
+                    std::optional<std::uint64_t>{123456U});
+                return flowrt::IntrospectionOperationStartStatus{
+                    .operation_id = "222:8:4",
+                    .operation =
+                        flowrt::IntrospectionOperationStatus{
+                            .name = "controller.plan",
+                            .ready = true,
+                            .running = 1,
+                            .queued = 0,
+                            .current_operation_ids = {"222:8:4"},
+                            .total_started = 1,
+                            .current_state = std::optional<std::string>{"accepted"},
+                            .current_owner = std::optional<std::string>{"controller.plan"},
+                            .current_deadline_ms = std::optional<std::uint64_t>{123456U},
+                        },
+                };
+            });
+        state.register_operation_status_handler(
+            "controller.plan",
+            [](std::string_view operation_id)
+                -> std::variant<flowrt::IntrospectionOperationStatus, std::string> {
+                assert(operation_id == "222:8:4");
+                return flowrt::IntrospectionOperationStatus{
+                    .name = "controller.plan",
+                    .ready = true,
+                    .running = 1,
+                    .queued = 0,
+                    .current_operation_ids = {"222:8:4"},
+                    .total_started = 1,
+                    .current_state = std::optional<std::string>{"running"},
+                };
+            });
+        state.register_operation_cancel_handler(
+            "controller.plan",
+            [](std::string_view operation_id)
+                -> std::variant<flowrt::IntrospectionOperationStatus, std::string> {
+                assert(operation_id == "222:8:4");
+                return flowrt::IntrospectionOperationStatus{
+                    .name = "controller.plan",
+                    .ready = true,
+                    .running = 0,
+                    .queued = 0,
+                    .current_operation_ids = {},
+                    .total_started = 1,
+                    .canceled_count = 1,
+                    .current_state = std::optional<std::string>{"cancel_requested"},
+                };
+            });
+        state.record_operation_transition("controller.plan", "333:9:5", "running",
+                                          std::optional<std::string_view>{"controller.plan"},
+                                          std::optional<std::uint64_t>{50U});
+        state.record_operation_progress_payload(
+            "controller.plan", "333:9:5", 1U,
+            std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{7U, 6U}});
+        state.record_operation_result_payload(
+            "controller.plan", "333:9:5", "succeeded", std::nullopt,
+            std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{9U, 8U}});
         auto server = flowrt::zenoh::ZenohOperationServer::open(
             key_expr, session,
             flowrt::IntrospectionHandshake{
@@ -174,10 +242,49 @@ int main() {
             state);
         assert(server.ready());
 
-        const auto response = query_json(*session, key_expr, R"({"command":"status"})");
-        assert(response.has_value());
-        assert(response->find(R"("response":"status")") != std::string::npos);
-        assert(response->find(R"("runtime":"cpp")") != std::string::npos);
+        const auto status_response = query_json(*session, key_expr, R"({"command":"status"})");
+        assert(status_response.has_value());
+        assert(status_response->find(R"("response":"status")") != std::string::npos);
+        assert(status_response->find(R"("runtime":"cpp")") != std::string::npos);
+
+        const auto start_response = query_json(
+            *session, key_expr,
+            R"({"command":"operation_start","operation":"controller.plan","payload":[10,20],"timeout_ms":77,"owner":"cli"})");
+        assert(start_response.has_value());
+        assert(start_response->find(R"("response":"operation_started")") != std::string::npos);
+        assert(start_response->find(R"("operation_id":"222:8:4")") != std::string::npos);
+
+        const auto operation_status_response = query_json(
+            *session, key_expr, R"({"command":"operation_status","operation_id":"222:8:4"})");
+        assert(operation_status_response.has_value());
+        assert(operation_status_response->find(R"("response":"operation_value")") !=
+               std::string::npos);
+        assert(operation_status_response->find(R"("current_state":"running")") !=
+               std::string::npos);
+
+        const auto cancel_response = query_json(
+            *session, key_expr, R"({"command":"operation_cancel","operation_id":"222:8:4"})");
+        assert(cancel_response.has_value());
+        assert(cancel_response->find(R"("response":"operation_value")") != std::string::npos);
+        assert(cancel_response->find(R"("current_state":"cancel_requested")") != std::string::npos);
+
+        const auto result_response = query_json(
+            *session, key_expr, R"({"command":"operation_result","operation_id":"333:9:5"})");
+        assert(result_response.has_value());
+        assert(result_response->find(R"("response":"operation_result")") != std::string::npos);
+        assert(result_response->find(R"("state":"succeeded")") != std::string::npos);
+        assert(result_response->find(R"("payload":[9,8])") != std::string::npos);
+
+        const auto observe_response = query_json(
+            *session, key_expr,
+            R"({"command":"operation_observe","operation_id":"333:9:5","after_sequence":0,"limit":8})");
+        assert(observe_response.has_value());
+        assert(observe_response->find(R"("response":"operation_events")") != std::string::npos);
+        assert(observe_response->find(R"("kind":"state")") != std::string::npos);
+        assert(observe_response->find(R"("kind":"progress")") != std::string::npos);
+        assert(observe_response->find(R"("progress_sequence":1)") != std::string::npos);
+        assert(observe_response->find(R"("kind":"result")") != std::string::npos);
+        assert(observe_response->find(R"("terminal":true)") != std::string::npos);
     }
 
     const auto invalid_write = endpoint.publish_at(WireProbe{0xFFU, 99U}, 500U);

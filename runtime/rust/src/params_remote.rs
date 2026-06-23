@@ -384,7 +384,8 @@ fn handle_operation_query(
         }
         _ => IntrospectionResponse::Error {
             handshake: handshake.clone(),
-            message: "unsupported zenoh operation command; expected status/cancel".to_string(),
+            message: "unsupported zenoh operation command; expected status/operation_start/operation_status/operation_cancel/operation_result/operation_observe"
+                .to_string(),
         },
     };
 
@@ -920,6 +921,36 @@ mod tests {
             panic!("expected Error response for empty payload");
         };
         assert!(message.contains("empty zenoh params request payload"));
+    }
+
+    #[test]
+    fn unsupported_operation_command_error_lists_supported_commands() {
+        let (_zenoh_guard, session) = test_session();
+        let key_expr = operation_key_expr("test_robot", "test_hash", std::process::id());
+        let handshake = make_test_handshake();
+        let state = IntrospectionState::new();
+
+        let _server =
+            ZenohOperationServer::open(&session, &key_expr, handshake.clone(), state).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let payload = serde_json::to_vec(&IntrospectionRequest::ParamList).unwrap();
+        let timeout = std::time::Duration::from_millis(5000);
+        let receiver = session
+            .get(&key_expr)
+            .with(zenoh::handlers::FifoChannel::new(1))
+            .payload(zenoh::bytes::ZBytes::from(payload))
+            .timeout(timeout)
+            .wait()
+            .unwrap();
+        let reply = receiver.recv_timeout(timeout).unwrap().unwrap();
+        let sample = reply.result().unwrap();
+        let raw = sample.payload().to_bytes().to_vec();
+        let response: IntrospectionResponse = serde_json::from_slice(&raw).unwrap();
+        let IntrospectionResponse::Error { message, .. } = response else {
+            panic!("expected Error response for unsupported operation command");
+        };
+        assert!(message.contains("unsupported zenoh operation command; expected status/operation_start/operation_status/operation_cancel/operation_result/operation_observe"));
     }
 
     #[test]

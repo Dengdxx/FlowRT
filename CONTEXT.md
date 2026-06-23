@@ -104,7 +104,8 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   `result_retention_ms = 0` 不保留已完成 invocation，过期后 `op result/follow` 按 id 返回
   not found。
   C++ `ZenohOperationServer` 也提供 shared-session `open(...)`，runtime zenoh smoke 已覆盖真实
-  SDK path 下的 remote Operation status queryable。
+  SDK path 下 remote Operation `status`、`operation_start`、`operation_status`、
+  `operation_cancel`、`operation_result` 和 `operation_observe` queryable。
   Operation start/cancel accepted 后会进入 recorder command event，`flowrt replay --file
   <recording.mcap>` 可读取 operation command timeline 并重新驱动 start/cancel；
   progress/result/error 仍只作为 observation evidence，不参与重放。
