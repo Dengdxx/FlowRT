@@ -257,6 +257,160 @@ graph_health = "healthy"
 }
 
 #[test]
+fn fault_matrix_replay_source_writes_fixed_boundary_default_payload() {
+    let dir = temp_test_dir("fault-matrix-replay-fixed-payload");
+    std::fs::create_dir_all(&dir).unwrap();
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "fault_matrix_replay_payload"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+input = ["sample:Sample"]
+output = ["echo:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["echo:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["echo"]
+
+[[bind.dataflow]]
+from = "source.echo"
+to = "sink.echo"
+channel = "latest"
+
+[[boundary.input]]
+name = "feed"
+port = "source.sample"
+type = "Sample"
+
+[profile.default]
+mode = "island"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let replay = fault_matrix::runner::write_case_replay_source(&dir, &contract).unwrap();
+    let timeline = flowrt_record::read_replay_timeline_from_path(&replay).unwrap();
+
+    assert_eq!(timeline.len(), 1);
+    assert_eq!(timeline[0].target, "feed");
+    assert_eq!(timeline[0].payload, vec![0, 0, 0, 0]);
+}
+
+#[test]
+fn fault_matrix_replay_source_uses_canonical_frame_wire_size_for_padded_fixed_type() {
+    let dir = temp_test_dir("fault-matrix-replay-padded-fixed-payload");
+    std::fs::create_dir_all(&dir).unwrap();
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "fault_matrix_replay_padded"
+rsdl_version = "0.1"
+
+[type.Sample]
+flag = "u8"
+value = "u32"
+
+[component.source]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[boundary.input]]
+name = "feed"
+port = "source.sample"
+type = "Sample"
+
+[profile.default]
+mode = "island"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let replay = fault_matrix::runner::write_case_replay_source(&dir, &contract).unwrap();
+    let timeline = flowrt_record::read_replay_timeline_from_path(&replay).unwrap();
+
+    assert_eq!(timeline[0].payload, vec![0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn fault_matrix_replay_source_writes_empty_variable_frame_payload() {
+    let dir = temp_test_dir("fault-matrix-replay-variable-payload");
+    std::fs::create_dir_all(&dir).unwrap();
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "fault_matrix_replay_variable"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=8>"
+label = "string<max=12>"
+
+[component.source]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[boundary.input]]
+name = "feed"
+port = "source.packet"
+type = "Packet"
+
+[profile.default]
+mode = "island"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let replay = fault_matrix::runner::write_case_replay_source(&dir, &contract).unwrap();
+    let timeline = flowrt_record::read_replay_timeline_from_path(&replay).unwrap();
+
+    assert_eq!(timeline[0].payload, vec![0; 16]);
+}
+
+#[test]
 fn fault_matrix_expectation_evaluator_accepts_route_and_failover() {
     let status = serde_json::json!({
         "mode": "launch",

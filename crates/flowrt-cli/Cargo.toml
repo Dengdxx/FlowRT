@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 flowrt-codegen = { path = "../flowrt-codegen" }
+flowrt-conformance = { path = "../flowrt-conformance" }
 flowrt-ir = { path = "../flowrt-ir" }
 flowrt-record = { path = "../flowrt-record" }
 flowrt-rsdl = { path = "../flowrt-rsdl" }

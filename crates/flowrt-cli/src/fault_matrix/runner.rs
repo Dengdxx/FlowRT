@@ -2,7 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use flowrt_ir::{BoundaryDirection, ContractIr};
+use flowrt_conformance::message_frame_expectations;
+use flowrt_ir::{BoundaryDirection, ContractIr, PrimitiveType, TypeExpr, TypeIr};
 use flowrt_record::{
     FlowrtMcapWriter, PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind,
     RecordEnvelope, RecordEventKind,
@@ -115,7 +116,10 @@ fn run_case(
     }
 }
 
-fn write_case_replay_source(case_dir: &Path, contract: &ContractIr) -> Result<std::path::PathBuf> {
+pub(crate) fn write_case_replay_source(
+    case_dir: &Path,
+    contract: &ContractIr,
+) -> Result<std::path::PathBuf> {
     let boundary = contract
         .graphs
         .iter()
@@ -132,6 +136,7 @@ fn write_case_replay_source(case_dir: &Path, contract: &ContractIr) -> Result<st
         .register_channel("flowrt/fault-matrix/replay", RecordEventKind::ChannelSample)
         .context("failed to register matrix replay MCAP channel")?;
     let event_time_ns = 1_000_000_000_000_u64;
+    let payload = default_boundary_replay_payload(contract, &boundary.ty)?;
     writer
         .write_event(
             channel,
@@ -155,7 +160,7 @@ fn write_case_replay_source(case_dir: &Path, contract: &ContractIr) -> Result<st
                 },
                 payload_encoding: PayloadEncoding::CanonicalFrame,
                 payload_schema: boundary.ty.canonical_syntax(),
-                payload: Vec::new(),
+                payload,
             },
         )
         .context("failed to write matrix replay MCAP event")?;
@@ -163,6 +168,64 @@ fn write_case_replay_source(case_dir: &Path, contract: &ContractIr) -> Result<st
         .finish_into_inner()
         .context("failed to finish matrix replay MCAP")?;
     Ok(path)
+}
+
+fn default_boundary_replay_payload(contract: &ContractIr, ty: &TypeExpr) -> Result<Vec<u8>> {
+    Ok(vec![0; frame_header_size_for_replay(contract, ty)?])
+}
+
+fn frame_header_size_for_replay(contract: &ContractIr, ty: &TypeExpr) -> Result<usize> {
+    match ty {
+        TypeExpr::Primitive { name } => Ok(primitive_wire_size(*name)),
+        TypeExpr::Array { element, len } => frame_header_size_for_replay(contract, element)?
+            .checked_mul(*len)
+            .with_context(|| {
+                format!(
+                    "boundary replay payload size overflows for `{}`",
+                    ty.canonical_syntax()
+                )
+            }),
+        TypeExpr::Named { name } => {
+            let message = replay_type_by_name(contract, name)?;
+            let frame = message_frame_expectations(contract)
+                .with_context(|| {
+                    format!(
+                        "failed to derive fault matrix replay frame layout for `{}`",
+                        message.qualified_name
+                    )
+                })?
+                .into_iter()
+                .find(|frame| frame.type_name == message.generated_name)
+                .with_context(|| {
+                    format!(
+                        "fault matrix replay frame layout for `{}` was not derived",
+                        message.qualified_name
+                    )
+                })?;
+            Ok(frame.header_size_bytes)
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            Ok(8)
+        }
+    }
+}
+
+fn replay_type_by_name<'a>(contract: &'a ContractIr, name: &str) -> Result<&'a TypeIr> {
+    contract
+        .types
+        .iter()
+        .find(|ty| ty.qualified_name == name || ty.generated_name == name || ty.name == name)
+        .with_context(|| format!("fault matrix replay boundary references unknown type `{name}`"))
+}
+
+fn primitive_wire_size(primitive: PrimitiveType) -> usize {
+    match primitive {
+        PrimitiveType::Bool | PrimitiveType::U8 | PrimitiveType::I8 => 1,
+        PrimitiveType::U16 | PrimitiveType::I16 => 2,
+        PrimitiveType::U32 | PrimitiveType::I32 | PrimitiveType::F32 => 4,
+        PrimitiveType::U64 | PrimitiveType::I64 | PrimitiveType::F64 => 8,
+        PrimitiveType::U128 | PrimitiveType::I128 => 16,
+    }
 }
 
 fn write_case_inject_file(case_dir: &Path, case: &FaultMatrixCase) -> Result<std::path::PathBuf> {

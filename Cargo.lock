@@ -683,6 +683,7 @@ dependencies = [
  "clap",
  "flowrt",
  "flowrt-codegen",
+ "flowrt-conformance",
  "flowrt-ir",
  "flowrt-record",
  "flowrt-rsdl",

@@ -127,7 +127,10 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   穷尽矩阵，新增 transport 分支仍需要按依赖可用性补 smoke 或显式 fail-fast 证据。
 - 故障注入：`status_error`、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop` 已进入 test-only deterministic injection / fault matrix 路径；生产随机
-  / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。
+  / chaos 注入、性能矩阵和跨 backend 恢复时序压力测试仍留待后续。未发布版本已修复
+  `flowrt fault-matrix run` 的 replay source payload 生成：matrix runner 会按 boundary input
+  的 Contract IR canonical frame layout 写入默认零值 payload，避免 fixed 或 bounded variable
+  frame boundary 以空 payload 伪装成有效回放样本。
 - 收口残留：route health / reconnect 已统一进入 status facts，`iox2` / `zenoh` transport
   publish 失败也会按 route overflow policy 进入 drop/backpressure/overflow counters；真实
   backend SDK 对“queue full”和一般 transport error 的细粒度错误码仍不作为 FlowRT 语义假设。
