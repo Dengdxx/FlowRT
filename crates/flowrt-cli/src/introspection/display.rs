@@ -1,3 +1,5 @@
+use flowrt_selfdesc::SelfDescriptionResourceDescriptor;
+
 use super::*;
 
 pub(crate) fn self_description_summary(self_description: &SelfDescription) -> String {
