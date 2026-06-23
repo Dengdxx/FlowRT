@@ -66,7 +66,9 @@ backends = ["inproc"]
 
     let app_tick_fn = generated_function_block(rust_shell, "fn run_tick(");
     assert!(app_tick_fn.contains("let mut tick_base: usize = __flowrt_external_tick_base;"));
-    assert!(app_tick_fn.contains("let mut scheduler_now_ms: u64 = grant.logical_time_ms;"));
+    assert!(app_tick_fn.contains("let scheduler_now_ms: u64 = grant.logical_time_ms;"));
+    assert!(!app_tick_fn.contains("let mut scheduler_now_ms"));
+    assert!(!app_tick_fn.contains("observed_data_generation"));
     assert!(!app_tick_fn.contains("scheduler_runtime_now_ms"));
     assert!(!app_tick_fn.contains("wait_until_after"));
 }
@@ -138,6 +140,7 @@ backends = ["inproc"]
     let app_tick_fn = generated_function_block(cpp_shell, "App::run_tick");
     assert!(app_tick_fn.contains("std::size_t tick_base = flowrt_external_tick_base;"));
     assert!(app_tick_fn.contains("std::uint64_t scheduler_now_ms = grant.logical_time_ms;"));
+    assert!(!app_tick_fn.contains("observed_data_generation"));
     assert!(!app_tick_fn.contains("scheduler_runtime_now_ms"));
     assert!(!app_tick_fn.contains("wait_until_after"));
 }

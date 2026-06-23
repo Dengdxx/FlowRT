@@ -562,7 +562,7 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
     std::uint32_t flaky_fault_consecutive = 0;
     bool flaky_terminal_faulted = false;
     std::uint64_t __inject_count_1 = 0;
-    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty())) {
+    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty() || flaky_next_restart_ms.has_value())) {
         std::uint64_t observed_data_generation = scheduler_events.data_generation();
         const auto tick_time_ms = scheduler_now_ms;
         scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});
@@ -962,7 +962,7 @@ flowrt::Status App::run_process_main(const flowrt::Backend& backend, std::option
     std::uint32_t flaky_fault_consecutive = 0;
     bool flaky_terminal_faulted = false;
     std::uint64_t __inject_count_1 = 0;
-    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty())) {
+    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty() || flaky_next_restart_ms.has_value())) {
         std::uint64_t observed_data_generation = scheduler_events.data_generation();
         const auto tick_time_ms = scheduler_now_ms;
         scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});

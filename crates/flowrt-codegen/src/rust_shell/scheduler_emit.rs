@@ -231,8 +231,9 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let scheduler_now_init = external_tick
         .map(|grant| format!("{grant}.logical_time_ms"))
         .unwrap_or_else(|| "0".to_string());
+    let scheduler_now_mut = if external_tick.is_some() { "" } else { "mut " };
     output.push_str(&format!(
-        "        let mut tick_base: usize = {tick_base_init};\n        let mut scheduler_now_ms: u64 = {scheduler_now_init};\n        let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n        const FAIRNESS_STARVATION_THRESHOLD: u64 = 10;\n",
+        "        let mut tick_base: usize = {tick_base_init};\n        let {scheduler_now_mut}scheduler_now_ms: u64 = {scheduler_now_init};\n        let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n        const FAIRNESS_STARVATION_THRESHOLD: u64 = 10;\n",
     ));
     if external_tick.is_none() {
         output.push_str(&rust_scheduler_clock_init(contract));
@@ -248,9 +249,16 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         contract,
         &scheduler_plan.dataflow_tasks,
     ));
-    output.push_str(
-        "        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && (run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n                || !pending_task_order.is_empty())\n        {\n            let mut observed_data_generation: u64;\n",
-    );
+    let observed_data_generation_decl = if external_tick.is_some() {
+        ""
+    } else {
+        "            let mut observed_data_generation: u64;\n"
+    };
+    let pending_restart_condition =
+        rust_pending_restart_loop_condition(&recoverable, external_tick.is_some());
+    output.push_str(&format!(
+        "        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && (run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n                || !pending_task_order.is_empty(){pending_restart_condition})\n        {{\n{observed_data_generation_decl}"
+    ));
     if external_tick.is_none() {
         output.push_str(&rust_scheduler_data_time_update(contract, "            "));
     }
@@ -287,8 +295,14 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(&operation_emit::emit_rust_operation_tick_driver_state(
         &operation_tasks,
     ));
+    let observed_data_generation_update = if external_tick.is_some() {
+        String::new()
+    } else {
+        "                observed_data_generation = scheduler_events.data_generation();\n"
+            .to_string()
+    };
     output.push_str(&format!(
-        "            introspection_state.record_tick_at(tick_time_ms, clock_source);\n            loop {{\n                observed_data_generation = scheduler_events.data_generation();\n                {woke_on_message_decl}\n"
+        "            introspection_state.record_tick_at(tick_time_ms, clock_source);\n            loop {{\n{observed_data_generation_update}                {woke_on_message_decl}\n"
     ));
     output.push_str(&crate::runtime_plan::indent_generated_block_levels(
         &emit_rust_on_message_wake_checks(graph, &tasks, binds, bridges, boundaries),
@@ -1202,6 +1216,27 @@ fn emit_rust_failover_state_decls(plans: &[crate::runtime_plan::StandbyFailoverP
         ));
     }
     output
+}
+
+fn rust_pending_restart_loop_condition(
+    recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+    external_tick: bool,
+) -> String {
+    if external_tick {
+        return String::new();
+    }
+    recoverable
+        .iter()
+        .filter(|plan| {
+            plan.policy == flowrt_ir::InstanceFailurePolicy::Restart && plan.restart.is_some()
+        })
+        .map(|plan| {
+            format!(
+                "\n                || {}_next_restart_ms.is_some()",
+                crate::snake_identifier(&plan.name)
+            )
+        })
+        .collect()
 }
 
 fn emit_rust_failover_boundary(plans: &[crate::runtime_plan::StandbyFailoverPlan]) -> String {

@@ -703,7 +703,8 @@ impl App {
             && (run_ticks
                 .map(|limit| tick_base < limit)
                 .unwrap_or(true)
-                || !pending_task_order.is_empty())
+                || !pending_task_order.is_empty()
+                || flaky_next_restart_ms.is_some())
         {
             let mut observed_data_generation: u64;
             scheduler_now_ms = scheduler_now_ms.max(scheduler_runtime_now_ms());
@@ -1359,7 +1360,8 @@ impl App {
             && (run_ticks
                 .map(|limit| tick_base < limit)
                 .unwrap_or(true)
-                || !pending_task_order.is_empty())
+                || !pending_task_order.is_empty()
+                || flaky_next_restart_ms.is_some())
         {
             let mut observed_data_generation: u64;
             scheduler_now_ms = scheduler_now_ms.max(scheduler_runtime_now_ms());

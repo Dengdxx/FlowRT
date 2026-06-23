@@ -128,7 +128,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   `Iox2FramePubSub`、`Iox2FrameServiceClient` 和 `Iox2FrameServiceServer` 不只具备 slot codec
   与 generated golden 证据。
   generated Rust shell / reference stub 也已清理 `-D warnings` 下的 unused、dead-code、
-  import 和 parens 告警。但这仍不等同于所有 profile、target 和真实 SDK run-time 组合的
+  import 和 parens 告警；`global_tick` 外部 tick shell 不再为 simulated replay 路径生成
+  unused `scheduler_now_ms` / `observed_data_generation`。但这仍不等同于所有 profile、target
+  和真实 SDK run-time 组合的
   穷尽矩阵，新增 transport 分支仍需要按依赖可用性补 smoke 或显式 fail-fast 证据。
 - 故障注入：`status_error`、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop` 已进入 test-only deterministic injection / fault matrix 路径；生产随机
@@ -137,6 +139,8 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   的 Contract IR canonical frame layout 写入默认零值 payload，避免 fixed 或 bounded variable
   frame boundary 以空 payload 伪装成有效回放样本。`fault-matrix run --report` 在 expectation
   失败或单个 case 执行失败时也会先写出完整 case JSON report，再按失败 case 返回非零退出。
+  generated Rust/C++ scheduler 在 bounded `run_ticks` 下会把 pending restart 视为继续条件，
+  避免 task 结果晚于 tick 预算提交时漏掉最终 restart 观测。
 - 收口残留：route health / reconnect 已统一进入 status facts，`iox2` / `zenoh` transport
   publish 失败也会按 route overflow policy 进入 drop/backpressure/overflow counters；真实
   backend SDK 对“queue full”和一般 transport error 的细粒度错误码仍不作为 FlowRT 语义假设。

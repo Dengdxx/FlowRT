@@ -648,9 +648,15 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         run.contract,
         &scheduler_plan.dataflow_tasks,
     ));
-    output.push_str(
-        "    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty())) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n",
-    );
+    let observed_data_generation_decl = if external_tick {
+        ""
+    } else {
+        "        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n"
+    };
+    let pending_restart_condition = cpp_pending_restart_loop_condition(&recoverable, external_tick);
+    output.push_str(&format!(
+        "    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty(){pending_restart_condition})) {{\n{observed_data_generation_decl}"
+    ));
     if !external_tick {
         output.push_str(&cpp_scheduler_data_time_update(run.contract, "        "));
     }
@@ -688,8 +694,13 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     } else {
         "const bool woke_on_message = false;"
     };
+    let observed_data_generation_update = if external_tick {
+        String::new()
+    } else {
+        "            observed_data_generation = scheduler_events.data_generation();\n".to_string()
+    };
     output.push_str(&format!(
-        "        introspection_state.record_tick(tick_time_ms, clock_source);\n        while (true) {{\n            observed_data_generation = scheduler_events.data_generation();\n            {woke_on_message_decl}\n"
+        "        introspection_state.record_tick(tick_time_ms, clock_source);\n        while (true) {{\n{observed_data_generation_update}            {woke_on_message_decl}\n"
     ));
     output.push_str(&indent_generated_block_levels(
         &emit_cpp_on_message_wake_checks(run.graph, &tasks, run.binds, run.bridges, run.boundaries),
@@ -1248,6 +1259,25 @@ fn emit_cpp_failover_state_decls(plans: &[crate::runtime_plan::StandbyFailoverPl
         ));
     }
     output
+}
+
+fn cpp_pending_restart_loop_condition(
+    recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+    external_tick: bool,
+) -> String {
+    if external_tick {
+        return String::new();
+    }
+    recoverable
+        .iter()
+        .filter(|plan| plan.policy == InstanceFailurePolicy::Restart && plan.restart.is_some())
+        .map(|plan| {
+            format!(
+                " || {}_next_restart_ms.has_value()",
+                crate::snake_identifier(&plan.name)
+            )
+        })
+        .collect()
 }
 
 fn cpp_failover_capture(plans: &[crate::runtime_plan::StandbyFailoverPlan]) -> String {

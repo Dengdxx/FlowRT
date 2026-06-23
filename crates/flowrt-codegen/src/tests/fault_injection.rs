@@ -318,6 +318,19 @@ fn cpp_shell_emits_injection_gate() {
 }
 
 #[test]
+fn generated_scheduler_keeps_running_until_pending_restart_is_observed() {
+    let rust_ir = injected_restart_contract("rust", "inproc", "rust");
+    let rust_bundle = emit_artifacts(&rust_ir).unwrap();
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains("|| flaky_next_restart_ms.is_some())"));
+
+    let cpp_ir = injected_restart_contract("cpp", "inproc", "cpp");
+    let cpp_bundle = emit_artifacts(&cpp_ir).unwrap();
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(cpp_shell.contains("|| flaky_next_restart_ms.has_value()))"));
+}
+
+#[test]
 fn rust_and_cpp_shell_emit_panic_injection_gates() {
     let rust_ir = injected_restart_contract("rust", "inproc", "rust");
     let mut rust_panic = rust_ir.clone();
