@@ -54,12 +54,12 @@ void write_var_span(std::vector<std::uint8_t>& frame, std::size_t header_offset,
     flowrt::write_wire_le(std::span<std::uint8_t>{frame.data(), frame.size()}, header_offset + 4U, len);
 }
 
-constexpr std::array<std::uint8_t, 17> EXPECTED_PLAN_GOAL_FRAME{{0, 0, 0, 0, 9, 0, 0, 0, 117, 116, 102, 56, 45, 206, 188, 45, 50}};
+constexpr std::array<std::uint8_t, 14> EXPECTED_PLAN_GOAL_FRAME{{0, 0, 0, 0, 6, 0, 0, 0, 117, 116, 102, 56, 45, 50}};
 constexpr std::array<std::uint8_t, 8> EXPECTED_PLAN_GOAL_EMPTY_FRAME{{0, 0, 0, 0, 0, 0, 0, 0}};
 
 flowrt_app::PlanGoal sample_plan_goal() {
     flowrt_app::PlanGoal value{};
-    value.target = "utf8-\xCE\xBC-2";
+    value.target = "utf8-2";
     return value;
 }
 

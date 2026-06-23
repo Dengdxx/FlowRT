@@ -8,12 +8,12 @@ fn corrupt_var_span(mut frame: Vec<u8>, header_offset: usize, offset: u32, len: 
     frame
 }
 
-const EXPECTED_PLAN_GOAL_FRAME: &[u8] = &[0, 0, 0, 0, 9, 0, 0, 0, 117, 116, 102, 56, 45, 206, 188, 45, 50];
+const EXPECTED_PLAN_GOAL_FRAME: &[u8] = &[0, 0, 0, 0, 6, 0, 0, 0, 117, 116, 102, 56, 45, 50];
 const EXPECTED_PLAN_GOAL_EMPTY_FRAME: &[u8] = &[0, 0, 0, 0, 0, 0, 0, 0];
 
 fn sample_plan_goal() -> flowrt_app::messages::PlanGoal {
     flowrt_app::messages::PlanGoal {
-        target: "utf8-\u{03bc}-2".to_string(),
+        target: "utf8-2".to_string(),
     }
 }
 

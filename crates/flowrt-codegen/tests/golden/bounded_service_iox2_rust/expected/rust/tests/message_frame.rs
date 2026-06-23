@@ -8,13 +8,13 @@ fn corrupt_var_span(mut frame: Vec<u8>, header_offset: usize, offset: u32, len: 
     frame
 }
 
-const EXPECTED_PLAN_REQUEST_FRAME: &[u8] = &[3, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 9, 0, 0, 0, 8, 0, 0, 0, 117, 116, 102, 56, 45, 206, 188, 45, 51, 5, 0, 0, 0, 6, 0, 0, 0];
+const EXPECTED_PLAN_REQUEST_FRAME: &[u8] = &[3, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 6, 0, 0, 0, 8, 0, 0, 0, 117, 116, 102, 56, 45, 51, 5, 0, 0, 0, 6, 0, 0, 0];
 const EXPECTED_PLAN_REQUEST_EMPTY_FRAME: &[u8] = &[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 fn sample_plan_request() -> flowrt_app::messages::PlanRequest {
     flowrt_app::messages::PlanRequest {
         goal: 3u32,
-        label: "utf8-\u{03bc}-3".to_string(),
+        label: "utf8-3".to_string(),
         samples: vec![5u32, 6u32],
     }
 }

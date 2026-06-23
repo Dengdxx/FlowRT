@@ -720,6 +720,98 @@ backends = ["iox2"]
 }
 
 #[test]
+fn bounded_variable_frame_tests_keep_samples_within_declared_bounds() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "bounded_fixture_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=2>"
+label = "string<max=8>"
+samples = "sequence<u32,max=1>"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "cpp"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+process = "source_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+process = "sink_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["iox2"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+
+    let rust_frame = artifact_content(&bundle, "rust/tests/message_frame.rs");
+    assert!(
+        rust_frame.contains("const EXPECTED_PACKET_FRAME: &[u8] = &["),
+        "Rust frame test must emit expected bounded fixture bytes.\n\n{rust_frame}"
+    );
+    assert!(
+        rust_frame.contains("payload: vec![2u8, 3u8]"),
+        "Rust bounded bytes sample must not exceed max=2.\n\n{rust_frame}"
+    );
+    assert!(
+        rust_frame.contains("label: \"utf8-3\".to_string()"),
+        "Rust bounded string sample must not exceed max=8.\n\n{rust_frame}"
+    );
+    assert!(
+        rust_frame.contains("samples: vec![5u32]"),
+        "Rust bounded sequence sample must not exceed max=1.\n\n{rust_frame}"
+    );
+
+    let cpp_frame = artifact_content(&bundle, "cpp/tests/message_frame.cpp");
+    assert!(
+        cpp_frame.contains("constexpr std::array<std::uint8_t, 36> EXPECTED_PACKET_FRAME"),
+        "C++ frame test must size expected bytes from bounded fixture data.\n\n{cpp_frame}"
+    );
+    assert!(
+        cpp_frame.contains(
+            "value.payload = std::vector<std::uint8_t>{std::uint8_t{2}, std::uint8_t{3}};"
+        ),
+        "C++ bounded bytes sample must not exceed max=2.\n\n{cpp_frame}"
+    );
+    assert!(
+        cpp_frame.contains("value.label = \"utf8-3\";"),
+        "C++ bounded string sample must not exceed max=8.\n\n{cpp_frame}"
+    );
+    assert!(
+        cpp_frame.contains("value.samples = std::vector<std::uint32_t>{std::uint32_t{5}};"),
+        "C++ bounded sequence sample must not exceed max=1.\n\n{cpp_frame}"
+    );
+}
+
+#[test]
 fn variable_frame_tests_embed_cross_language_byte_fixtures_and_malformed_decode() {
     let ir = contract_from_source(
         r#"

@@ -54,13 +54,13 @@ void write_var_span(std::vector<std::uint8_t>& frame, std::size_t header_offset,
     flowrt::write_wire_le(std::span<std::uint8_t>{frame.data(), frame.size()}, header_offset + 4U, len);
 }
 
-constexpr std::array<std::uint8_t, 37> EXPECTED_PLAN_REQUEST_FRAME{{3, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 9, 0, 0, 0, 8, 0, 0, 0, 117, 116, 102, 56, 45, 206, 188, 45, 51, 5, 0, 0, 0, 6, 0, 0, 0}};
+constexpr std::array<std::uint8_t, 34> EXPECTED_PLAN_REQUEST_FRAME{{3, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 6, 0, 0, 0, 8, 0, 0, 0, 117, 116, 102, 56, 45, 51, 5, 0, 0, 0, 6, 0, 0, 0}};
 constexpr std::array<std::uint8_t, 20> EXPECTED_PLAN_REQUEST_EMPTY_FRAME{{3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}};
 
 flowrt_app::PlanRequest sample_plan_request() {
     flowrt_app::PlanRequest value{};
     value.goal = std::uint32_t{3};
-    value.label = "utf8-\xCE\xBC-3";
+    value.label = "utf8-3";
     value.samples = std::vector<std::uint32_t>{std::uint32_t{5}, std::uint32_t{6}};
     return value;
 }

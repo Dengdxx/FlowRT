@@ -1028,15 +1028,53 @@ fn variable_frame_sample_bytes(
 
 fn variable_field_sample_bytes(contract: &ContractIr, expr: &TypeExpr, seed: usize) -> Vec<u8> {
     match expr {
-        TypeExpr::VarBytes { .. } => vec![seed as u8, (seed + 1) as u8, (seed + 2) as u8],
-        TypeExpr::VarString { .. } => format!("utf8-\u{03bc}-{seed}").into_bytes(),
-        TypeExpr::VarSequence { element, .. } => {
-            let mut bytes = wire_sample_bytes_for_expr(contract, element, seed);
-            bytes.extend_from_slice(&wire_sample_bytes_for_expr(contract, element, seed + 1));
+        TypeExpr::VarBytes { max_len } => variable_bytes_sample(seed, *max_len),
+        TypeExpr::VarString { max_len, .. } => variable_string_sample(seed, *max_len).into_bytes(),
+        TypeExpr::VarSequence { element, max_len } => {
+            let mut bytes = Vec::new();
+            for offset in 0..variable_sequence_sample_count(*max_len) {
+                bytes.extend_from_slice(&wire_sample_bytes_for_expr(
+                    contract,
+                    element,
+                    seed + offset,
+                ));
+            }
             bytes
         }
         _ => unreachable!("variable_field_sample_bytes called with fixed expression"),
     }
+}
+
+fn variable_bytes_sample(seed: usize, max_len: Option<u32>) -> Vec<u8> {
+    let len = bounded_sample_len(max_len, 3);
+    (0..len).map(|offset| (seed + offset) as u8).collect()
+}
+
+fn variable_string_sample(seed: usize, max_len: Option<u32>) -> String {
+    let preferred = format!("utf8-\u{03bc}-{seed}");
+    let Some(max_len) = max_len.map(|value| value as usize) else {
+        return preferred;
+    };
+    if preferred.len() <= max_len {
+        return preferred;
+    }
+    let ascii = format!("utf8-{seed}");
+    if ascii.len() <= max_len {
+        return ascii;
+    }
+    (0..max_len)
+        .map(|offset| char::from(b'a' + ((seed + offset) % 26) as u8))
+        .collect()
+}
+
+fn variable_sequence_sample_count(max_len: Option<u32>) -> usize {
+    bounded_sample_len(max_len, 2)
+}
+
+fn bounded_sample_len(max_len: Option<u32>, preferred: usize) -> usize {
+    max_len
+        .map(|value| preferred.min(value as usize))
+        .unwrap_or(preferred)
 }
 
 fn rust_frame_sample_function(contract: &ContractIr, ty: &TypeIr, empty_variable: bool) -> String {
@@ -1087,29 +1125,29 @@ fn rust_frame_sample_expr(
                 rust_frame_sample_expr(contract, element, seed, false)
             )
         }
-        TypeExpr::VarBytes { .. } => {
+        TypeExpr::VarBytes { max_len } => {
             if empty_variable {
                 "Vec::new()".to_string()
             } else {
-                format!("vec![{}u8, {}u8, {}u8]", seed, seed + 1, seed + 2)
+                rust_u8_vec_expr(&variable_bytes_sample(seed, *max_len))
             }
         }
-        TypeExpr::VarString { .. } => {
+        TypeExpr::VarString { max_len, .. } => {
             if empty_variable {
                 "String::new()".to_string()
             } else {
-                format!("\"utf8-\\u{{03bc}}-{seed}\".to_string()")
+                rust_string_sample_expr(seed, *max_len)
             }
         }
-        TypeExpr::VarSequence { element, .. } => {
+        TypeExpr::VarSequence { element, max_len } => {
             if empty_variable {
                 "Vec::new()".to_string()
             } else {
-                format!(
-                    "vec![{}, {}]",
-                    rust_frame_sample_expr(contract, element, seed, false),
-                    rust_frame_sample_expr(contract, element, seed + 1, false)
-                )
+                let values = (0..variable_sequence_sample_count(*max_len))
+                    .map(|offset| rust_frame_sample_expr(contract, element, seed + offset, false))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("vec![{values}]")
             }
         }
     }
@@ -1162,38 +1200,72 @@ fn cpp_frame_sample_expr(
             let array_ty = cpp_type(expr);
             format!("[] {{ {array_ty} value{{}}; value.fill({value}); return value; }}()")
         }
-        TypeExpr::VarBytes { .. } => {
+        TypeExpr::VarBytes { max_len } => {
             if empty_variable {
                 "std::vector<std::uint8_t>{}".to_string()
             } else {
-                format!(
-                    "std::vector<std::uint8_t>{{std::uint8_t{{{}}}, std::uint8_t{{{}}}, std::uint8_t{{{}}}}}",
-                    seed,
-                    seed + 1,
-                    seed + 2
-                )
+                cpp_u8_vector_expr(&variable_bytes_sample(seed, *max_len))
             }
         }
-        TypeExpr::VarString { .. } => {
+        TypeExpr::VarString { max_len, .. } => {
             if empty_variable {
                 "std::string{}".to_string()
             } else {
-                format!("\"utf8-\\xCE\\xBC-{seed}\"")
+                cpp_string_sample_expr(seed, *max_len)
             }
         }
-        TypeExpr::VarSequence { element, .. } => {
+        TypeExpr::VarSequence { element, max_len } => {
             if empty_variable {
                 format!("std::vector<{}>{{}}", cpp_type(element))
             } else {
-                format!(
-                    "std::vector<{}>{{{}, {}}}",
-                    cpp_type(element),
-                    cpp_frame_sample_expr(contract, element, seed, false),
-                    cpp_frame_sample_expr(contract, element, seed + 1, false)
-                )
+                let values = (0..variable_sequence_sample_count(*max_len))
+                    .map(|offset| cpp_frame_sample_expr(contract, element, seed + offset, false))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("std::vector<{}>{{{values}}}", cpp_type(element))
             }
         }
     }
+}
+
+fn rust_u8_vec_expr(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "Vec::new()".to_string();
+    }
+    let values = bytes
+        .iter()
+        .map(|byte| format!("{byte}u8"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("vec![{values}]")
+}
+
+fn rust_string_sample_expr(seed: usize, max_len: Option<u32>) -> String {
+    let sample = variable_string_sample(seed, max_len);
+    if sample == format!("utf8-\u{03bc}-{seed}") {
+        return format!("\"utf8-\\u{{03bc}}-{seed}\".to_string()");
+    }
+    format!("\"{}\".to_string()", sample.escape_default())
+}
+
+fn cpp_u8_vector_expr(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "std::vector<std::uint8_t>{}".to_string();
+    }
+    let values = bytes
+        .iter()
+        .map(|byte| format!("std::uint8_t{{{byte}}}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("std::vector<std::uint8_t>{{{values}}}")
+}
+
+fn cpp_string_sample_expr(seed: usize, max_len: Option<u32>) -> String {
+    let sample = variable_string_sample(seed, max_len);
+    if sample == format!("utf8-\u{03bc}-{seed}") {
+        return format!("\"utf8-\\xCE\\xBC-{seed}\"");
+    }
+    format!("\"{}\"", sample.escape_default())
 }
 
 fn malformed_frame_offsets(contract: &ContractIr, ty: &TypeIr) -> Option<(usize, Option<usize>)> {
