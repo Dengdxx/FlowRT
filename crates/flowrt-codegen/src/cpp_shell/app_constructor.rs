@@ -97,11 +97,10 @@ pub(super) fn emit_cpp_app_constructor(
         }
     }
     for bind in binds {
-        initializers.push(format!(
-            "{}_({})",
-            bind.field_name,
-            cpp_runtime_channel_initializer(contract, graph, bind)
-        ));
+        let initializer = cpp_runtime_channel_initializer(contract, graph, bind);
+        if !initializer.is_empty() {
+            initializers.push(format!("{}_({})", bind.field_name, initializer));
+        }
     }
     for bridge in bridges {
         initializers.push(format!(

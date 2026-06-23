@@ -19,7 +19,11 @@ Operation CLI、远程 zenoh queryable、bounded variable frame payload、fault 
 多 boundary input replay source、self-description canonical message identity 和 generated
 Operation 关键接线。`scripts/test-codegen-compile.sh` 继续覆盖代表性 iox2 / zenoh
 generated dataflow、Service、Operation 和 bounded variable frame Rust/C++ shell 的真实编译，
-并先由覆盖自检确认所有带 runtime shell snapshot 的 golden case 都已入网。
+case 列表来自 `scripts/evidence-matrix.toml`。`scripts/check-evidence-matrix.sh` 作为证据
+合同事实源检查所有带 runtime shell snapshot 的 golden case 都声明 `golden + syntax_compile`
+证据，并要求关键 surface 具备 Rust/C++ 证据；`scripts/test-cpp-static-quality.sh` 以 runtime、
+generated 和 ABI/POD 三类 profile 运行 C++ static quality gate，generated 代表 case 同样来自
+evidence matrix。
 v0.25.0 iox2 focused smoke 的真实 SDK 分支会启动 generated supervisor 并轮询 live
 Operation counters，覆盖 Rust `iox2_service_demo` Operation 真实成功路径和 generated C++
 bounded Operation start frame 经 iox2 定容 slot 的 build/run 路径。
@@ -141,9 +145,13 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke、v0.25.1 的
   `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据，以及
   v0.26.0 的代表性 iox2/zenoh generated dataflow、Service、Operation、bounded variable
-  frame Rust/C++ shell 真编译网已覆盖 transport 接线。compile net 现在带覆盖自检，要求
-  所有生成 Rust/C++ runtime shell snapshot 的 golden case 都进入真编译列表，并补齐
+  frame Rust/C++ shell 真编译网已覆盖 transport 接线。compile net 现在从
+  `scripts/evidence-matrix.toml` 读取 `syntax_compile` case；矩阵检查要求所有生成
+  Rust/C++ runtime shell snapshot 的 golden case 都声明 `golden + syntax_compile` 证据，并补齐
   `graph_latest_fifo`、`service_rust` 和 `service_iox2_dynamic_fallback` 的 Rust 编译覆盖。
+  C++ static quality gate 已按 runtime、generated 和 ABI/POD profile 分层，generated profile
+  从同一 evidence matrix 读取代表 case，当前覆盖 dataflow、feedback、Service、Operation 和
+  bounded variable frame。
   Rust zenoh pub/sub peer restart smoke 使用显式 loopback `listen/connect`，不依赖本机
   multicast 或外部 `zenohd`。C++ iox2 runtime smoke 在真实 `iceoryx2-cxx` SDK path 下
   补充了 bounded variable frame dataflow pub/sub 与 service request/response roundtrip，证明
@@ -174,8 +182,9 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   publish 失败也会按 route overflow policy 进入 drop/backpressure/overflow counters；真实
   backend SDK 对“queue full”和一般 transport error 的细粒度错误码仍不作为 FlowRT 语义假设。
   Rust/C++ endpoint smoke 已覆盖 peer endpoint 重启和本地 session/transport 重建后的继续收发。
-  `clang-tidy` gate 是低噪声首版，高噪声 ABI/POD/generic generated capture 不适配项仍关闭；
-  FrameDescriptor `record_payload = true` 仅支持 `payload_capture = "boundary"`，外部 payload
+  `clang-tidy` 已升级为长期 C++ static quality gate，新增 checks 必须进入 runtime、generated
+  或 ABI/POD profile 并保持局部、可解释的例外纪律；FrameDescriptor `record_payload = true`
+  仅支持 `payload_capture = "boundary"`，外部 payload
   provider 仍是后续语义。
 
 上一发布线为 `v0.24.0 Fault Matrix Completion`：把 v0.23.3 已落地的 global tick、
@@ -254,9 +263,10 @@ patch 版本切碎。每项要么完整端到端实现，要么由 validator/CLI
 - backend route health 统一：已在 `v0.23.1` 收口。route-level publish
   error、backpressure、recovery state 归并进 `introspection/facts.rs` 同一事实源，
   `status` / diagnostics 统一暴露，并由 focused smoke 把关。
-- C++ `clang-tidy` gate：已在 `v0.23.2` 收口。CI 安装 clang-tidy，通过 focused
-  smoke 覆盖 C++ runtime headers/tests 与 generated C++ runtime shell。首版只启用低噪声
-  checks，避免把 ABI/POD 风格或 generated generic capture 策略误判为发布阻塞。
+- C++ `clang-tidy` gate：已在 `v0.23.2` 收口，并在后续升级为长期 C++ static quality
+  gate。CI 安装 clang-tidy，通过 focused smoke 覆盖 C++ runtime headers/tests 与 generated
+  C++ runtime shell；长期脚本按 runtime、generated 和 ABI/POD profile 分层，避免把 ABI/POD
+  风格或 generated generic capture 策略误判为发布阻塞。
 
 **v0.23.3 active scope**：
 
@@ -889,7 +899,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.22.1` | Reserved Keyword Naming：validator 拒绝 field / port / service port / operation port / instance / task 等生成代码标识符撞 Rust 2024 或 C++ 保留关键字，保留 `profile.default` 等非标识符名称合法。focused smoke 接入 release gate。 |
 | `v0.23.0` | Zenoh Service Transport：native Rust/C++ generated Service 支持跨进程 zenoh request/response，生成 typed `ZenohServiceClient` / `ZenohServiceServer` 接线；validator 要求 zenoh server component `concurrency = "parallel"`；manifest/self-description 暴露 service `key_expr`；新增 `zenoh_service_{rust,cpp}` golden、`examples/zenoh_service_demo` 和 focused smoke。Operation zenoh 仍 fail-fast。 |
 | `v0.23.1` | Backend Route Health Unification：`iox2` / `zenoh` dataflow route 的 endpoint `BackendHealthSnapshot` 进入 introspection route facts，`flowrt status` route 行展示 `backend_health_state`、错误、重连 attempt、下一次 retry 和 recoverable 状态；Rust generated shell 在 transport publish 后记录 route backend health，C++ runtime JSON / diagnostics 镜像字段；新增 route health focused smoke。 |
-| `v0.23.2` | C++ clang-tidy Gate：新增仓库级 `.clang-tidy` 与 focused smoke，CI 安装 clang-tidy 后 lint C++ runtime 默认 translation units 和 generated `cpp_counter_demo` runtime shell；首版启用低噪声 checks，关闭高噪声 ABI/POD/generic generated capture 不适配项。 |
+| `v0.23.2` | C++ clang-tidy Gate：新增仓库级 `.clang-tidy` 与 focused smoke，CI 安装 clang-tidy 后 lint C++ runtime 默认 translation units 和 generated `cpp_counter_demo` runtime shell；后续长期门禁按 runtime、generated 和 ABI/POD profile 分层扩展。 |
 | `v0.23.3` | 既有缺口收束：global tick determinism、跨进程 FIFO feedback、standby failover、graph health metrics、fault injection kind、Operation zenoh/policy/retention、FrameDescriptor payload record、tracing exporter 和 C v0 params snapshot 完成本版实现或 validator fail-fast；新增 v0.23.3 focused smoke 与 readiness adapter。 |
 | `v0.24.0` | Fault Matrix Completion：把 global tick、fault injection kind、route health、standby failover 和 graph health 组合成可运行、可校验、可发布把关的 test-only fault matrix 证据。 |
 | `v0.25.0` | iox2 Service/Operation Transport：native Rust/C++ generated Service 与 Operation control path 支持 iox2，并放行有界 variable frame over iox2 定容 slot。 |

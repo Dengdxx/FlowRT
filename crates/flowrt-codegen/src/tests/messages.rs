@@ -685,6 +685,19 @@ backends = ["iox2"]
     let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
 
     assert!(
+        cpp_messages.contains("std::vector<std::uint8_t> payload;")
+            && cpp_messages.contains("std::string label;")
+            && cpp_messages.contains("std::vector<std::uint32_t> samples;"),
+        "C++ variable frame fields should use their default constructors without redundant default member initializers.\n\n{cpp_messages}"
+    );
+    assert!(
+        !cpp_messages.contains("payload{};")
+            && !cpp_messages.contains("label{};")
+            && !cpp_messages.contains("samples{};"),
+        "C++ variable frame fields must stay clean under readability-redundant-member-init.\n\n{cpp_messages}"
+    );
+
+    assert!(
         rust_messages.contains(
             "return Err(flowrt::WireCodecError::invalid_frame(\"field Packet.payload exceeds max 8\"));"
         ),

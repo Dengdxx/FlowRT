@@ -295,7 +295,6 @@ App::App(
 )
     : controller_(std::move(controller)),
       plant_(std::move(plant)),
-      bind_0_(),
       bind_1_(2, flowrt::OverflowPolicy::DropOldest) {
 }
 

@@ -294,9 +294,7 @@ App::App(
     std::unique_ptr<PlantInterface> plant
 )
     : controller_(std::move(controller)),
-      plant_(std::move(plant)),
-      bind_0_(),
-      bind_1_() {
+      plant_(std::move(plant)) {
 }
 
 flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {

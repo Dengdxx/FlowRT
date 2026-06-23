@@ -296,8 +296,7 @@ App::App(
 )
     : flaky_(std::move(flaky)),
       consumer_(std::move(consumer)),
-      guard_(std::move(guard)),
-      bind_0_() {
+      guard_(std::move(guard)) {
 }
 
 flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {

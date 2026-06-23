@@ -16,8 +16,8 @@ namespace flowrt_app {
 
 struct PlanRequest {
     std::uint32_t goal{};
-    std::string label{};
-    std::vector<std::uint32_t> samples{};
+    std::string label;
+    std::vector<std::uint32_t> samples;
 
     bool operator==(const PlanRequest&) const = default;
 
@@ -90,7 +90,7 @@ struct PlanRequest {
 
 struct PlanResponse {
     bool accepted{};
-    std::string detail{};
+    std::string detail;
 
     bool operator==(const PlanResponse&) const = default;
 

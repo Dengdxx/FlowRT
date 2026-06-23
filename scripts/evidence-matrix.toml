@@ -1,0 +1,361 @@
+# FlowRT generated/runtime/CLI 证据矩阵事实源。
+#
+# `golden + syntax_compile` 表示对应 golden case 既有 snapshot 证据，也必须进入
+# `scripts/test-codegen-compile.sh` 真编译网。`cpp_static_quality = true` 表示该 C++ case
+# 作为 generated shell 静态质量代表样本进入 `scripts/test-cpp-static-quality.sh`。
+
+[[case]]
+name = "island_cpp_onmsg"
+languages = ["cpp"]
+surfaces = ["dataflow", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile", "static_quality"]
+required_by_release = "0.27.1"
+cpp_static_quality = true
+
+[[case]]
+name = "island_rust_onmsg"
+languages = ["rust"]
+surfaces = ["dataflow", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "sensor_event_time_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "sensor_event_time_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "graph_latest_fifo"
+languages = ["rust"]
+surfaces = ["dataflow", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "sync_fusion_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "sync", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "sync_fusion_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "sync", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "feedback_loop_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "feedback", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "feedback_loop_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "feedback", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "feedback_v2_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "feedback", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile", "static_quality"]
+required_by_release = "0.27.1"
+cpp_static_quality = true
+
+[[case]]
+name = "feedback_v2_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "feedback", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "cross_process_feedback_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "feedback", "selfdesc"]
+backends = ["zenoh"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "cross_process_feedback_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "feedback", "selfdesc"]
+backends = ["zenoh"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "instance_fault_restart_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "lifecycle", "diagnostics", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "instance_fault_restart_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "lifecycle", "diagnostics", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "instance_degrade_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "lifecycle", "diagnostics", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "instance_degrade_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "lifecycle", "diagnostics", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "graph_health_stop_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "diagnostics", "fault_matrix", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "graph_health_stop_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "diagnostics", "fault_matrix", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "fault_injection_restart_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "fault_matrix", "diagnostics", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "fault_injection_restart_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "fault_matrix", "diagnostics", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "fault_injection_degrade_recover_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "fault_matrix", "diagnostics", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "fault_injection_degrade_recover_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "fault_matrix", "diagnostics", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "bounded_channel_iox2_cpp"
+languages = ["cpp"]
+surfaces = ["dataflow", "variable_frame", "selfdesc", "pub_echo"]
+backends = ["iox2"]
+abi = ["bounded_frame"]
+evidence = ["golden", "syntax_compile", "static_quality"]
+required_by_release = "0.27.1"
+cpp_static_quality = true
+
+[[case]]
+name = "bounded_channel_iox2_rust"
+languages = ["rust"]
+surfaces = ["dataflow", "variable_frame", "selfdesc", "pub_echo"]
+backends = ["iox2"]
+abi = ["bounded_frame"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "service_rust"
+languages = ["rust"]
+surfaces = ["service", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "zenoh_service_cpp"
+languages = ["cpp"]
+surfaces = ["service", "selfdesc"]
+backends = ["zenoh", "inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "zenoh_service_rust"
+languages = ["rust"]
+surfaces = ["service", "selfdesc"]
+backends = ["zenoh", "inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "iox2_service_cpp"
+languages = ["cpp"]
+surfaces = ["service", "selfdesc"]
+backends = ["iox2"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "iox2_service_rust"
+languages = ["rust"]
+surfaces = ["service", "selfdesc"]
+backends = ["iox2"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "bounded_service_iox2_cpp"
+languages = ["cpp"]
+surfaces = ["service", "variable_frame", "selfdesc"]
+backends = ["iox2"]
+abi = ["bounded_frame"]
+evidence = ["golden", "syntax_compile", "static_quality"]
+required_by_release = "0.27.1"
+cpp_static_quality = true
+
+[[case]]
+name = "bounded_service_iox2_rust"
+languages = ["rust"]
+surfaces = ["service", "variable_frame", "selfdesc"]
+backends = ["iox2"]
+abi = ["bounded_frame"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "service_iox2_dynamic_fallback"
+languages = ["rust"]
+surfaces = ["service", "variable_frame", "selfdesc"]
+backends = ["iox2", "zenoh", "auto_fallback"]
+abi = ["unbounded_frame"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "zenoh_operation_cpp"
+languages = ["cpp"]
+surfaces = ["operation", "selfdesc", "record_replay"]
+backends = ["zenoh", "inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "zenoh_operation_rust"
+languages = ["rust"]
+surfaces = ["operation", "selfdesc", "record_replay"]
+backends = ["zenoh", "inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "iox2_operation_cpp"
+languages = ["cpp"]
+surfaces = ["operation", "selfdesc"]
+backends = ["iox2"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "iox2_operation_rust"
+languages = ["rust"]
+surfaces = ["operation", "selfdesc"]
+backends = ["iox2"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
+name = "bounded_operation_iox2_cpp"
+languages = ["cpp"]
+surfaces = ["operation", "variable_frame", "selfdesc"]
+backends = ["iox2"]
+abi = ["bounded_frame"]
+evidence = ["golden", "syntax_compile", "static_quality"]
+required_by_release = "0.27.1"
+cpp_static_quality = true
+
+[[case]]
+name = "bounded_operation_iox2_rust"
+languages = ["rust"]
+surfaces = ["operation", "variable_frame", "selfdesc"]
+backends = ["iox2"]
+abi = ["bounded_frame"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"

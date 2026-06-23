@@ -6,14 +6,14 @@
 # C++ shell 经 g++ -fsyntax-only；Rust crate 经 cargo check（用 repo [patch.crates-io] 解析
 # flowrt，无需 full build）。
 #
-# 定位：取代历史按版本散落的 test-v0XX-*.sh smoke，作分支完整、单一、可扩展的编译门禁——
-# 新增 codegen 分支时在此加 case，不再每版新写 snowflake。
+# 定位：取代历史按版本散落的 test-v0XX-*.sh smoke，作分支完整、单一、可扩展的编译门禁。
+# case 列表来自 scripts/evidence-matrix.toml，不在本脚本里维护第二份覆盖表。
 #
 # 复用 golden corpus（crates/flowrt-codegen/tests/golden/<case>/input.rsdl）：同一套契约既被
 # golden 等价锁定输出，又在此真编译。Rust case 的用户实现取 <case>/stub/mod.rs（crate:: 路径）。
 #
 # 覆盖 golden corpus 中已生成 Rust/C++ runtime shell 的 case。覆盖自检会拒绝新增
-# runtime_shell snapshot 后忘记纳入真编译网，或脚本残留已经删除的 stale case。
+# runtime_shell snapshot 后忘记纳入证据矩阵，或矩阵残留已经删除的 stale case。
 
 set -euo pipefail
 
@@ -55,6 +55,23 @@ run_flowrt() {
     "${flowrt_cmd[@]}" "$@"
 }
 export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
+
+list_compile_cases() {
+    python3 - scripts/evidence-matrix.toml <<'PY'
+import sys
+from pathlib import Path
+
+import tomllib
+
+doc = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for entry in doc.get("case", []):
+    if "syntax_compile" not in entry.get("evidence", []):
+        continue
+    for language in entry.get("languages", []):
+        if language in {"cpp", "rust"}:
+            print(language, entry["name"])
+PY
+}
 
 echo "codegen compile net: script syntax"
 run bash -n scripts/test-codegen-compile.sh
@@ -190,44 +207,19 @@ compile_rust() {
         cargo check --manifest-path "$proj/flowrt/build/Cargo.toml"
 }
 
-compile_cpp island_cpp_onmsg
-compile_cpp sensor_event_time_cpp
-compile_cpp sync_fusion_cpp
-compile_cpp feedback_loop_cpp
-compile_cpp feedback_v2_cpp
-compile_cpp instance_fault_restart_cpp
-compile_cpp instance_degrade_cpp
-compile_cpp graph_health_stop_cpp
-compile_cpp fault_injection_restart_cpp
-compile_cpp fault_injection_degrade_recover_cpp
-compile_cpp bounded_channel_iox2_cpp
-compile_cpp cross_process_feedback_cpp
-compile_cpp zenoh_service_cpp
-compile_cpp iox2_service_cpp
-compile_cpp bounded_service_iox2_cpp
-compile_cpp zenoh_operation_cpp
-compile_cpp iox2_operation_cpp
-compile_cpp bounded_operation_iox2_cpp
-compile_rust island_rust_onmsg
-compile_rust sensor_event_time_rust
-compile_rust graph_latest_fifo
-compile_rust sync_fusion_rust
-compile_rust feedback_loop_rust
-compile_rust feedback_v2_rust
-compile_rust instance_fault_restart_rust
-compile_rust instance_degrade_rust
-compile_rust graph_health_stop_rust
-compile_rust fault_injection_restart_rust
-compile_rust fault_injection_degrade_recover_rust
-compile_rust bounded_channel_iox2_rust
-compile_rust cross_process_feedback_rust
-compile_rust service_rust
-compile_rust zenoh_service_rust
-compile_rust iox2_service_rust
-compile_rust bounded_service_iox2_rust
-compile_rust service_iox2_dynamic_fallback
-compile_rust zenoh_operation_rust
-compile_rust iox2_operation_rust
-compile_rust bounded_operation_iox2_rust
+while read -r language case_name; do
+    case "$language" in
+        cpp)
+            compile_cpp "$case_name"
+            ;;
+        rust)
+            compile_rust "$case_name"
+            ;;
+        *)
+            printf 'unsupported compile language from evidence matrix: %s\n' "$language" >&2
+            exit 1
+            ;;
+    esac
+done < <(list_compile_cases)
 
 echo "codegen compile net passed"

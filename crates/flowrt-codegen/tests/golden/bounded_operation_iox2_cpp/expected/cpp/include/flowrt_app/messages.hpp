@@ -40,7 +40,7 @@ struct PlanFeedback {
 };
 
 struct PlanGoal {
-    std::string target{};
+    std::string target;
 
     bool operator==(const PlanGoal&) const = default;
 

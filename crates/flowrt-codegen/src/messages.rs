@@ -104,10 +104,12 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
             ));
         }
         for field in &ty.fields {
+            let initializer = cpp_default_member_initializer(&field.ty);
             output.push_str(&format!(
-                "    {} {}{{}};\n",
+                "    {} {}{};\n",
                 cpp_type(&field.ty),
-                field.name
+                field.name,
+                initializer
             ));
         }
         output.push_str(&format!(
@@ -126,6 +128,13 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
     }
     output.push_str("}  // namespace flowrt_app\n");
     output
+}
+
+fn cpp_default_member_initializer(expr: &TypeExpr) -> &'static str {
+    match expr {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => "",
+        TypeExpr::Primitive { .. } | TypeExpr::Named { .. } | TypeExpr::Array { .. } => "{}",
+    }
 }
 
 pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {

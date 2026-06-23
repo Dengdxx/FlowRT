@@ -5,6 +5,7 @@ check_v0232_cpp_clang_tidy_readiness() {
     local ci_file="$repo_root/.github/workflows/release-candidate.yml"
     local registry_file="$repo_root/scripts/release-gates/registry.toml"
     local smoke_script="$repo_root/scripts/test-v0232-cpp-clang-tidy-smoke.sh"
+    local static_quality_script="$repo_root/scripts/test-cpp-static-quality.sh"
     local clang_tidy_config="$repo_root/.clang-tidy"
 
     if [[ ! -f "$ci_file" ]]; then
@@ -49,19 +50,29 @@ check_v0232_cpp_clang_tidy_readiness() {
         pass "v0.23.2 C++ clang-tidy smoke 脚本存在且可执行"
         require_file_text "v0.23.2 smoke 支持 dry run" \
             "FLOWRT_V0232_CLANG_TIDY_SMOKE_DRY_RUN" "$smoke_script"
-        require_file_text "v0.23.2 smoke 支持本地 clang-tidy 覆盖" \
-            "FLOWRT_CLANG_TIDY" "$smoke_script"
-        require_file_text "v0.23.2 smoke 覆盖 runtime/cpp compile DB" \
-            "cmake -S runtime/cpp" "$smoke_script"
-        require_file_text "v0.23.2 smoke 从 compile_commands 读取 TU" \
-            "compile_commands.json" "$smoke_script"
-        require_file_text "v0.23.2 smoke 覆盖 cpp_counter_demo generated shell" \
-            "cpp_counter_demo" "$smoke_script"
-        require_file_text "v0.23.2 smoke lint runtime_shell.cpp" \
-            "runtime_shell.cpp" "$smoke_script"
-        require_file_text "v0.23.2 smoke 显式传入 checks 白名单" \
-            "--checks=\"\$clang_tidy_checks\"" "$smoke_script"
+        require_file_text "v0.23.2 smoke 委托长期 C++ static quality gate" \
+            "scripts/test-cpp-static-quality.sh" "$smoke_script"
     else
         fail "v0.23.2 C++ clang-tidy smoke 脚本不存在或不可执行: $smoke_script"
+    fi
+
+    if [[ -x "$static_quality_script" ]]; then
+        pass "C++ static quality 脚本存在且可执行"
+        require_file_text "C++ static quality 支持本地 clang-tidy 覆盖" \
+            "FLOWRT_CLANG_TIDY" "$static_quality_script"
+        require_file_text "C++ static quality 覆盖 runtime profile" \
+            "runtime profile" "$static_quality_script"
+        require_file_text "C++ static quality 覆盖 generated profile" \
+            "generated profile" "$static_quality_script"
+        require_file_text "C++ static quality 覆盖 ABI/POD profile" \
+            "ABI/POD profile" "$static_quality_script"
+        require_file_text "C++ static quality 从 evidence matrix 读取 generated case" \
+            "cpp_static_quality" "$static_quality_script"
+        require_file_text "C++ static quality 从 compile_commands 读取 runtime TU" \
+            "compile_commands.json" "$static_quality_script"
+        require_file_text "C++ static quality lint runtime_shell.cpp" \
+            "runtime_shell.cpp" "$static_quality_script"
+    else
+        fail "C++ static quality 脚本不存在或不可执行: $static_quality_script"
     fi
 }

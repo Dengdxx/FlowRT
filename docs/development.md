@@ -20,22 +20,37 @@ cmake --build build/cpp
 ctest --test-dir build/cpp --output-on-failure
 ```
 
-Codegen transport compile evidence matrix：
+Codegen evidence matrix 与 C++ static quality：
 
 ```bash
+scripts/check-evidence-matrix.sh
 scripts/check-codegen-compile-coverage.sh
 scripts/test-codegen-compile.sh
+scripts/test-cpp-static-quality.sh
 scripts/test-v0260-transport-compile-evidence-smoke.sh
 ```
 
 codegen golden snapshot 只锁定生成文本漂移，不能证明 generated shell 可被 Rust/C++ 编译器接受。
-`scripts/check-codegen-compile-coverage.sh` 会先确认所有已生成 Rust/C++ runtime shell 的
-golden case 都进入 compile net，避免新增 snapshot 后只做文本断言。`scripts/test-codegen-compile.sh`
-复用 golden corpus，对 inproc、iox2、zenoh dataflow、Service、Operation 和 bounded
-variable frame generated shell 做语法或 crate 真编译；默认临时工作目录位于
+`scripts/evidence-matrix.toml` 是 generated/runtime/CLI 证据覆盖事实源；新增或删除
+generated runtime shell golden case 时，必须同步矩阵条目。`scripts/check-evidence-matrix.sh`
+会确认所有已生成 Rust/C++ runtime shell 的 golden case 都声明 `golden + syntax_compile`
+证据，并检查 dataflow、feedback、Service、Operation、self-description 和 variable frame 等关键
+surface 至少有 Rust/C++ 证据。`scripts/check-codegen-compile-coverage.sh` 仅作为兼容入口委托
+该矩阵检查。
+
+`scripts/test-codegen-compile.sh` 从同一 evidence matrix 读取 `syntax_compile` case，复用
+golden corpus，对 inproc、iox2、zenoh dataflow、Service、Operation 和 bounded variable frame
+generated shell 做语法或 crate 真编译；默认临时工作目录位于
 `target/flowrt-codegen-compile-tmp`，避免大型 Rust compile case 占满 `/tmp` tmpfs。它仍不同于
 真实 SDK demo build/run：compile net 证明生成物可编译，`zenoh_service_demo`、
 `iox2_service_demo` 等安装后或 SDK smoke 才证明依赖解析、链接和运行路径可用。
+
+`scripts/test-cpp-static-quality.sh` 是长期 C++ 静态质量门禁，分三类 profile 执行：
+`runtime` profile 读取 `runtime/cpp` 的 CMake `compile_commands.json`，`generated` profile
+读取 evidence matrix 中 `cpp_static_quality = true` 的代表性 generated shell case，`ABI/POD`
+profile 聚焦 `runtime/cpp/include/flowrt/abi.h` 和 runtime smoke。generated code 优先改
+emitter 产出干净代码，不通过新增 blanket suppression 过门禁；ABI/POD 例外必须保留在局部
+profile 和 layout/static smoke 证据内。
 
 operation control-plane completion smoke：
 

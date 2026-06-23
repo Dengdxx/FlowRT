@@ -15,9 +15,9 @@
 namespace flowrt_app {
 
 struct Packet {
-    std::vector<std::uint8_t> payload{};
-    std::string label{};
-    std::vector<std::uint32_t> samples{};
+    std::vector<std::uint8_t> payload;
+    std::string label;
+    std::vector<std::uint32_t> samples;
 
     bool operator==(const Packet&) const = default;
 

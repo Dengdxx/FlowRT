@@ -299,9 +299,6 @@ App::App(
       odom_src_(std::move(odom_src)),
       fusion_(std::move(fusion)),
       sink_(std::move(sink)),
-      bind_0_(),
-      bind_1_(),
-      bind_2_(),
       __flowrt_sync_fusion_main_(2, 8, 5000000) {
 }
 
