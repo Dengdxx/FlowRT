@@ -115,6 +115,39 @@ int main() {
     assert(response.value()->accepted == 1U);
     server_done.store(true);
     server_thread.join();
+
+    const auto frame_name =
+        std::string{"FlowRT/Cpp/Iox2/FrameService/Smoke/"} + std::to_string(::getpid());
+    std::atomic_bool frame_server_done{false};
+    std::promise<void> frame_ready_promise;
+    auto frame_ready = frame_ready_promise.get_future();
+    auto frame_server_thread = std::thread{[&]() {
+        auto server =
+            flowrt::iox2::Iox2FrameServiceServer<FrameMsg, FrameMsg, 8, 8>::open(frame_name, 8);
+        assert(server.health().state == flowrt::BackendHealthState::Ready);
+        frame_ready_promise.set_value();
+        for (std::uint8_t attempt = 0; attempt < 50 && !frame_server_done.load(); ++attempt) {
+            auto handled = server.poll_requests([](FrameMsg req) {
+                auto payload = std::move(req.payload);
+                payload.push_back(55U);
+                return flowrt::ServiceResult<FrameMsg>::ok(FrameMsg{.payload = payload});
+            });
+            assert(handled.has_value());
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+    }};
+
+    frame_ready.wait();
+    auto frame_client =
+        flowrt::iox2::Iox2FrameServiceClient<FrameMsg, FrameMsg, 8, 8>::open(frame_name);
+    assert(frame_client.health().state == flowrt::BackendHealthState::Ready);
+    auto frame_response =
+        frame_client.call(FrameMsg{.payload = std::vector<std::uint8_t>{1U, 2U, 3U}}, 1000U);
+    assert(frame_response.is_ok());
+    assert(frame_response.value() != nullptr);
+    assert(frame_response.value()->payload == (std::vector<std::uint8_t>{1U, 2U, 3U, 55U}));
+    frame_server_done.store(true);
+    frame_server_thread.join();
 #else
     auto client = flowrt::iox2::Iox2ServiceClient<Req, Resp>::unavailable("svc", "no sdk");
     assert(client.health().state == flowrt::BackendHealthState::Unsupported);
