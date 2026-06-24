@@ -490,6 +490,9 @@ output = ["scan:LaserScanMsg"]
 language = "cpp"
 input = ["chassis:ChassisFeedback", "imu:ImuData"]
 output = ["pose:PoseMsg", "diagnostics:IekfDiagnostics"]
+
+[component.calibrator]
+language = "rust"
 "#,
     )
     .unwrap();
@@ -522,6 +525,14 @@ process = "control_proc"
 trigger = "on_message"
 input = ["chassis", "imu"]
 output = ["pose", "diagnostics"]
+
+[instance.calibrator]
+component = "mygo_lidar::calibrator"
+process = "calibration_proc"
+
+[instance.calibrator.task]
+trigger = "periodic"
+period_ms = 1000
 
 [[bind.dataflow]]
 from = "source.sample"
@@ -561,6 +572,91 @@ backends = ["zenoh"]
 
     let ir = contract_from_file(&root.join("robot.rsdl"));
     let bundle = emit_artifacts(&ir).unwrap();
+    let paths = bundle
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.relative_path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert!(paths.contains(&"app/stubs/perception/rust/processor.rs".to_string()));
+    assert!(paths.contains(&"app/stubs/mygo_lidar/cpp/processor.cpp".to_string()));
+    assert!(paths.contains(&"app/stubs/mygo_lidar/cpp/estimator.cpp".to_string()));
+    assert!(paths.contains(&"app/stubs/mygo_lidar/rust/calibrator.rs".to_string()));
+    assert!(!paths.contains(&"app/stubs/rust/processor.rs".to_string()));
+    assert!(!paths.contains(&"app/stubs/cpp/processor.cpp".to_string()));
+    assert!(!paths.iter().any(|path| path.starts_with("app/perception/")));
+    assert!(!paths.iter().any(|path| path.starts_with("app/mygo_lidar/")));
+
+    let app_api: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "app/app_api.json")).unwrap();
+    let components = app_api["components"].as_array().unwrap();
+    let perception_processor = components
+        .iter()
+        .find(|component| component["qualified_name"] == "perception::processor")
+        .unwrap();
+    assert_eq!(perception_processor["module"], "perception");
+    assert_eq!(
+        perception_processor["user_file_path"],
+        "app/perception/rust/processor.rs"
+    );
+    let lidar_processor = components
+        .iter()
+        .find(|component| component["qualified_name"] == "mygo_lidar::processor")
+        .unwrap();
+    assert_eq!(lidar_processor["module"], "mygo_lidar");
+    assert_eq!(
+        lidar_processor["user_file_path"],
+        "app/mygo_lidar/cpp/processor.cpp"
+    );
+    let lidar_estimator = components
+        .iter()
+        .find(|component| component["qualified_name"] == "mygo_lidar::estimator")
+        .unwrap();
+    assert_eq!(lidar_estimator["module"], "mygo_lidar");
+    assert_eq!(
+        lidar_estimator["user_file_path"],
+        "app/mygo_lidar/cpp/estimator.cpp"
+    );
+    let lidar_calibrator = components
+        .iter()
+        .find(|component| component["qualified_name"] == "mygo_lidar::calibrator")
+        .unwrap();
+    assert_eq!(lidar_calibrator["module"], "mygo_lidar");
+    assert_eq!(
+        lidar_calibrator["user_file_path"],
+        "app/mygo_lidar/rust/calibrator.rs"
+    );
+
+    let stubs = app_api["stubs"].as_array().unwrap();
+    let perception_stub = stubs
+        .iter()
+        .find(|stub| stub["component"] == "processor" && stub["module"] == "perception")
+        .unwrap();
+    assert_eq!(
+        perception_stub["path"],
+        "app/stubs/perception/rust/processor.rs"
+    );
+    let lidar_stub = stubs
+        .iter()
+        .find(|stub| stub["component"] == "processor" && stub["module"] == "mygo_lidar")
+        .unwrap();
+    assert_eq!(lidar_stub["path"], "app/stubs/mygo_lidar/cpp/processor.cpp");
+    let calibrator_stub = stubs
+        .iter()
+        .find(|stub| stub["component"] == "calibrator" && stub["module"] == "mygo_lidar")
+        .unwrap();
+    assert_eq!(
+        calibrator_stub["path"],
+        "app/stubs/mygo_lidar/rust/calibrator.rs"
+    );
+
+    let implementation = artifact_content(&bundle, "app/implementation.md");
+    assert!(implementation.contains("user file: `app/perception/rust/processor.rs`"));
+    assert!(implementation.contains("reference stub: `app/stubs/perception/rust/processor.rs`"));
+    assert!(implementation.contains("user file: `app/mygo_lidar/cpp/processor.cpp`"));
+    assert!(implementation.contains("reference stub: `app/stubs/mygo_lidar/cpp/processor.cpp`"));
+    assert!(implementation.contains("user file: `app/mygo_lidar/rust/calibrator.rs`"));
+    assert!(implementation.contains("reference stub: `app/stubs/mygo_lidar/rust/calibrator.rs`"));
 
     let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
     assert!(rust_messages.contains("pub struct PerceptionSample"));
@@ -571,6 +667,7 @@ backends = ["zenoh"]
 
     let rust_components = artifact_content(&bundle, "rust/src/components.rs");
     assert!(rust_components.contains("pub trait PerceptionProcessor"));
+    assert!(rust_components.contains("pub trait MygoLidarCalibrator"));
     assert!(rust_components.contains("flowrt::Output<PerceptionSample>"));
     assert!(!rust_components.contains("pub trait Processor {"));
 
@@ -663,6 +760,16 @@ backends = ["zenoh"]
             "dataflow channel {message_type} must have ABI/frame layout"
         );
     }
+
+    let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+    assert!(cmake.contains("set(FLOWRT_USER_APP_ROOT"));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cpp\""));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cc\""));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cxx\""));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/*.c\""));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/c/*.c\""));
+    assert!(cmake.contains("app/<module>/cpp and app/<module>/c"));
+    assert!(cmake.contains("${FLOWRT_USER_APP_ROOT}"));
 
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -775,6 +882,7 @@ channel = "latest"
         cmake.contains("target_link_libraries(robot_demo_cpp_shell PUBLIC robot_demo_flowrt_app)")
     );
     assert!(cmake.contains("project(robot_demo_flowrt_app LANGUAGES C CXX)"));
+    assert!(cmake.contains("set(FLOWRT_USER_APP_ROOT"));
     assert!(cmake.contains("set(FLOWRT_USER_CPP_ROOT"));
     assert!(cmake.contains("set(FLOWRT_USER_C_ROOT"));
     assert!(cmake.contains("file(GLOB_RECURSE FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS"));
@@ -784,14 +892,20 @@ channel = "latest"
             && cmake.contains("${FLOWRT_USER_CPP_ROOT}/*.cxx")
             && cmake.contains("${FLOWRT_USER_CPP_ROOT}/*.c")
             && cmake.contains("${FLOWRT_USER_C_ROOT}/*.c")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/*.cpp")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/*.cc")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/*.cxx")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/*.c")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/c/*.c")
     );
     assert!(cmake.contains("FLOWRT_USER_CPP_SOURCES"));
     assert!(cmake.contains(
-        "User C/C++ sources from app/cpp and app/c that implement flowrt_user::build_app and C callback factories"
+        "User C/C++ sources from app/cpp, app/c, app/<module>/cpp and app/<module>/c that implement flowrt_user::build_app and C callback factories"
     ));
     assert!(cmake.contains("target_include_directories(robot_demo_cpp_user PUBLIC"));
     assert!(cmake.contains("${FLOWRT_USER_CPP_ROOT}"));
     assert!(cmake.contains("${FLOWRT_USER_C_ROOT}"));
+    assert!(cmake.contains("${FLOWRT_USER_APP_ROOT}"));
     let legacy_cpp_user_root = ["../../", "src", "/cpp"].concat();
     assert!(!cmake.contains(&legacy_cpp_user_root));
     assert!(cmake.contains("add_library(robot_demo_cpp_user STATIC"));

@@ -88,6 +88,8 @@ struct AppApiTaskTimingAccess {
 struct AppApiComponent {
     name: String,
     qualified_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module: Option<String>,
     language: &'static str,
     kind: &'static str,
     concurrency: &'static str,
@@ -253,6 +255,8 @@ struct AppApiCTaskCallback {
 struct AppApiStub {
     language: &'static str,
     component: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module: Option<String>,
     path: String,
 }
 
@@ -288,7 +292,8 @@ pub(crate) fn app_api_manifest(contract: &ContractIr) -> AppApiManifest {
         .map(|component| AppApiStub {
             language: component.language,
             component: component.name.clone(),
-            path: stub_path(component.language, &component.name),
+            module: component.module.clone(),
+            path: manifest_component_stub_path(component),
         })
         .collect();
 
@@ -375,6 +380,7 @@ fn component_manifest(
     AppApiComponent {
         name: component.name.clone(),
         qualified_name: component.qualified_name.clone(),
+        module: component.module.clone(),
         language: language_name(component.language),
         kind: component_kind_name(component.kind),
         concurrency: concurrency_name(component.concurrency),
@@ -818,7 +824,7 @@ fn emit_implementation_md(manifest: &AppApiManifest) -> String {
             component.language,
             component.kind,
             component.user_file_path,
-            stub_path(component.language, &component.name)
+            manifest_component_stub_path(component)
         ));
         if let Some(table) = &component.c_callback_table {
             output.push_str(&format!(
@@ -881,7 +887,7 @@ pub(crate) fn format_app_api_manifest_text(manifest: &AppApiManifest) -> String 
             component.kind,
             component.concurrency,
             component.user_file_path,
-            stub_path(component.language, &component.name)
+            manifest_component_stub_path(component)
         ));
         push_app_api_tasks_text(&mut output, &component.tasks);
         push_app_api_handlers_text(&mut output, &component.handlers);
@@ -1167,18 +1173,17 @@ fn emit_reference_stubs(contract: &ContractIr) -> Vec<Artifact> {
         .into_iter()
         .map(|component| match component.language {
             LanguageKind::Rust => artifact(
-                stub_path("rust", &component.name),
+                component_stub_path(component),
                 rust_stub(component, &service_plans, &operation_plans),
             ),
             LanguageKind::Cpp => artifact(
-                stub_path("cpp", &component.name),
+                component_stub_path(component),
                 cpp_stub(component, &service_plans, &operation_plans),
             ),
-            LanguageKind::C => artifact(stub_path("c", &component.name), c_stub(graph, component)),
-            LanguageKind::External => artifact(
-                stub_path("external", &component.name),
-                external_stub(component),
-            ),
+            LanguageKind::C => artifact(component_stub_path(component), c_stub(graph, component)),
+            LanguageKind::External => {
+                artifact(component_stub_path(component), external_stub(component))
+            }
         })
         .collect()
 }
@@ -1666,6 +1671,19 @@ fn component_instance_name_set<'a>(
 }
 
 fn user_file_path(component: &ComponentIr) -> String {
+    if let Some(module) = &component.module {
+        let module_dir = snake_identifier(module);
+        let component_file = snake_identifier(&component.name);
+        return match component.language {
+            LanguageKind::Rust => format!("app/{module_dir}/rust/{component_file}.rs"),
+            LanguageKind::Cpp => format!("app/{module_dir}/cpp/{component_file}.cpp"),
+            LanguageKind::C => format!("app/{module_dir}/c/{component_file}.c"),
+            LanguageKind::External => {
+                format!("app/{module_dir}/external/{component_file}.md")
+            }
+        };
+    }
+
     match component.language {
         LanguageKind::Rust => "app/rust/mod.rs".to_string(),
         LanguageKind::Cpp => "app/cpp/components.cpp".to_string(),
@@ -1674,7 +1692,23 @@ fn user_file_path(component: &ComponentIr) -> String {
     }
 }
 
-fn stub_path(language: &str, component_name: &str) -> String {
+fn component_stub_path(component: &ComponentIr) -> String {
+    stub_path(
+        language_name(component.language),
+        component.module.as_deref(),
+        &component.name,
+    )
+}
+
+fn manifest_component_stub_path(component: &AppApiComponent) -> String {
+    stub_path(
+        component.language,
+        component.module.as_deref(),
+        &component.name,
+    )
+}
+
+fn stub_path(language: &str, module: Option<&str>, component_name: &str) -> String {
     let dir = match language {
         "rust" => "rust",
         "cpp" => "cpp",
@@ -1687,11 +1721,12 @@ fn stub_path(language: &str, component_name: &str) -> String {
         "c" => "c",
         _ => "md",
     };
-    format!(
-        "app/stubs/{dir}/{}.{}",
-        snake_identifier(component_name),
-        ext
-    )
+    let component_file = snake_identifier(component_name);
+    if let Some(module) = module {
+        let module_dir = snake_identifier(module);
+        return format!("app/stubs/{module_dir}/{dir}/{component_file}.{ext}");
+    }
+    format!("app/stubs/{dir}/{component_file}.{ext}")
 }
 
 fn artifact(path: impl Into<PathBuf>, content: String) -> Artifact {

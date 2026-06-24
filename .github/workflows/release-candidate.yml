@@ -720,6 +720,26 @@ jobs:
           bash -n "$focused_smoke"
           "$focused_smoke"
 
+  v0280-module-app-layout-smoke:
+    name: v0.28.0 Module App Layout Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.28.0 module app layout smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.28.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
   rust-fmt:
     name: Rust Fmt (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -1554,6 +1574,7 @@ jobs:
       - v0260-transport-compile-evidence-smoke
       - v0270-operation-control-plane-smoke
       - v0271-debt-closure-smoke
+      - v0280-module-app-layout-smoke
       - v083-toolchain-smoke
 
     steps:
@@ -2052,6 +2073,7 @@ jobs:
       - v0260-transport-compile-evidence-smoke
       - v0270-operation-control-plane-smoke
       - v0271-debt-closure-smoke
+      - v0280-module-app-layout-smoke
       - v083-toolchain-smoke
       - cpp-zenoh-runtime
       - package

@@ -78,7 +78,7 @@ variable frame、`io_boundary`、`external`、动态加载或 Python binding。
 推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-version=v0.27.1  # 替换为要安装的 release tag
+version=v0.28.0  # 替换为要安装的 release tag
 arch="$(dpkg --print-architecture)"  # amd64 或 arm64，以 release 页面实际资产为准
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/flowrt_${version#v}_${arch}.deb"
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/SHA256SUMS"
@@ -179,6 +179,12 @@ my_robot/
       components.cpp
     rust/
       mod.rs
+    perception/
+      rust/
+        processor.rs
+    chassis/
+      cpp/
+        driver.cpp
   external/
     driver_package/
       flowrt-external.toml
@@ -194,10 +200,14 @@ my_robot/
 
 - `flowrt.toml` 放项目入口，例如 `[project] main = "rsdl/robot.rsdl"`。
 - `rsdl/` 放系统契约。
-- `app/` 放用户业务算法；C 用户实现放 `app/c/**`，通过 callback table 接入
-  generated C++ runtime shell。
+- `app/` 放用户业务算法。root component 继续使用 `app/rust/mod.rs`、`app/cpp/**`
+  和 `app/c/**`；workspace module 中的 component 建议放在
+  `app/<module>/rust/<component>.rs`、`app/<module>/cpp/<component>.cpp` 或
+  `app/<module>/c/<component>.c`。C/C++ module sources 会被 generated CMake 自动发现；
+  Rust 仍以 `app/rust/mod.rs` 作为 graph 级入口聚合 module-local 实现。
 - `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 由
-  `flowrt prepare` 生成，属于可删除、可重建的 App API 参考产物。
+  `flowrt prepare` 生成，属于可删除、可重建的 App API 参考产物；module component 的
+  参考 stub 位于 `flowrt/app/stubs/<module>/<lang>/<component>.*`。
 - `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑；`prepare` 不直接写用户
   `app/`。
 - `external/` 可放本项目随包携带的 external package；系统级 external package 也可安装到 `/opt/flowrt/external/<package>`。

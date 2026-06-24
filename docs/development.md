@@ -29,6 +29,7 @@ scripts/test-codegen-compile.sh
 scripts/test-cpp-static-quality.sh
 scripts/test-v0260-transport-compile-evidence-smoke.sh
 scripts/test-v0271-debt-closure-smoke.sh
+scripts/test-v0280-module-app-layout-smoke.sh
 ```
 
 codegen golden snapshot 只锁定生成文本漂移，不能证明 generated shell 可被 Rust/C++ 编译器接受。
@@ -77,6 +78,17 @@ scripts/test-v0271-debt-closure-smoke.sh
 该 smoke 聚焦 `v0.27.1` 的长期 debt 收束：evidence matrix、generated compile net、C++
 static quality、feedback typed literal、route typed transport error、Operation observation
 record/replay verification 和 C ABI readonly string params 必须同时具备定向回归或门禁证据。
+
+module app layout smoke：
+
+```bash
+scripts/test-v0280-module-app-layout-smoke.sh
+```
+
+该 smoke 聚焦 `v0.28.0` 的 module-aware 用户侧目录：App API manifest、
+`implementation.md` 和 reference stubs 使用 `app/<module>/<lang>/<component>.*` /
+`flowrt/app/stubs/<module>/<lang>/<component>.*`，`prepare` 不创建或覆盖用户 `app/`，
+generated CMake 自动发现 `app/<module>/cpp/**` 和 `app/<module>/c/**`。
 
 VSCode / clangd：
 
@@ -208,8 +220,13 @@ package 和 release job 必须依赖该 gate；低资源本地机器可用
 - `flowrt/` 和 `examples/*/flowrt/` 是生成物目录，不入库。
 - 生成目录可以删除并重新生成。
 - `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 是
-  `prepare` 生成的 App API 事实源、实现清单和参考模板，同样不入库。
+  `prepare` 生成的 App API 事实源、实现清单和参考模板，同样不入库。root component 的
+  参考 stub 使用 `flowrt/app/stubs/<lang>/`；module component 使用
+  `flowrt/app/stubs/<module>/<lang>/<component>.*`。
 - 用户算法代码应放在示例或项目自己的 `app/` 目录，不写进生成文件。
+  root component 继续使用 `app/rust/mod.rs`、`app/cpp/**` 和 `app/c/**`；module component
+  建议使用 `app/<module>/<lang>/<component>.*`。Rust 生成入口仍是 `app/rust/mod.rs`，
+  C/C++ module sources 由 generated CMake 自动发现。
 - `flowrt init` 只创建项目入口和最小 RSDL；`flowrt add` 只编辑 RSDL，不创建、追加或
   覆盖用户 `app/`。用户参考 `flowrt/app/stubs/` 后自行手写或复制实现。
 - FlowRT 管理代码只做 glue：消息、接口、runtime shell、backend 绑定、启动配置和构建文件。

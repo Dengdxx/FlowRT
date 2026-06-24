@@ -1,7 +1,7 @@
 # 通用发布元数据检查。由 scripts/check-release-readiness.sh source，并复用其 helper。
 
 check_final_release_metadata_readiness() {
-    printf '\n[29/32] README.md 安装示例\n'
+    printf '\n[30/33] README.md 安装示例\n'
 
     local readme_file="$repo_root/README.md"
     if [[ -f "$readme_file" ]]; then
@@ -24,7 +24,7 @@ check_final_release_metadata_readiness() {
         fi
     fi
 
-    printf '\n[30/32] CONTEXT.md 当前状态版本\n'
+    printf '\n[31/33] CONTEXT.md 当前状态版本\n'
 
     local context_file="$repo_root/CONTEXT.md"
     if [[ -f "$context_file" ]]; then
@@ -41,10 +41,10 @@ check_final_release_metadata_readiness() {
         fail "CONTEXT.md 不存在"
     fi
 
-    printf '\n[31/32] Release evidence 门禁覆盖\n'
+    printf '\n[32/33] Release evidence 门禁覆盖\n'
     pass "release evidence 门禁由 v0.15.1 专项 adapter 覆盖"
 
-    printf '\n[32/32] Git tag 检查\n'
+    printf '\n[33/33] Git tag 检查\n'
     if git -C "$repo_root" tag -l "$expected_tag" | grep -q .; then
         info "tag $expected_tag 已存在"
     else

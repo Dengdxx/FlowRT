@@ -16,11 +16,17 @@ my_robot/
     rust/mod.rs
     cpp/
     c/
+    perception/
+      rust/processor.rs
+    mygo_lidar/
+      cpp/processor.cpp
   flowrt/
     app/
       app_api.json
       implementation.md
       stubs/
+        perception/rust/processor.rs
+        mygo_lidar/cpp/processor.cpp
 ```
 
 - `flowrt.toml` 只记录项目入口，当前格式为：
@@ -31,10 +37,14 @@ my_robot/
   ```
 - `rsdl/` 放系统契约，声明 package、message、component、instance、task、bind、profile
   和 target。
-- `app/` 放用户业务算法。Rust 用户入口是 `app/rust/mod.rs`；C++ 用户代码位于
-  `app/cpp/**`；C callback v0 用户代码位于 `app/c/**`。
+- `app/` 放用户业务算法。root component 继续使用 `app/rust/mod.rs`、`app/cpp/**`
+  和 `app/c/**`；module component 的建议组织是
+  `app/<module>/rust/<component>.rs`、`app/<module>/cpp/<component>.cpp` 或
+  `app/<module>/c/<component>.c`。Rust 生成入口仍导入 `app/rust/mod.rs`，用户可在其中
+  聚合 module-local Rust 实现并提供 `build_app()`。
 - `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 是
-  `flowrt prepare` 生成的 App API manifest、实现清单和参考模板。
+  `flowrt prepare` 生成的 App API manifest、实现清单和参考模板；module component 的
+  stub 会落在 `flowrt/app/stubs/<module>/<lang>/<component>.*`。
 - `flowrt/` 是 FlowRT 管理的生成目录，可删除、可重建，不放用户业务代码。
 
 ## 入口发现
@@ -77,6 +87,8 @@ Rust component 通过 generated trait 接入。C++ component 通过 generated in
 `flowrt_user::build_app()` 用户工厂接入。C 用户代码通过
 `flowrt_app/c_components.h` 声明的 callback table factory 接入 generated C++ runtime
 shell，callback table 仍使用 `FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0` feature bit。
+同一 module 可以声明不同语言的 component；语言边界仍由 component 和 process group
+决定，不表示同一进程内混合 Rust/C++ 用户对象。
 
 ## C callback v0
 

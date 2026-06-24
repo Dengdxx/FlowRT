@@ -108,6 +108,10 @@ output = ["command:Sample"]
 - root/composition 层短名存在歧义时必须显式写 `module::Name`。
 - 生成的 Rust/C++ 用户接口使用稳定 generated symbol，例如 `PerceptionProcessor`
   和 `ControlProcessorInterface`，避免同名 module symbol 互相撞。
+- `flowrt/app/app_api.json` 和 `flowrt/app/implementation.md` 会把 module component 的建议
+  用户路径显示为 `app/<module>/<lang>/<component>.*`；参考 stub 会生成到
+  `flowrt/app/stubs/<module>/<lang>/<component>.*`。C/C++ module sources 会被 generated
+  CMake 自动发现；Rust module 文件仍由 `app/rust/mod.rs` 聚合。
 
 常用命令：
 

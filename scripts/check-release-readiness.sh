@@ -132,7 +132,7 @@ if release_gate_registry_output="$(cargo run -q -p flowrt-devtools -- release-ga
 
 # ── 1. 版本来源一致性 ────────────────────────────────────────
 
-printf '\n[1/32] 版本来源一致性\n'
+printf '\n[1/33] 版本来源一致性\n'
 
 check_version_in_file() {
     local label="$1"
@@ -199,7 +199,7 @@ fi
 
 # ── 2. CHANGELOG 版本段格式 ──────────────────────────────────
 
-printf '\n[2/32] CHANGELOG.md 版本段格式\n'
+printf '\n[2/33] CHANGELOG.md 版本段格式\n'
 
 changelog_heading="## ${expected_tag} -"
 if grep -qF "$changelog_heading" "$repo_root/CHANGELOG.md"; then
@@ -235,7 +235,7 @@ fi
 
 # ── 3. Release notes 抽取 ────────────────────────────────────
 
-printf '\n[3/32] Release notes 抽取\n'
+printf '\n[3/33] Release notes 抽取\n'
 
 extract_script="$repo_root/scripts/extract-release-notes.sh"
 if [[ ! -x "$extract_script" ]]; then
@@ -254,7 +254,7 @@ fi
 
 # ── 4. Release evidence 版本校验覆盖 ────────────────────────
 
-printf '\n[4/32] Release evidence 版本校验覆盖\n'
+printf '\n[4/33] Release evidence 版本校验覆盖\n'
 
 fast_ci_file="$repo_root/.github/workflows/ci.yml"
 ci_file="$repo_root/.github/workflows/release-candidate.yml"
@@ -283,7 +283,7 @@ fi
 
 # ── 5. v0.5.0 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[5/32] v0.5.0 focused CI gate 覆盖\n'
+printf '\n[5/33] v0.5.0 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.5.0 focused gate"
@@ -312,7 +312,7 @@ fi
 
 # ── 6. v0.6.0 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[6/32] v0.6.0 focused CI gate 覆盖\n'
+printf '\n[6/33] v0.6.0 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.6.0 focused gate"
@@ -347,7 +347,7 @@ fi
 
 # ── 7. v0.7.0 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[7/32] v0.7.0 focused CI gate 覆盖\n'
+printf '\n[7/33] v0.7.0 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.7.0 focused gate"
@@ -376,7 +376,7 @@ fi
 
 # ── 8. v0.8.0 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[8/32] v0.8.0 focused CI gate 覆盖\n'
+printf '\n[8/33] v0.8.0 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.8.0 focused gate"
@@ -425,7 +425,7 @@ fi
 
 # ── 9. v0.8.1 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[9/32] v0.8.1 focused CI gate 覆盖\n'
+printf '\n[9/33] v0.8.1 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.8.1 focused gate"
@@ -464,7 +464,7 @@ fi
 
 # ── 10. v0.8.3 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[10/32] v0.8.3 交叉编译 focused CI gate 覆盖\n'
+printf '\n[10/33] v0.8.3 交叉编译 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.8.3 focused gate"
@@ -523,7 +523,7 @@ fi
 
 # ── 11. v0.8.6 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[11/32] v0.8.6 交叉 UX focused CI gate 覆盖\n'
+printf '\n[11/33] v0.8.6 交叉 UX focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.8.6 focused gate"
@@ -576,7 +576,7 @@ fi
 
 # ── 12. v0.9.0 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[12/32] v0.9.0 Island focused CI gate 覆盖\n'
+printf '\n[12/33] v0.9.0 Island focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.9.0 focused gate"
@@ -618,7 +618,7 @@ fi
 
 # ── 13. v0.9.1 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[13/32] v0.9.1 Island tooling focused CI gate 覆盖\n'
+printf '\n[13/33] v0.9.1 Island tooling focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.9.1 focused gate"
@@ -668,7 +668,7 @@ fi
 
 # ── 14. v0.9.2 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[14/32] v0.9.2 Island offline validation focused CI gate 覆盖\n'
+printf '\n[14/33] v0.9.2 Island offline validation focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.9.2 focused gate"
@@ -728,7 +728,7 @@ fi
 
 # ── 15. v0.10.2 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[15/32] v0.10.2 Concurrency focused CI gate 覆盖\n'
+printf '\n[15/33] v0.10.2 Concurrency focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.10.2 focused gate"
@@ -772,7 +772,7 @@ fi
 
 # ── 16. v0.12.0 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[16/32] v0.12.0 Authoring focused CI gate 覆盖\n'
+printf '\n[16/33] v0.12.0 Authoring focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.12.0 focused gate"
@@ -881,7 +881,7 @@ fi
 
 # ── 17. v0.13.0 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[17/32] v0.13.0 Robot Runtime Completion focused CI gate 覆盖\n'
+printf '\n[17/33] v0.13.0 Robot Runtime Completion focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.13.0 focused gate"
@@ -992,7 +992,7 @@ fi
 
 # ── 18. v0.14.0 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[18/32] v0.14.0 Realtime Scheduler focused CI gate 覆盖\n'
+printf '\n[18/33] v0.14.0 Realtime Scheduler focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.14.0 focused gate"
@@ -1087,53 +1087,57 @@ fi
 
 # ── 19. v0.14.1 focused CI gate 覆盖 ────────────────────────
 
-printf '\n[19/32] v0.14.1 Architecture focused CI gate 覆盖\n'
+printf '\n[19/33] v0.14.1 Architecture focused CI gate 覆盖\n'
 
 source "$repo_root/scripts/release-readiness/v0141-architecture.sh"; check_v0141_architecture_readiness
 
 # ── 20. v0.15.x focused CI gate 覆盖 ────────────────────────
-printf '\n[20/32] v0.15.x focused CI gate 覆盖\n'
+printf '\n[20/33] v0.15.x focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0150-architecture-convergence.sh"; check_v0150_architecture_convergence_readiness
 source "$repo_root/scripts/release-readiness/v0151-ci-release-evidence.sh"; check_v0151_ci_release_evidence_readiness
 source "$repo_root/scripts/release-readiness/v0152-scheduler-clock.sh"; check_v0152_scheduler_clock_readiness
 
 # ── 21. v0.23.2 focused CI gate 覆盖 ────────────────────────
 
-printf '\n[21/32] v0.23.2 C++ clang-tidy focused CI gate 覆盖\n'
+printf '\n[21/33] v0.23.2 C++ clang-tidy focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0232-cpp-clang-tidy.sh"; check_v0232_cpp_clang_tidy_readiness
 
 # ── 22. v0.23.3 focused CI gate 覆盖 ────────────────────────
 
-printf '\n[22/32] v0.23.3 focused CI gate 覆盖\n'
+printf '\n[22/33] v0.23.3 focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0233-scope-closure.sh"; check_v0233_scope_closure_readiness
 
 # ── 23. v0.25.0 focused CI gate 覆盖 ────────────────────────
 
-printf '\n[23/32] v0.25.0 iox2 Service/Operation focused CI gate 覆盖\n'
+printf '\n[23/33] v0.25.0 iox2 Service/Operation focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0250-iox2-service-operation.sh"; check_v0250_iox2_service_operation_readiness
 
 # ── 24. v0.25.1 focused CI gate 覆盖 ────────────────────────
 
-printf '\n[24/32] v0.25.1 Transport Evidence focused CI gate 覆盖\n'
+printf '\n[24/33] v0.25.1 Transport Evidence focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0251-transport-evidence.sh"; check_v0251_transport_evidence_readiness
 
 # ── 25. v0.25.2 focused CI gate 覆盖 ────────────────────────
 
-printf '\n[25/32] v0.25.2 Transport Route Health focused CI gate 覆盖\n'
+printf '\n[25/33] v0.25.2 Transport Route Health focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0252-transport-route-health.sh"; check_v0252_transport_route_health_readiness
 
 # ── 26. v0.26.0 focused CI gate 覆盖 ────────────────────────
 
-printf '\n[26/32] v0.26.0 Transport Compile Evidence focused CI gate 覆盖\n'
+printf '\n[26/33] v0.26.0 Transport Compile Evidence focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0260-transport-compile-evidence.sh"; check_v0260_transport_compile_evidence_readiness
 
 # ── 27. v0.27.0 focused CI gate 覆盖 ────────────────────────
-printf '\n[27/32] v0.27.0 Operation Control Plane focused CI gate 覆盖\n'
+printf '\n[27/33] v0.27.0 Operation Control Plane focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0270-operation-control-plane.sh"; check_v0270_operation_control_plane_readiness
 
 # ── 28. v0.27.1 focused CI gate 覆盖 ────────────────────────
-printf '\n[28/32] v0.27.1 Debt Closure focused CI gate 覆盖\n'
+printf '\n[28/33] v0.27.1 Debt Closure focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0271-debt-closure.sh"; check_v0271_debt_closure_readiness
+
+# ── 29. v0.28.0 focused CI gate 覆盖 ────────────────────────
+printf '\n[29/33] v0.28.0 Module-aware App Layout focused CI gate 覆盖\n'
+source "$repo_root/scripts/release-readiness/v0280-module-app-layout.sh"; check_v0280_module_app_layout_readiness
 
 source "$repo_root/scripts/release-readiness/final-metadata.sh"; check_final_release_metadata_readiness
 

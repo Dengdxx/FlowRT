@@ -17,7 +17,7 @@ if(FLOWRT_CPP_RUNTIME_DIR)
     list(PREPEND CMAKE_BUILD_RPATH "${FLOWRT_CPP_RUNTIME_DIR}/lib")
 endif()
 if(NOT FLOWRT_CPP_RUNTIME_DIR)
-    find_package(flowrt_runtime 0.27 QUIET)
+    find_package(flowrt_runtime 0.28 QUIET)
 endif()
 option(FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK "Allow falling back to FlowRT source tree runtime/cpp (dev mode only)" OFF)
 if(NOT TARGET flowrt::runtime AND NOT FLOWRT_CPP_RUNTIME_DIR AND FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK)
@@ -40,19 +40,25 @@ endif()
 add_library(fault_injection_degrade_demo_cpp_shell STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)
 target_link_libraries(fault_injection_degrade_demo_cpp_shell PUBLIC fault_injection_degrade_demo_flowrt_app)
 
-set(FLOWRT_USER_CPP_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../app/cpp")
-set(FLOWRT_USER_C_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../app/c")
+set(FLOWRT_USER_APP_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../app")
+set(FLOWRT_USER_CPP_ROOT "${FLOWRT_USER_APP_ROOT}/cpp")
+set(FLOWRT_USER_C_ROOT "${FLOWRT_USER_APP_ROOT}/c")
 file(GLOB_RECURSE FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS
     "${FLOWRT_USER_CPP_ROOT}/*.cpp"
     "${FLOWRT_USER_CPP_ROOT}/*.cc"
     "${FLOWRT_USER_CPP_ROOT}/*.cxx"
     "${FLOWRT_USER_CPP_ROOT}/*.c"
     "${FLOWRT_USER_C_ROOT}/*.c"
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/*.cpp"
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/*.cc"
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/*.cxx"
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/*.c"
+    "${FLOWRT_USER_APP_ROOT}/*/c/*.c"
 )
-set(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING "User C/C++ sources from app/cpp and app/c that implement flowrt_user::build_app and C callback factories")
+set(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING "User C/C++ sources from app/cpp, app/c, app/<module>/cpp and app/<module>/c that implement flowrt_user::build_app and C callback factories")
 if(FLOWRT_USER_CPP_SOURCES)
     add_library(fault_injection_degrade_demo_cpp_user STATIC ${FLOWRT_USER_CPP_SOURCES})
-    target_include_directories(fault_injection_degrade_demo_cpp_user PUBLIC ${FLOWRT_USER_CPP_ROOT} ${FLOWRT_USER_C_ROOT})
+    target_include_directories(fault_injection_degrade_demo_cpp_user PUBLIC ${FLOWRT_USER_CPP_ROOT} ${FLOWRT_USER_C_ROOT} ${FLOWRT_USER_APP_ROOT})
     if(FLOWRT_CXX_COMPILE_OPTIONS)
         target_compile_options(fault_injection_degrade_demo_cpp_user PRIVATE ${FLOWRT_CXX_COMPILE_OPTIONS})
     endif()

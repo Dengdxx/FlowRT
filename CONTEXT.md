@@ -5,20 +5,22 @@
 
 ## 当前版本背景
 
-当前 workspace 准备 `v0.27.1 Debt Closure Hardening` 发布：本版本不新增 RSDL、Contract IR
-或 runtime 用户语义，而是把 0.27 线暴露出的六项长期 debt 收束为发布门禁可证明的事实：
-generated runtime shell 证据矩阵、C++ static quality profile、feedback typed literal、
-route typed transport error、Operation replay observation verification，以及 C ABI readonly
-string params view。用户侧仍只看到 FlowRT typed Service / Operation API、常规
-`Vec` / `String` / `std::vector` / `std::string` 消息字段和 C callback readonly params
-snapshot；`iox2` / `zenoh` 仍是 FlowRT runtime API 之下的 backend 实现细节。
+当前 workspace 准备 `v0.28.0 Module-aware App Layout` 发布：本版本不新增 RSDL、Contract IR
+或 runtime 执行语义，而是优化 workspace module 的用户侧代码组织。App API manifest、
+`implementation.md` 和 reference stubs 对 workspace module component 使用
+`app/<module>/<lang>/<component>.*` 与
+`flowrt/app/stubs/<module>/<lang>/<component>.*`，root component 保持既有
+`app/rust/mod.rs`、`app/cpp/**` 和 `app/c/**` 路径；generated CMake 自动发现
+`app/<module>/cpp/**` 和 `app/<module>/c/**`，Rust 仍由 `app/rust/mod.rs` 作为 graph 级入口
+聚合 module-local 实现。同一 module 可以包含不同语言的 component，但语言边界仍由
+component 和 process group 决定，不表示同一进程内混合 Rust/C++ 用户对象。
 
-当前 workspace 版本为 `0.27.1`。版本源、runtime 版本、Cargo.lock、README 安装示例和
-CHANGELOG v0.27.1 release 段随发布分支同步；后续变更记录在 `## 未发布`。
-`scripts/test-v0271-debt-closure-smoke.sh` 是本版本 focused gate，覆盖 evidence matrix、
-generated compile net、C++ static quality、feedback nested struct / fixed array literal、
-typed route error kind、Operation observation record/replay diff，以及 C ABI readonly string
-params。`scripts/test-codegen-compile.sh` 继续覆盖代表性 iox2 / zenoh generated dataflow、
+当前 workspace 版本为 `0.28.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
+CHANGELOG v0.28.0 release 段随发布分支同步；后续变更记录在 `## 未发布`。
+`scripts/test-v0280-module-app-layout-smoke.sh` 是本版本 focused gate，覆盖 module-aware
+App API/stub 路径、`prepare` 不覆盖用户 `app/`、同一 module 内 Rust/C++ component 路径分层
+和 generated CMake 对 module C/C++ 用户目录的自动发现。
+`scripts/test-codegen-compile.sh` 继续覆盖代表性 iox2 / zenoh generated dataflow、
 Service、Operation 和 bounded variable frame Rust/C++ shell 的真实编译，case 列表来自
 `scripts/evidence-matrix.toml`；Rust generated case 会先带默认 5 次外层重试的 `cargo fetch`，
 再用 locked offline `cargo check` 证明编译，避免 crates.io 瞬断污染生成物编译证据。
@@ -26,6 +28,14 @@ Service、Operation 和 bounded variable frame Rust/C++ shell 的真实编译，
 golden case 都声明 `golden + syntax_compile` 证据，并要求关键 surface 具备 Rust/C++ 证据；
 `scripts/test-cpp-static-quality.sh` 以 runtime、generated 和 ABI/POD 三类 profile 运行 C++
 static quality gate，generated 代表 case 同样来自 evidence matrix。
+
+上一发布线为 `v0.27.1 Debt Closure Hardening`：不新增 RSDL、Contract IR 或 runtime 用户语义，
+而是把 0.27 线暴露出的六项长期 debt 收束为发布门禁可证明的事实：generated runtime shell
+证据矩阵、C++ static quality profile、feedback typed literal、route typed transport error、
+Operation replay observation verification，以及 C ABI readonly string params view。用户侧仍只
+看到 FlowRT typed Service / Operation API、常规 `Vec` / `String` / `std::vector` /
+`std::string` 消息字段和 C callback readonly params snapshot；`iox2` / `zenoh` 仍是 FlowRT
+runtime API 之下的 backend 实现细节。
 v0.25.0 iox2 focused smoke 的真实 SDK 分支会启动 generated supervisor 并轮询 live
 Operation counters，覆盖 Rust `iox2_service_demo` Operation 真实成功路径和 generated C++
 bounded Operation start frame 经 iox2 定容 slot 的 build/run 路径。
@@ -41,7 +51,7 @@ IR canonical type id（例如 `module::Type`）作为协议和 CLI 主键；C++/
 binding name。boundary endpoint、dataflow channel、record/replay 和 `flowrt pub` / `flowrt echo`
 涉及的消息类型必须能在同一 self-description 中找到 ABI 或 canonical frame layout。
 
-上一发布线为 `v0.27.0 Operation Control Plane Completion`：把 `v0.26.0` 后的 hardening
+再上一发布线为 `v0.27.0 Operation Control Plane Completion`：把 `v0.26.0` 后的 hardening
 收束为 Operation control-plane、自描述 Message identity、record/replay command 投影、fault
 matrix 证据和 bounded variable frame 编解码闭环。`scripts/test-v0270-operation-control-plane-smoke.sh`
 覆盖 Operation CLI、远程 zenoh queryable、bounded variable frame payload、fault matrix 多

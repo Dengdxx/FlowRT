@@ -187,6 +187,9 @@ examples/import_demo/flowrt/
     app_api.json
     implementation.md
     stubs/
+      <module>/
+        <lang>/
+          <component>.*
   contract/contract.ir.json
   build/
   launch/launch.json
@@ -195,9 +198,13 @@ examples/import_demo/flowrt/
 ```
 
 `flowrt/app/app_api.json` 是 App API manifest，`flowrt/app/implementation.md` 是用户实现
-清单，`flowrt/app/stubs/` 是参考模板。它们和其他 `flowrt/` 内容一样由 FlowRT 管理，
-可以删除后重新生成。用户算法代码应放在项目自己的 `app/` 目录，不放进生成目录；
-`prepare` 不直接修改用户 `app/`。
+清单，`flowrt/app/stubs/` 是参考模板。root component 的 stub 仍在
+`flowrt/app/stubs/<lang>/`；module component 的 stub 位于
+`flowrt/app/stubs/<module>/<lang>/<component>.*`。它们和其他 `flowrt/` 内容一样由
+FlowRT 管理，可以删除后重新生成。用户算法代码应放在项目自己的 `app/` 目录，不放进
+生成目录；`prepare` 不直接修改用户 `app/`。module component 的建议用户路径是
+`app/<module>/<lang>/<component>.*`；Rust 仍通过 `app/rust/mod.rs` 聚合并暴露
+`build_app()`。
 
 查看已落盘的 Contract IR 摘要：
 
