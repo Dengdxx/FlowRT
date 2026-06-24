@@ -436,6 +436,7 @@ output = ["cmd:Cmd"]
 [component.controller.params]
 enabled = { type = "bool", default = true, update = "startup" }
 gain = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", update = "startup" }
 limits = { type = "array", default = [1, 2, 3], update = "startup" }
 
 [instance.controller]
@@ -457,16 +458,26 @@ output = ["cmd"]
     assert!(components.contains("struct ControllerParams"));
     assert!(components.contains("bool enabled"));
     assert!(components.contains("float gain"));
+    assert!(components.contains("std::string mode"));
     assert!(components.contains("std::string limits"));
     assert!(components.contains("const ControllerParams& params"));
     assert!(shell.contains("flowrt_c_param_snapshot_v0_t make_c_param_snapshot"));
+    assert!(shell.contains("flowrt_c_param_snapshot_v1_t make_c_param_snapshot_v1"));
     assert!(shell.contains("const ControllerParams& params"));
-    assert!(shell.contains("std::array<std::string, 3> controller_param_json"));
-    assert!(shell.contains("std::array<flowrt_param_view_t, 3> controller_param_views"));
+    assert!(shell.contains("std::array<std::string, 4> controller_param_json"));
+    assert!(shell.contains("std::array<flowrt_param_view_t, 4> controller_param_views"));
+    assert!(shell.contains("std::array<flowrt_param_value_view_t, 4> controller_param_values"));
+    assert!(shell.contains("std::array<flowrt_param_view_v1_t, 4> controller_param_views_v1"));
     assert!(shell.contains(
         "make_c_param_snapshot(controller_param_views.data(), controller_param_views.size())"
     ));
+    assert!(shell.contains(
+        "make_c_param_snapshot_v1(controller_param_views_v1.data(), controller_param_views_v1.size())"
+    ));
+    assert!(shell.contains(".kind = FLOWRT_PARAM_VALUE_STRING"));
+    assert!(shell.contains(".string_value = c_string_view(params.mode)"));
     assert!(shell.contains(".params = param_snapshot"));
+    assert!(shell.contains(".params_v1 = param_snapshot_v1"));
     assert!(
         shell.contains(
             "callbacks_->run_periodic(callbacks_->user_data, &context, &inputs, &outputs)"

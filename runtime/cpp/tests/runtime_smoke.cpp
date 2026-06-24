@@ -87,7 +87,7 @@ int main() {
         assert(report.status == flowrt::Status::Ok);
     }
     static_assert(FLOWRT_ABI_VERSION_MAJOR == 0U);
-    static_assert(FLOWRT_ABI_VERSION_MINOR == 2U);
+    static_assert(FLOWRT_ABI_VERSION_MINOR == 3U);
     static_assert(sizeof(flowrt_status_t) == sizeof(std::uint32_t));
     static_assert(FLOWRT_STATUS_OK == 0U);
     static_assert(FLOWRT_STATUS_RETRY == 1U);
@@ -107,7 +107,7 @@ int main() {
     static_assert(FLOWRT_FRAME_LEASE_GENERATION_MISMATCH == 4U);
     static_assert(FLOWRT_FRAME_LEASE_ERROR == 5U);
     static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR == 0U);
-    static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR == 3U);
+    static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR == 4U);
     static_assert(FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 == 1U);
     static_assert(FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1 == 2U);
     static_assert(FLOWRT_C_CLOCK_SOURCE_RUNTIME == 0U);
@@ -124,6 +124,12 @@ int main() {
     static_assert(FLOWRT_PARAMS_UPDATE_PARTIAL == 3U);
     static_assert(FLOWRT_PARAMS_UPDATE_UNSUPPORTED == 4U);
     static_assert(FLOWRT_PARAMS_UPDATE_ERROR == 5U);
+    static_assert(FLOWRT_PARAM_VALUE_BOOL == 0U);
+    static_assert(FLOWRT_PARAM_VALUE_I64 == 1U);
+    static_assert(FLOWRT_PARAM_VALUE_U64 == 2U);
+    static_assert(FLOWRT_PARAM_VALUE_F64 == 3U);
+    static_assert(FLOWRT_PARAM_VALUE_STRING == 4U);
+    static_assert(FLOWRT_PARAM_VALUE_JSON == 5U);
     static_assert(FLOWRT_OPERATION_STATE_IDLE == 0U);
     static_assert(FLOWRT_OPERATION_STATE_STARTING == 1U);
     static_assert(FLOWRT_OPERATION_STATE_RUNNING == 2U);
@@ -217,6 +223,38 @@ int main() {
     static_assert(offsetof(flowrt_c_param_snapshot_v0_t, param_count) == 4U);
     static_assert(offsetof(flowrt_c_param_snapshot_v0_t, params) == 8U);
     static_assert(offsetof(flowrt_c_param_snapshot_v0_t, reserved) == 16U);
+    static_assert(sizeof(flowrt_param_value_data_t) == 16U);
+    static_assert(alignof(flowrt_param_value_data_t) == alignof(void *));
+    static_assert(sizeof(flowrt_param_value_view_t) == 40U);
+    static_assert(alignof(flowrt_param_value_view_t) == alignof(void *));
+    static_assert(offsetof(flowrt_param_value_view_t, kind) == 0U);
+    static_assert(offsetof(flowrt_param_value_view_t, reserved0) == 4U);
+    static_assert(offsetof(flowrt_param_value_view_t, value) == 8U);
+    static_assert(offsetof(flowrt_param_value_view_t, reserved) == 24U);
+    static_assert(sizeof(flowrt_param_view_v1_t) == 208U);
+    static_assert(alignof(flowrt_param_view_v1_t) == alignof(void *));
+    static_assert(offsetof(flowrt_param_view_v1_t, instance_name) == 0U);
+    static_assert(offsetof(flowrt_param_view_v1_t, param_name) == 16U);
+    static_assert(offsetof(flowrt_param_view_v1_t, type_name) == 32U);
+    static_assert(offsetof(flowrt_param_view_v1_t, update_policy) == 48U);
+    static_assert(offsetof(flowrt_param_view_v1_t, current_json) == 64U);
+    static_assert(offsetof(flowrt_param_view_v1_t, pending_json) == 80U);
+    static_assert(offsetof(flowrt_param_view_v1_t, min_json) == 96U);
+    static_assert(offsetof(flowrt_param_view_v1_t, max_json) == 112U);
+    static_assert(offsetof(flowrt_param_view_v1_t, choices_json) == 128U);
+    static_assert(offsetof(flowrt_param_view_v1_t, schema_hash) == 144U);
+    static_assert(offsetof(flowrt_param_view_v1_t, revision) == 152U);
+    static_assert(offsetof(flowrt_param_view_v1_t, mutable_at_runtime) == 160U);
+    static_assert(offsetof(flowrt_param_view_v1_t, has_pending) == 161U);
+    static_assert(offsetof(flowrt_param_view_v1_t, has_min) == 162U);
+    static_assert(offsetof(flowrt_param_view_v1_t, has_max) == 163U);
+    static_assert(offsetof(flowrt_param_view_v1_t, current_value) == 168U);
+    static_assert(sizeof(flowrt_c_param_snapshot_v1_t) == 32U);
+    static_assert(alignof(flowrt_c_param_snapshot_v1_t) == alignof(void *));
+    static_assert(offsetof(flowrt_c_param_snapshot_v1_t, abi_version) == 0U);
+    static_assert(offsetof(flowrt_c_param_snapshot_v1_t, param_count) == 4U);
+    static_assert(offsetof(flowrt_c_param_snapshot_v1_t, params) == 8U);
+    static_assert(offsetof(flowrt_c_param_snapshot_v1_t, reserved) == 16U);
     static_assert(sizeof(flowrt_operation_id_t) == 24U);
     static_assert(alignof(flowrt_operation_id_t) == alignof(std::uint64_t));
     static_assert(offsetof(flowrt_operation_id_t, operation_key) == 0U);
@@ -312,7 +350,7 @@ int main() {
     static_assert(offsetof(flowrt_c_task_timing_t, has_deadline_ms) == 113U);
     static_assert(offsetof(flowrt_c_task_timing_t, deadline_missed) == 114U);
     static_assert(offsetof(flowrt_c_task_timing_t, overrun) == 115U);
-    static_assert(sizeof(flowrt_c_component_context_t) == 248U);
+    static_assert(sizeof(flowrt_c_component_context_t) == 280U);
     static_assert(offsetof(flowrt_c_component_context_t, component_name) == 0U);
     static_assert(offsetof(flowrt_c_component_context_t, instance_name) ==
                   sizeof(flowrt_string_view_t));
@@ -327,6 +365,7 @@ int main() {
     static_assert(offsetof(flowrt_c_component_context_t, has_timing) == 89U);
     static_assert(offsetof(flowrt_c_component_context_t, timing) == 96U);
     static_assert(offsetof(flowrt_c_component_context_t, params) == 216U);
+    static_assert(offsetof(flowrt_c_component_context_t, params_v1) == 248U);
     static_assert(sizeof(flowrt_c_input_view_t) == 88U);
     static_assert(offsetof(flowrt_c_input_view_t, name) == 0U);
     static_assert(offsetof(flowrt_c_input_view_t, type_name) == sizeof(flowrt_string_view_t));

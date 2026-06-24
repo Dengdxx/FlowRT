@@ -309,7 +309,7 @@ C++ only contract 的普通 `build` / `run` 走 CMake app 路径，不依赖 Car
 
 ## 运行 C callback v0 示例
 
-`examples/c_counter_demo` 是 C component v0 的最小闭环。它只使用 fixed-size `Count`
+`examples/c_counter_demo` 是 C 用户入口的最小闭环。它只使用 fixed-size `Count`
 message、两个 C native component 和 `inproc` channel；用户代码位于
 `examples/c_counter_demo/app/c/`，实现 generated `flowrt_app/c_components.h` 声明的
 callback table factory。
@@ -328,9 +328,11 @@ flowrt build --launcher examples/c_counter_demo/rsdl/robot.rsdl
 flowrt launch examples/c_counter_demo/rsdl/robot.rsdl --run-steps 3
 ```
 
-C v0 通过 C ABI callback table 静态编进 generated C++ runtime shell，不是完整 C
-runtime；params、service、operation、variable frame、`io_boundary`、`external`、
-动态加载和 Python binding 均不在当前支持范围。
+C 用户入口通过 C ABI callback table 静态编进 generated C++ runtime shell，不是完整 C
+runtime；readonly params snapshot 已支持 bool、整数、浮点、string 和 array/table，其中
+string 是 borrowed UTF-8 view，array/table 继续是 JSON view。C 侧参数写接口、service、
+operation、variable frame、`io_boundary`、`external`、动态加载和 Python binding 均不在当前
+支持范围。
 
 ## 运行 external package 示例
 

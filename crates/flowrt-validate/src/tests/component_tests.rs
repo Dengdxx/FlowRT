@@ -208,10 +208,10 @@ output = ["sample"]
 }
 
 #[test]
-fn rejects_c_v0_string_params() {
+fn accepts_c_readonly_string_params() {
     let source = r#"
 [package]
-name = "c_string_param_rejected"
+name = "c_string_param_ok"
 rsdl_version = "0.1"
 
 [component.controller]
@@ -230,14 +230,7 @@ period_ms = 5
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
 
-    let report = validate_contract(&ir).expect_err("C v0 string params must fail");
-    assert!(
-        report.errors.iter().any(|error| error.message.contains(
-            "component `controller` param `mode` uses string data but C v0 params only support primitive, array and table snapshot values"
-        )),
-        "{:?}",
-        report.errors
-    );
+    validate_contract(&ir).unwrap();
 }
 
 #[test]

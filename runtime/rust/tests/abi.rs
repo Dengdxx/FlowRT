@@ -21,20 +21,22 @@ use flowrt::{
         FLOWRT_OPERATION_STATE_CANCELLED, FLOWRT_OPERATION_STATE_FAILED,
         FLOWRT_OPERATION_STATE_IDLE, FLOWRT_OPERATION_STATE_RUNNING,
         FLOWRT_OPERATION_STATE_STARTING, FLOWRT_OPERATION_STATE_SUCCEEDED,
-        FLOWRT_OPERATION_STATE_TIMED_OUT, FLOWRT_PARAMS_UPDATE_ACCEPTED,
-        FLOWRT_PARAMS_UPDATE_APPLIED, FLOWRT_PARAMS_UPDATE_ERROR, FLOWRT_PARAMS_UPDATE_PARTIAL,
-        FLOWRT_PARAMS_UPDATE_REJECTED, FLOWRT_PARAMS_UPDATE_UNSUPPORTED,
-        FLOWRT_RESOURCE_HEALTH_DEGRADED, FLOWRT_RESOURCE_HEALTH_FAILED,
-        FLOWRT_RESOURCE_HEALTH_READY, FLOWRT_RESOURCE_HEALTH_UNAVAILABLE,
-        FLOWRT_RESOURCE_HEALTH_UNKNOWN, FLOWRT_STATUS_ERROR, FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY,
-        FlowrtBackendHealthSnapshot, FlowrtBytesView, FlowrtCComponentCallbackTable,
-        FlowrtCComponentContext, FlowrtCInputArrayView, FlowrtCInputView, FlowrtCLifecycleCallback,
-        FlowrtCOutputArrayView, FlowrtCOutputSlot, FlowrtCParamSnapshotV0, FlowrtCTaskCallback,
-        FlowrtCTaskTiming, FlowrtDiagnosticArrayView, FlowrtDiagnosticView,
-        FlowrtDiagnosticsSnapshot, FlowrtFrameDescriptor, FlowrtFrameView, FlowrtI128,
-        FlowrtOperationId, FlowrtOperationIdArrayView, FlowrtOperationProgressView,
-        FlowrtOperationResultSummaryView, FlowrtOperationStatusView, FlowrtParamView,
-        FlowrtParamsUpdateResult, FlowrtParamsView, FlowrtReconnectPolicy,
+        FLOWRT_OPERATION_STATE_TIMED_OUT, FLOWRT_PARAM_VALUE_BOOL, FLOWRT_PARAM_VALUE_F64,
+        FLOWRT_PARAM_VALUE_I64, FLOWRT_PARAM_VALUE_JSON, FLOWRT_PARAM_VALUE_STRING,
+        FLOWRT_PARAM_VALUE_U64, FLOWRT_PARAMS_UPDATE_ACCEPTED, FLOWRT_PARAMS_UPDATE_APPLIED,
+        FLOWRT_PARAMS_UPDATE_ERROR, FLOWRT_PARAMS_UPDATE_PARTIAL, FLOWRT_PARAMS_UPDATE_REJECTED,
+        FLOWRT_PARAMS_UPDATE_UNSUPPORTED, FLOWRT_RESOURCE_HEALTH_DEGRADED,
+        FLOWRT_RESOURCE_HEALTH_FAILED, FLOWRT_RESOURCE_HEALTH_READY,
+        FLOWRT_RESOURCE_HEALTH_UNAVAILABLE, FLOWRT_RESOURCE_HEALTH_UNKNOWN, FLOWRT_STATUS_ERROR,
+        FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY, FlowrtBackendHealthSnapshot, FlowrtBytesView,
+        FlowrtCComponentCallbackTable, FlowrtCComponentContext, FlowrtCInputArrayView,
+        FlowrtCInputView, FlowrtCLifecycleCallback, FlowrtCOutputArrayView, FlowrtCOutputSlot,
+        FlowrtCParamSnapshotV0, FlowrtCParamSnapshotV1, FlowrtCTaskCallback, FlowrtCTaskTiming,
+        FlowrtDiagnosticArrayView, FlowrtDiagnosticView, FlowrtDiagnosticsSnapshot,
+        FlowrtFrameDescriptor, FlowrtFrameView, FlowrtI128, FlowrtOperationId,
+        FlowrtOperationIdArrayView, FlowrtOperationProgressView, FlowrtOperationResultSummaryView,
+        FlowrtOperationStatusView, FlowrtParamValueData, FlowrtParamValueView, FlowrtParamView,
+        FlowrtParamViewV1, FlowrtParamsUpdateResult, FlowrtParamsView, FlowrtReconnectPolicy,
         FlowrtResourceDescriptor, FlowrtResourceHealthArrayView, FlowrtResourceHealthSnapshot,
         FlowrtStringView, FlowrtU128, backend_health_snapshot_to_abi, backend_health_state_to_abi,
         clock_source_to_c_abi, frame_descriptor_to_abi, frame_lease_status_to_abi,
@@ -45,7 +47,7 @@ use flowrt::{
 #[test]
 fn abi_version_and_status_codes_are_stable() {
     assert_eq!(FLOWRT_ABI_VERSION_MAJOR, 0);
-    assert_eq!(FLOWRT_ABI_VERSION_MINOR, 2);
+    assert_eq!(FLOWRT_ABI_VERSION_MINOR, 3);
 
     assert_eq!(FLOWRT_STATUS_OK, 0);
     assert_eq!(FLOWRT_STATUS_RETRY, 1);
@@ -67,6 +69,13 @@ fn c_abi_future_boundary_constants_are_stable() {
     assert_eq!(FLOWRT_PARAMS_UPDATE_PARTIAL, 3);
     assert_eq!(FLOWRT_PARAMS_UPDATE_UNSUPPORTED, 4);
     assert_eq!(FLOWRT_PARAMS_UPDATE_ERROR, 5);
+
+    assert_eq!(FLOWRT_PARAM_VALUE_BOOL, 0);
+    assert_eq!(FLOWRT_PARAM_VALUE_I64, 1);
+    assert_eq!(FLOWRT_PARAM_VALUE_U64, 2);
+    assert_eq!(FLOWRT_PARAM_VALUE_F64, 3);
+    assert_eq!(FLOWRT_PARAM_VALUE_STRING, 4);
+    assert_eq!(FLOWRT_PARAM_VALUE_JSON, 5);
 
     assert_eq!(FLOWRT_OPERATION_STATE_IDLE, 0);
     assert_eq!(FLOWRT_OPERATION_STATE_STARTING, 1);
@@ -170,6 +179,45 @@ fn c_component_param_snapshot_v0_abi_layout_is_stable() {
     assert_eq!(offset_of!(FlowrtCParamSnapshotV0, param_count), 4);
     assert_eq!(offset_of!(FlowrtCParamSnapshotV0, params), 8);
     assert_eq!(offset_of!(FlowrtCParamSnapshotV0, reserved), 16);
+}
+
+#[test]
+fn c_component_param_snapshot_v1_abi_layout_exposes_typed_values() {
+    assert_eq!(size_of::<FlowrtParamValueData>(), 16);
+    assert_eq!(align_of::<FlowrtParamValueData>(), align_of::<usize>());
+
+    assert_eq!(size_of::<FlowrtParamValueView>(), 40);
+    assert_eq!(align_of::<FlowrtParamValueView>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtParamValueView, kind), 0);
+    assert_eq!(offset_of!(FlowrtParamValueView, reserved0), 4);
+    assert_eq!(offset_of!(FlowrtParamValueView, value), 8);
+    assert_eq!(offset_of!(FlowrtParamValueView, reserved), 24);
+
+    assert_eq!(size_of::<FlowrtParamViewV1>(), 208);
+    assert_eq!(align_of::<FlowrtParamViewV1>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtParamViewV1, instance_name), 0);
+    assert_eq!(offset_of!(FlowrtParamViewV1, param_name), 16);
+    assert_eq!(offset_of!(FlowrtParamViewV1, type_name), 32);
+    assert_eq!(offset_of!(FlowrtParamViewV1, update_policy), 48);
+    assert_eq!(offset_of!(FlowrtParamViewV1, current_json), 64);
+    assert_eq!(offset_of!(FlowrtParamViewV1, pending_json), 80);
+    assert_eq!(offset_of!(FlowrtParamViewV1, min_json), 96);
+    assert_eq!(offset_of!(FlowrtParamViewV1, max_json), 112);
+    assert_eq!(offset_of!(FlowrtParamViewV1, choices_json), 128);
+    assert_eq!(offset_of!(FlowrtParamViewV1, schema_hash), 144);
+    assert_eq!(offset_of!(FlowrtParamViewV1, revision), 152);
+    assert_eq!(offset_of!(FlowrtParamViewV1, mutable_at_runtime), 160);
+    assert_eq!(offset_of!(FlowrtParamViewV1, has_pending), 161);
+    assert_eq!(offset_of!(FlowrtParamViewV1, has_min), 162);
+    assert_eq!(offset_of!(FlowrtParamViewV1, has_max), 163);
+    assert_eq!(offset_of!(FlowrtParamViewV1, current_value), 168);
+
+    assert_eq!(size_of::<FlowrtCParamSnapshotV1>(), 32);
+    assert_eq!(align_of::<FlowrtCParamSnapshotV1>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtCParamSnapshotV1, abi_version), 0);
+    assert_eq!(offset_of!(FlowrtCParamSnapshotV1, param_count), 4);
+    assert_eq!(offset_of!(FlowrtCParamSnapshotV1, params), 8);
+    assert_eq!(offset_of!(FlowrtCParamSnapshotV1, reserved), 16);
 }
 
 #[test]
@@ -484,7 +532,7 @@ fn abi_frame_descriptor_and_lease_status_are_plain_borrowed_views() {
 #[test]
 fn c_component_callback_abi_constants_are_stable() {
     assert_eq!(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR, 0);
-    assert_eq!(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR, 3);
+    assert_eq!(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR, 4);
     assert_eq!(FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0, 1);
     assert_eq!(FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1, 1 << 1);
     assert_eq!(FLOWRT_C_CLOCK_SOURCE_RUNTIME, 0);
@@ -528,7 +576,7 @@ fn c_component_task_timing_abi_layout_is_stable() {
 
 #[test]
 fn c_component_context_abi_layout_is_stable() {
-    assert_eq!(size_of::<FlowrtCComponentContext>(), 248);
+    assert_eq!(size_of::<FlowrtCComponentContext>(), 280);
     assert_eq!(align_of::<FlowrtCComponentContext>(), align_of::<usize>());
     assert_eq!(offset_of!(FlowrtCComponentContext, component_name), 0);
     assert_eq!(
@@ -550,6 +598,7 @@ fn c_component_context_abi_layout_is_stable() {
     assert_eq!(offset_of!(FlowrtCComponentContext, has_timing), 89);
     assert_eq!(offset_of!(FlowrtCComponentContext, timing), 96);
     assert_eq!(offset_of!(FlowrtCComponentContext, params), 216);
+    assert_eq!(offset_of!(FlowrtCComponentContext, params_v1), 248);
 }
 
 #[test]

@@ -65,11 +65,11 @@ flowrt init my_cpp_robot --lang cpp
 flowrt init my_c_robot --lang c
 ```
 
-C 入口当前是 C ABI v0 callback table 最小切片：声明真实 C component 后，
+C 入口当前是 C ABI callback table 静态接入路径：声明真实 C component 后，
 `prepare` / `explain` 会展示 `app/c/<component>.c` 和 generated
 `flowrt_app/c_components.h` callback table 接入线索。用户代码仍手写或复制到
 `app/c/**`，随 generated C++ runtime shell 静态编入 CMake app，支持 native component、
-fixed-size plain data message、readonly params snapshot、普通 `build/run` 和
+fixed-size plain data message、readonly params snapshot（含 string borrowed view）、普通 `build/run` 和
 `build --launcher` 后的 `launch`。它不是完整 C runtime，也不包含 service、operation、
 variable frame、`io_boundary`、`external`、动态加载或 Python binding。
 
@@ -194,7 +194,7 @@ my_robot/
 
 - `flowrt.toml` 放项目入口，例如 `[project] main = "rsdl/robot.rsdl"`。
 - `rsdl/` 放系统契约。
-- `app/` 放用户业务算法；C v0 用户实现放 `app/c/**`，通过 callback table 接入
+- `app/` 放用户业务算法；C 用户实现放 `app/c/**`，通过 callback table 接入
   generated C++ runtime shell。
 - `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 由
   `flowrt prepare` 生成，属于可删除、可重建的 App API 参考产物。
@@ -207,9 +207,9 @@ my_robot/
 
 ## 最小 RSDL
 
-RSDL v0.1 使用 TOML 表面语法。下面是一个 C++ counter 示例。C component v0 使用
+RSDL v0.1 使用 TOML 表面语法。下面是一个 C++ counter 示例。C component 使用
 同样的 RSDL 结构，只是 `language = "c"` 且用户代码放在 `app/c/**`，通过
-`FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0` callback table 接入；当前 C v0 只覆盖
+`FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0` callback table 接入；当前 C 用户入口只覆盖
 native component、fixed-size message 和 readonly params snapshot，不是完整 C runtime：
 
 ```toml
@@ -433,9 +433,9 @@ runtime header 已包含 `flowrt/abi.h`，Rust runtime 也提供对应的 `repr(
 用于稳定 status、backend health、重连策略、borrowed string/bytes/frame view、params、
 operation、diagnostics 和 resource health 等基础形状。
 
-当前 C component v0 已能通过 callback table 编进 generated C++ runtime shell，适用于
+当前 C component 已能通过 callback table 编进 generated C++ runtime shell，适用于
 fixed-size message 和 readonly params snapshot 的 native component 最小切片。这不表示
-已经提供 Python binding、动态加载或完整 C runtime wrapper；超出 C v0 的能力仍会被
+已经提供 Python binding、动态加载或完整 C runtime wrapper；超出当前 C 用户入口的能力仍会被
 validator 拒绝。
 
 ## 参数

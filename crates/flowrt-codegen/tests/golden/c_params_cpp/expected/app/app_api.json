@@ -1,0 +1,220 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "47b1773f4572030b9e9fd09006152e4a3917dbd0443c44957d8787f4f33cc479",
+    "package_id": "package_376eac61d4b9c501"
+  },
+  "package": {
+    "name": "c_params_demo",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "strict",
+    "profile": "default",
+    "backend": "inproc",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "controller",
+      "qualified_name": "controller",
+      "language": "c",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "controller"
+      ],
+      "user_file_path": "app/c/controller.c",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "flowrt::Status on_init(flowrt::Context& context)",
+          "required": false,
+          "source": "c_callback_table"
+        },
+        {
+          "name": "on_start",
+          "signature": "flowrt::Status on_start(flowrt::Context& context)",
+          "required": false,
+          "source": "c_callback_table"
+        },
+        {
+          "name": "on_stop",
+          "signature": "flowrt::Status on_stop(flowrt::Context& context)",
+          "required": false,
+          "source": "c_callback_table"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "flowrt::Status on_shutdown(flowrt::Context& context)",
+          "required": false,
+          "source": "c_callback_table"
+        },
+        {
+          "name": "on_tick",
+          "signature": "C task callback table entry",
+          "required": false,
+          "source": "c_callback_table"
+        },
+        {
+          "name": "on_params_update",
+          "signature": "no generated C params handler yet",
+          "required": false,
+          "source": "c_callback_table"
+        },
+        {
+          "name": "run_periodic",
+          "signature": "flowrt_status_t (*)(void*, const flowrt_c_component_context_t*, const flowrt_c_input_array_view_t*, flowrt_c_output_array_view_t*)",
+          "required": true,
+          "source": "c_callback_table"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "controller",
+          "trigger": "periodic",
+          "period_ms": 5,
+          "readiness": "any_ready",
+          "lane": "controller_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": [
+            "cmd"
+          ]
+        }
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "cmd",
+          "type": "Cmd",
+          "handler_argument": "flowrt_c_output_slot_t cmd"
+        }
+      ],
+      "resources": [],
+      "params": [
+        {
+          "name": "enabled",
+          "type": "bool",
+          "update": "startup",
+          "default": true
+        },
+        {
+          "name": "gain",
+          "type": "f32",
+          "update": "on_tick",
+          "default": 1.0,
+          "min": 0.0,
+          "max": 10.0
+        },
+        {
+          "name": "limits",
+          "type": "array",
+          "update": "startup",
+          "default": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "mode",
+          "type": "string",
+          "update": "startup",
+          "default": "normal"
+        }
+      ],
+      "params_update_hook": "on_params_update",
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": [],
+      "c_callback_table": {
+        "generated_header": "flowrt_app/c_components.h",
+        "factory_symbol": "flowrt_app_controller_callbacks",
+        "entries": [
+          {
+            "instance": "controller",
+            "factory_symbol": "flowrt_app_controller_callbacks"
+          }
+        ],
+        "lifecycle_callbacks": [
+          {
+            "field": "on_init",
+            "signature": "flowrt_status_t (*)(void*, const flowrt_c_component_context_t*)",
+            "required": false
+          },
+          {
+            "field": "on_start",
+            "signature": "flowrt_status_t (*)(void*, const flowrt_c_component_context_t*)",
+            "required": false
+          },
+          {
+            "field": "on_stop",
+            "signature": "flowrt_status_t (*)(void*, const flowrt_c_component_context_t*)",
+            "required": false
+          },
+          {
+            "field": "on_shutdown",
+            "signature": "flowrt_status_t (*)(void*, const flowrt_c_component_context_t*)",
+            "required": false
+          }
+        ],
+        "task_callbacks": [
+          {
+            "task": "main",
+            "instance": "controller",
+            "trigger": "periodic",
+            "field": "run_periodic",
+            "signature": "flowrt_status_t (*)(void*, const flowrt_c_component_context_t*, const flowrt_c_input_array_view_t*, flowrt_c_output_array_view_t*)",
+            "required": true
+          }
+        ]
+      }
+    }
+  ],
+  "stubs": [
+    {
+      "language": "c",
+      "component": "controller",
+      "path": "app/stubs/c/controller.c"
+    }
+  ]
+}

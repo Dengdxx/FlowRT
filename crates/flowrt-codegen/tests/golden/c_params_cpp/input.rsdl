@@ -1,0 +1,27 @@
+[package]
+name = "c_params_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "u32"
+
+[component.controller]
+language = "c"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+enabled = { type = "bool", default = true, update = "startup" }
+gain = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", update = "startup" }
+limits = { type = "array", default = [1, 2, 3], update = "startup" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+gain = 2.0
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]

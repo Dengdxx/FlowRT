@@ -155,7 +155,7 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 examples/c_counter_demo/rsdl/robot.rsdl
 ```
 
-该示例是 C component v0 的最小闭环：
+该示例是 C 用户入口的最小闭环：
 
 ```text
 counter_source.count -> counter_sink.count
@@ -164,10 +164,10 @@ counter_source.count -> counter_sink.count
 用户实现位于 `examples/c_counter_demo/app/c/`。两个 C 文件实现 generated
 `flowrt_app/c_components.h` 声明的 callback table factory，并显式设置
 `FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0`。示例只使用 fixed-size `Count` message、
-native component 和 `inproc` channel，用来验证 C ABI v0 callback table 可以随 generated
-C++ runtime shell 一起 build/run；C v0 已支持 readonly params snapshot，但该示例不覆盖。
-它不表示 C 已支持 service、operation、variable frame、`io_boundary`、`external` 或独立 C
-runtime。
+native component 和 `inproc` channel，用来验证 C ABI callback table 可以随 generated
+C++ runtime shell 一起 build/run；C 用户入口已支持 readonly params snapshot（含 string
+borrowed view），但该示例不覆盖。它不表示 C 已支持 service、operation、variable frame、
+`io_boundary`、`external` 或独立 C runtime。
 
 常用命令：
 

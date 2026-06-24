@@ -1,0 +1,144 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "realtime",
+      "unit": "ms"
+    },
+    "mode": "strict",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": false
+  },
+  "determinism": {
+    "mode": "process_local",
+    "on_timeout": "fault_graph",
+    "processes": [],
+    "tick_timeout_ms": 0
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [],
+      "channels": [],
+      "instances": [
+        {
+          "component": "controller",
+          "name": "controller",
+          "process": null,
+          "runtime": "c",
+          "target": null
+        }
+      ],
+      "mode": "strict",
+      "name": "default",
+      "operations": [],
+      "processes": [
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "controller"
+          ],
+          "io_boundaries": [],
+          "name": "main",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "c",
+          "runtimes": [
+            "c"
+          ],
+          "startup_delay_ms": 0,
+          "target": null,
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "controller",
+              "lane": "controller_serial",
+              "name": "main",
+              "outputs": [
+                "cmd"
+              ],
+              "period_ms": 5,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "controller",
+            "kind": "serial",
+            "name": "controller_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "controller",
+            "lane": "controller_serial",
+            "name": "main",
+            "period_ms": 5,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "controller",
+          "lane": "controller_serial",
+          "name": "main",
+          "outputs": [
+            "cmd"
+          ],
+          "period_ms": 5,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "c_params_demo",
+  "profile_modes": [
+    {
+      "mode": "strict",
+      "name": "default"
+    }
+  ],
+  "profiles": [
+    "default"
+  ],
+  "targets": []
+}

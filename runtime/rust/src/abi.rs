@@ -12,10 +12,10 @@ use crate::{
 };
 
 pub const FLOWRT_ABI_VERSION_MAJOR: u32 = 0;
-pub const FLOWRT_ABI_VERSION_MINOR: u32 = 2;
+pub const FLOWRT_ABI_VERSION_MINOR: u32 = 3;
 
 pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR: u32 = 0;
-pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR: u32 = 3;
+pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR: u32 = 4;
 pub const FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0: u64 = 1;
 pub const FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1: u64 = 1 << 1;
 
@@ -242,6 +242,69 @@ pub struct FlowrtCParamSnapshotV0 {
     pub reserved: [u8; 16],
 }
 
+pub type FlowrtParamValueKind = u32;
+pub const FLOWRT_PARAM_VALUE_BOOL: FlowrtParamValueKind = 0;
+pub const FLOWRT_PARAM_VALUE_I64: FlowrtParamValueKind = 1;
+pub const FLOWRT_PARAM_VALUE_U64: FlowrtParamValueKind = 2;
+pub const FLOWRT_PARAM_VALUE_F64: FlowrtParamValueKind = 3;
+pub const FLOWRT_PARAM_VALUE_STRING: FlowrtParamValueKind = 4;
+pub const FLOWRT_PARAM_VALUE_JSON: FlowrtParamValueKind = 5;
+
+/// C ABI 参数值借用 union。按 `FlowrtParamValueView::kind` 读取对应字段。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union FlowrtParamValueData {
+    pub bool_value: u8,
+    pub i64_value: i64,
+    pub u64_value: u64,
+    pub f64_value: f64,
+    pub string_value: FlowrtStringView,
+    pub json_value: FlowrtStringView,
+}
+
+/// C ABI 单个 readonly 参数值 view。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FlowrtParamValueView {
+    pub kind: FlowrtParamValueKind,
+    pub reserved0: u32,
+    pub value: FlowrtParamValueData,
+    pub reserved: [u8; 16],
+}
+
+/// C ABI v1 参数借用 view。前缀与 `FlowrtParamView` 保持一致，末尾追加 typed value。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FlowrtParamViewV1 {
+    pub instance_name: FlowrtStringView,
+    pub param_name: FlowrtStringView,
+    pub type_name: FlowrtStringView,
+    pub update_policy: FlowrtStringView,
+    pub current_json: FlowrtStringView,
+    pub pending_json: FlowrtStringView,
+    pub min_json: FlowrtStringView,
+    pub max_json: FlowrtStringView,
+    pub choices_json: FlowrtStringView,
+    pub schema_hash: u64,
+    pub revision: u64,
+    pub mutable_at_runtime: u8,
+    pub has_pending: u8,
+    pub has_min: u8,
+    pub has_max: u8,
+    pub reserved: [u8; 4],
+    pub current_value: FlowrtParamValueView,
+}
+
+/// C component callback 中暴露的 readonly 参数快照 v1。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtCParamSnapshotV1 {
+    pub abi_version: u32,
+    pub param_count: u32,
+    pub params: *const FlowrtParamViewV1,
+    pub reserved: [u8; 16],
+}
+
 pub type FlowrtOperationState = u32;
 pub const FLOWRT_OPERATION_STATE_IDLE: FlowrtOperationState = 0;
 pub const FLOWRT_OPERATION_STATE_STARTING: FlowrtOperationState = 1;
@@ -433,6 +496,7 @@ pub struct FlowrtCComponentContext {
     pub reserved: [u8; 6],
     pub timing: FlowrtCTaskTiming,
     pub params: FlowrtCParamSnapshotV0,
+    pub params_v1: FlowrtCParamSnapshotV1,
 }
 
 /// C component fixed-size input borrowed view.

@@ -94,9 +94,11 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
 - 多传感器同步：当前是 `[[sync]]` + `flowrt::Synchronizer` 的 latest-aligned
   approx-window v1，并采用 DropLate 迟到处理；ROS2 ApproximateTime 式全局最优匹配、
   late-sample policy 变体和跨机 drift 处理仍未实现。
-- C ABI / 语言 binding：C v0 已支持 native fixed-size component、callback table adapter、
-  `app/c` 接入路径和 params readonly snapshot（primitive/array/table 的 borrowed JSON
-  view）。C 侧 `on_params_update` 写接口、string param、service、operation、variable
+- C ABI / 语言 binding：C component 已支持 native fixed-size component、callback table
+  adapter、`app/c` 接入路径和 params readonly snapshot。callback context 同时携带 v0 JSON
+  snapshot 和 v1 typed readonly snapshot：bool、整数、浮点和 string 参数可通过 typed
+  value view 读取，string view 是 callback 生命周期内有效的 borrowed UTF-8 slice；array/table
+  继续以 JSON view 暴露。C 侧 `on_params_update` 写接口、service、operation、variable
   frame、`io_boundary`、`external`、`pkg_config`、动态加载、完整 C runtime wrapper 和
   Python binding 仍不开放。
 - Message ABI：maps、recursive structures 和 language-specific ownership types 仍不支持。
@@ -324,10 +326,11 @@ patch 版本切碎。每项要么完整端到端实现，要么由 validator/CLI
   `result_retention_ms`，self-description 暴露真实 policy，validator 不再拒绝已实现组合。
 - FrameDescriptor `record_payload = true` 进入本版；payload 只通过 payload capture
   provider 记录 artifact ref/hash，不塞回普通 message channel。
-- C v0 已放开 params readonly snapshot：callback context 携带
-  `flowrt_c_param_snapshot_v0_t`，支持 primitive/array/table 参数的 borrowed JSON view；
-  string param、service、operation、variable frame、`io_boundary`、`external`、`pkg_config`、
-  动态加载和 Python binding 继续 fail-fast。
+- C component 已放开 params readonly snapshot：callback context 保留
+  `flowrt_c_param_snapshot_v0_t` JSON snapshot，并新增 `flowrt_c_param_snapshot_v1_t`
+  typed readonly snapshot；bool、整数、浮点和 string 参数可读 typed value，array/table
+  继续以 JSON view 暴露。C 侧参数写接口、service、operation、variable frame、
+  `io_boundary`、`external`、`pkg_config`、动态加载和 Python binding 继续 fail-fast。
 
 上一发布线为 `v0.22.1 Reserved Keyword Naming`，是 `0.22.x 容错验证` 主题之后的验证
 加固 patch：validator 拒绝会被 codegen 直接生成为 Rust/C++ 标识符、且与任一目标语言
@@ -971,7 +974,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   实现清单和参考 stubs；用户再把需要保留的实现放进 `app/`。含 `flowrt.toml` 的项目
   中，`add`、`check`、`explain`、`prepare`、`build`、`run`、`deps` 和 `doctor`
   省略路径时会从当前目录向上发现 manifest；显式 RSDL 路径优先；RSDL 和 Contract IR
-  仍是语义事实源。当前 C v0 用户入口通过 `language = "c"` component、App API 参考
+  仍是语义事实源。当前 C 用户入口通过 `language = "c"` component、App API 参考
   stubs 和 `flowrt_app/c_components.h` callback table 接入。
 - `v0.11.0` 同时落地 C ABI v0 基础：C 侧事实源继续放
   `runtime/cpp/include/flowrt/abi.h`，只暴露 POD、固定宽度整数、borrowed
@@ -979,9 +982,9 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   backend SDK handle、动态插件 ABI 或所有权语义。C component 先编进 app binary，
   形成最小可运行 demo；Python binding 不进入本版本，后续只能建立在该 C ABI 边界上。
   `language = "c"` 已进入 RSDL/Contract IR/validator/codegen/CLI 用户入口；validator
-  会拒绝 C v0 暂不支持的 string param、service、operation、variable frame、`io_boundary`、
-  `external`、`pkg_config`、动态加载、独立 C runtime 和 Python binding，codegen 只在
-  C v0 native / fixed-size message / readonly params snapshot 范围内生成 callback table adapter。generated
+  会拒绝 C 暂不支持的 service、operation、variable frame、`io_boundary`、`external`、
+  `pkg_config`、动态加载、独立 C runtime 和 Python binding，codegen 只在
+  C native / fixed-size message / readonly params snapshot 范围内生成 callback table adapter。generated
   supervisor 已支持 `runtime_kind = "c"` 并启动 CMake app binary。
 - `v0.11.1` 不扩展 C ABI v0 的功能面，只做硬化：callback table 校验必须报告明确
   失败原因；`flowrt add` 写入前要尽量完成冲突和 Contract IR 校验；用户骨架要把
@@ -1514,10 +1517,10 @@ snapshot、C component task timing、C component context、fixed input view、ou
 高层类型，并通过转换函数或 C header 对齐。operation state 编码使用当前长期 lifecycle
 常量：`IDLE`、`STARTING`、`RUNNING`、`CANCEL_REQUESTED`、`SUCCEEDED`、`FAILED`、
 `CANCELLED` 和 `TIMED_OUT`，不保留旧 `ACCEPTED` / `CANCELING` / `PREEMPTED`
-别名。C component callback ABI 当前为 `0.3`，callback table 必须设置 v0 callback 和
-task timing 两个 feature bit；callback context 携带 readonly params snapshot。该 callback
-table 只表达边界，当前 C v0 已开放 adapter、`app/c` 用户接入路径、params snapshot 和最小
-demo，但不表示完整 C runtime、动态加载或 Python binding 已开放。`iox2` 和 `zenoh`
+别名。C ABI 当前为 `0.3`，C component callback ABI 当前为 `0.4`，callback table 必须设置
+v0 callback 和 task timing 两个 feature bit；callback context 携带 readonly params snapshot
+v0/v1。该 callback table 只表达边界，当前 C component 已开放 adapter、`app/c` 用户接入路径、
+params snapshot 和最小 demo，但不表示完整 C runtime、动态加载或 Python binding 已开放。`iox2` 和 `zenoh`
 endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败会重建本地
 publisher/subscriber/session；codec/schema 错误不得触发重连。
 

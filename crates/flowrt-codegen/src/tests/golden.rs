@@ -144,6 +144,11 @@ fn golden_graph_latest_fifo() {
 }
 
 #[test]
+fn golden_c_params_cpp() {
+    check_case("c_params_cpp");
+}
+
+#[test]
 fn golden_service_rust() {
     check_case("service_rust");
 }

@@ -51,6 +51,15 @@ evidence = ["golden", "syntax_compile"]
 required_by_release = "0.27.1"
 
 [[case]]
+name = "c_params_cpp"
+languages = ["cpp"]
+surfaces = ["params", "dataflow", "selfdesc"]
+backends = ["inproc"]
+abi = ["fixed_plain"]
+evidence = ["golden", "syntax_compile"]
+required_by_release = "0.27.1"
+
+[[case]]
 name = "sync_fusion_cpp"
 languages = ["cpp"]
 surfaces = ["dataflow", "sync", "selfdesc"]

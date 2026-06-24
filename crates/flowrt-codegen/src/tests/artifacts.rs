@@ -368,7 +368,13 @@ channel = "latest"
     assert!(
         runtime_shell.contains("const auto param_snapshot = make_c_param_snapshot(nullptr, 0U);")
     );
-    assert!(runtime_shell.contains("tick_context, step, tick_time_ms, 0, false, param_snapshot);"));
+    assert!(
+        runtime_shell
+            .contains("const auto param_snapshot_v1 = make_c_param_snapshot_v1(nullptr, 0U);")
+    );
+    assert!(runtime_shell.contains(
+        "tick_context, step, tick_time_ms, 0, false, param_snapshot, param_snapshot_v1);"
+    ));
     assert!(runtime_shell.contains("flowrt_c_input_view_t controller_sample_input"));
     assert!(runtime_shell.contains("sample.present() ? std::uint8_t{1} : std::uint8_t{0}"));
     assert!(runtime_shell.contains("sample.stale() ? std::uint8_t{1} : std::uint8_t{0}"));
