@@ -1676,7 +1676,7 @@ fn user_file_path(component: &ComponentIr) -> String {
         let component_file = snake_identifier(&component.name);
         return match component.language {
             LanguageKind::Rust => format!("app/{module_dir}/rust/{component_file}.rs"),
-            LanguageKind::Cpp => format!("app/{module_dir}/cpp/{component_file}.cpp"),
+            LanguageKind::Cpp => format!("app/{module_dir}/cpp/src/{component_file}.cpp"),
             LanguageKind::C => format!("app/{module_dir}/c/{component_file}.c"),
             LanguageKind::External => {
                 format!("app/{module_dir}/external/{component_file}.md")
@@ -1724,6 +1724,9 @@ fn stub_path(language: &str, module: Option<&str>, component_name: &str) -> Stri
     let component_file = snake_identifier(component_name);
     if let Some(module) = module {
         let module_dir = snake_identifier(module);
+        if language == "cpp" {
+            return format!("app/stubs/{module_dir}/{dir}/src/{component_file}.{ext}");
+        }
         return format!("app/stubs/{module_dir}/{dir}/{component_file}.{ext}");
     }
     format!("app/stubs/{dir}/{component_file}.{ext}")

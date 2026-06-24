@@ -94,7 +94,7 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
                 "target_link_libraries({shell_target} PUBLIC {package_name}_flowrt_app)\n"
             ));
             output.push_str(
-                "\nset(FLOWRT_USER_APP_ROOT \"${CMAKE_CURRENT_LIST_DIR}/../../app\")\nset(FLOWRT_USER_CPP_ROOT \"${FLOWRT_USER_APP_ROOT}/cpp\")\nset(FLOWRT_USER_C_ROOT \"${FLOWRT_USER_APP_ROOT}/c\")\nfile(GLOB_RECURSE FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS\n    \"${FLOWRT_USER_CPP_ROOT}/*.cpp\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.cc\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.cxx\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.c\"\n    \"${FLOWRT_USER_C_ROOT}/*.c\"\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cpp\"\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cc\"\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cxx\"\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/*.c\"\n    \"${FLOWRT_USER_APP_ROOT}/*/c/*.c\"\n)\nset(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING \"User C/C++ sources from app/cpp, app/c, app/<module>/cpp and app/<module>/c that implement flowrt_user::build_app and C callback factories\")\n",
+                "\nset(FLOWRT_USER_APP_ROOT \"${CMAKE_CURRENT_LIST_DIR}/../../app\")\nset(FLOWRT_USER_CPP_ROOT \"${FLOWRT_USER_APP_ROOT}/cpp\")\nset(FLOWRT_USER_C_ROOT \"${FLOWRT_USER_APP_ROOT}/c\")\nfile(GLOB_RECURSE FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS\n    \"${FLOWRT_USER_CPP_ROOT}/*.cpp\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.cc\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.cxx\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.c\"\n    \"${FLOWRT_USER_C_ROOT}/*.c\"\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cpp\"\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cc\"\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cxx\"\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.c\"\n    \"${FLOWRT_USER_APP_ROOT}/*/c/*.c\"\n)\nfile(GLOB FLOWRT_DEFAULT_USER_CPP_INCLUDE_DIRS CONFIGURE_DEPENDS\n    \"${FLOWRT_USER_APP_ROOT}/*/cpp/inc\"\n)\nset(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING \"User C/C++ sources from app/cpp, app/c, app/<module>/cpp/src and app/<module>/c that implement flowrt_user::build_app and C callback factories\")\n",
             );
             output.push_str("if(FLOWRT_USER_CPP_SOURCES)\n");
             let user_target = format!("{}_cpp_user", package_name.replace('-', "_"));
@@ -102,7 +102,7 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
                 "    add_library({user_target} STATIC ${{FLOWRT_USER_CPP_SOURCES}})\n"
             ));
             output.push_str(&format!(
-                "    target_include_directories({user_target} PUBLIC ${{FLOWRT_USER_CPP_ROOT}} ${{FLOWRT_USER_C_ROOT}} ${{FLOWRT_USER_APP_ROOT}})\n"
+                "    target_include_directories({user_target} PUBLIC ${{FLOWRT_USER_CPP_ROOT}} ${{FLOWRT_USER_C_ROOT}} ${{FLOWRT_USER_APP_ROOT}} ${{FLOWRT_DEFAULT_USER_CPP_INCLUDE_DIRS}})\n"
             ));
             output.push_str(&format!(
                 "    if(FLOWRT_CXX_COMPILE_OPTIONS)\n        target_compile_options({user_target} PRIVATE ${{FLOWRT_CXX_COMPILE_OPTIONS}})\n    endif()\n"

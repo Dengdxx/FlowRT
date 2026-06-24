@@ -39,12 +39,14 @@ my_robot/
   和 target。
 - `app/` 放用户业务算法。root component 继续使用 `app/rust/mod.rs`、`app/cpp/**`
   和 `app/c/**`；module component 的建议组织是
-  `app/<module>/rust/<component>.rs`、`app/<module>/cpp/<component>.cpp` 或
-  `app/<module>/c/<component>.c`。Rust 生成入口仍导入 `app/rust/mod.rs`，用户可在其中
-  聚合 module-local Rust 实现并提供 `build_app()`。
+  `app/<module>/rust/<component>.rs`、`app/<module>/cpp/src/<component>.cpp` 或
+  `app/<module>/c/<component>.c`。C++ module headers 建议放在
+  `app/<module>/cpp/inc/`；Rust 生成入口仍导入 `app/rust/mod.rs`，用户可在其中聚合
+  module-local Rust 实现并提供 `build_app()`。
 - `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 是
   `flowrt prepare` 生成的 App API manifest、实现清单和参考模板；module component 的
-  stub 会落在 `flowrt/app/stubs/<module>/<lang>/<component>.*`。
+  Rust/C stub 按 `flowrt/app/stubs/<module>/<lang>/<component>.*` 组织，C++ stub 会落在
+  `flowrt/app/stubs/<module>/cpp/src/<component>.cpp`。
 - `flowrt/` 是 FlowRT 管理的生成目录，可删除、可重建，不放用户业务代码。
 
 ## 入口发现

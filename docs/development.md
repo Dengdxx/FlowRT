@@ -86,9 +86,11 @@ scripts/test-v0280-module-app-layout-smoke.sh
 ```
 
 该 smoke 聚焦 `v0.28.0` 的 module-aware 用户侧目录：App API manifest、
-`implementation.md` 和 reference stubs 使用 `app/<module>/<lang>/<component>.*` /
-`flowrt/app/stubs/<module>/<lang>/<component>.*`，`prepare` 不创建或覆盖用户 `app/`，
-generated CMake 自动发现 `app/<module>/cpp/**` 和 `app/<module>/c/**`。
+`implementation.md` 和 reference stubs 使用 module-aware 路径，其中 C++ module source
+位于 `app/<module>/cpp/src/<component>.cpp`，reference stub 位于
+`flowrt/app/stubs/<module>/cpp/src/<component>.cpp`；`prepare` 不创建或覆盖用户 `app/`，
+generated CMake 自动发现 `app/<module>/cpp/src/**` 和 `app/<module>/c/**`，并加入
+`app/<module>/cpp/inc` include 路径。
 
 VSCode / clangd：
 
@@ -222,11 +224,13 @@ package 和 release job 必须依赖该 gate；低资源本地机器可用
 - `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 是
   `prepare` 生成的 App API 事实源、实现清单和参考模板，同样不入库。root component 的
   参考 stub 使用 `flowrt/app/stubs/<lang>/`；module component 使用
-  `flowrt/app/stubs/<module>/<lang>/<component>.*`。
+  `flowrt/app/stubs/<module>/<lang>/<component>.*`，其中 C++ 使用
+  `flowrt/app/stubs/<module>/cpp/src/<component>.cpp`。
 - 用户算法代码应放在示例或项目自己的 `app/` 目录，不写进生成文件。
   root component 继续使用 `app/rust/mod.rs`、`app/cpp/**` 和 `app/c/**`；module component
-  建议使用 `app/<module>/<lang>/<component>.*`。Rust 生成入口仍是 `app/rust/mod.rs`，
-  C/C++ module sources 由 generated CMake 自动发现。
+  建议使用 `app/<module>/rust/<component>.rs`、`app/<module>/cpp/src/<component>.cpp` 或
+  `app/<module>/c/<component>.c`；C++ headers 放在 `app/<module>/cpp/inc/`。Rust 生成入口
+  仍是 `app/rust/mod.rs`，C/C++ module sources 由 generated CMake 自动发现。
 - `flowrt init` 只创建项目入口和最小 RSDL；`flowrt add` 只编辑 RSDL，不创建、追加或
   覆盖用户 `app/`。用户参考 `flowrt/app/stubs/` 后自行手写或复制实现。
 - FlowRT 管理代码只做 glue：消息、接口、runtime shell、backend 绑定、启动配置和构建文件。

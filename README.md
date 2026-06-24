@@ -202,12 +202,14 @@ my_robot/
 - `rsdl/` 放系统契约。
 - `app/` 放用户业务算法。root component 继续使用 `app/rust/mod.rs`、`app/cpp/**`
   和 `app/c/**`；workspace module 中的 component 建议放在
-  `app/<module>/rust/<component>.rs`、`app/<module>/cpp/<component>.cpp` 或
-  `app/<module>/c/<component>.c`。C/C++ module sources 会被 generated CMake 自动发现；
-  Rust 仍以 `app/rust/mod.rs` 作为 graph 级入口聚合 module-local 实现。
+  `app/<module>/rust/<component>.rs`、`app/<module>/cpp/src/<component>.cpp` 或
+  `app/<module>/c/<component>.c`。C++ module headers 建议放在
+  `app/<module>/cpp/inc/`；C/C++ module sources 会被 generated CMake 自动发现，C++
+  module include dir 也会自动加入用户目标。
 - `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 由
   `flowrt prepare` 生成，属于可删除、可重建的 App API 参考产物；module component 的
-  参考 stub 位于 `flowrt/app/stubs/<module>/<lang>/<component>.*`。
+  Rust/C 参考 stub 按 `flowrt/app/stubs/<module>/<lang>/<component>.*` 组织，C++ 参考
+  stub 位于 `flowrt/app/stubs/<module>/cpp/src/<component>.cpp`。
 - `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑；`prepare` 不直接写用户
   `app/`。
 - `external/` 可放本项目随包携带的 external package；系统级 external package 也可安装到 `/opt/flowrt/external/<package>`。

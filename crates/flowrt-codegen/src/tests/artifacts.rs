@@ -579,8 +579,8 @@ backends = ["zenoh"]
         .collect::<Vec<_>>();
 
     assert!(paths.contains(&"app/stubs/perception/rust/processor.rs".to_string()));
-    assert!(paths.contains(&"app/stubs/mygo_lidar/cpp/processor.cpp".to_string()));
-    assert!(paths.contains(&"app/stubs/mygo_lidar/cpp/estimator.cpp".to_string()));
+    assert!(paths.contains(&"app/stubs/mygo_lidar/cpp/src/processor.cpp".to_string()));
+    assert!(paths.contains(&"app/stubs/mygo_lidar/cpp/src/estimator.cpp".to_string()));
     assert!(paths.contains(&"app/stubs/mygo_lidar/rust/calibrator.rs".to_string()));
     assert!(!paths.contains(&"app/stubs/rust/processor.rs".to_string()));
     assert!(!paths.contains(&"app/stubs/cpp/processor.cpp".to_string()));
@@ -606,7 +606,7 @@ backends = ["zenoh"]
     assert_eq!(lidar_processor["module"], "mygo_lidar");
     assert_eq!(
         lidar_processor["user_file_path"],
-        "app/mygo_lidar/cpp/processor.cpp"
+        "app/mygo_lidar/cpp/src/processor.cpp"
     );
     let lidar_estimator = components
         .iter()
@@ -615,7 +615,7 @@ backends = ["zenoh"]
     assert_eq!(lidar_estimator["module"], "mygo_lidar");
     assert_eq!(
         lidar_estimator["user_file_path"],
-        "app/mygo_lidar/cpp/estimator.cpp"
+        "app/mygo_lidar/cpp/src/estimator.cpp"
     );
     let lidar_calibrator = components
         .iter()
@@ -640,7 +640,10 @@ backends = ["zenoh"]
         .iter()
         .find(|stub| stub["component"] == "processor" && stub["module"] == "mygo_lidar")
         .unwrap();
-    assert_eq!(lidar_stub["path"], "app/stubs/mygo_lidar/cpp/processor.cpp");
+    assert_eq!(
+        lidar_stub["path"],
+        "app/stubs/mygo_lidar/cpp/src/processor.cpp"
+    );
     let calibrator_stub = stubs
         .iter()
         .find(|stub| stub["component"] == "calibrator" && stub["module"] == "mygo_lidar")
@@ -653,8 +656,10 @@ backends = ["zenoh"]
     let implementation = artifact_content(&bundle, "app/implementation.md");
     assert!(implementation.contains("user file: `app/perception/rust/processor.rs`"));
     assert!(implementation.contains("reference stub: `app/stubs/perception/rust/processor.rs`"));
-    assert!(implementation.contains("user file: `app/mygo_lidar/cpp/processor.cpp`"));
-    assert!(implementation.contains("reference stub: `app/stubs/mygo_lidar/cpp/processor.cpp`"));
+    assert!(implementation.contains("user file: `app/mygo_lidar/cpp/src/processor.cpp`"));
+    assert!(
+        implementation.contains("reference stub: `app/stubs/mygo_lidar/cpp/src/processor.cpp`")
+    );
     assert!(implementation.contains("user file: `app/mygo_lidar/rust/calibrator.rs`"));
     assert!(implementation.contains("reference stub: `app/stubs/mygo_lidar/rust/calibrator.rs`"));
 
@@ -763,12 +768,14 @@ backends = ["zenoh"]
 
     let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
     assert!(cmake.contains("set(FLOWRT_USER_APP_ROOT"));
-    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cpp\""));
-    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cc\""));
-    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/*.cxx\""));
-    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/*.c\""));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cpp\""));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cc\""));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cxx\""));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.c\""));
     assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/c/*.c\""));
-    assert!(cmake.contains("app/<module>/cpp and app/<module>/c"));
+    assert!(cmake.contains("\"${FLOWRT_USER_APP_ROOT}/*/cpp/inc\""));
+    assert!(cmake.contains("FLOWRT_DEFAULT_USER_CPP_INCLUDE_DIRS"));
+    assert!(cmake.contains("app/<module>/cpp/src and app/<module>/c"));
     assert!(cmake.contains("${FLOWRT_USER_APP_ROOT}"));
 
     std::fs::remove_dir_all(root).unwrap();
@@ -892,20 +899,22 @@ channel = "latest"
             && cmake.contains("${FLOWRT_USER_CPP_ROOT}/*.cxx")
             && cmake.contains("${FLOWRT_USER_CPP_ROOT}/*.c")
             && cmake.contains("${FLOWRT_USER_C_ROOT}/*.c")
-            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/*.cpp")
-            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/*.cc")
-            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/*.cxx")
-            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/*.c")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cpp")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cc")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cxx")
+            && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.c")
             && cmake.contains("${FLOWRT_USER_APP_ROOT}/*/c/*.c")
     );
+    assert!(cmake.contains("FLOWRT_DEFAULT_USER_CPP_INCLUDE_DIRS"));
     assert!(cmake.contains("FLOWRT_USER_CPP_SOURCES"));
     assert!(cmake.contains(
-        "User C/C++ sources from app/cpp, app/c, app/<module>/cpp and app/<module>/c that implement flowrt_user::build_app and C callback factories"
+        "User C/C++ sources from app/cpp, app/c, app/<module>/cpp/src and app/<module>/c that implement flowrt_user::build_app and C callback factories"
     ));
     assert!(cmake.contains("target_include_directories(robot_demo_cpp_user PUBLIC"));
     assert!(cmake.contains("${FLOWRT_USER_CPP_ROOT}"));
     assert!(cmake.contains("${FLOWRT_USER_C_ROOT}"));
     assert!(cmake.contains("${FLOWRT_USER_APP_ROOT}"));
+    assert!(cmake.contains("${FLOWRT_DEFAULT_USER_CPP_INCLUDE_DIRS}"));
     let legacy_cpp_user_root = ["../../", "src", "/cpp"].concat();
     assert!(!cmake.contains(&legacy_cpp_user_root));
     assert!(cmake.contains("add_library(robot_demo_cpp_user STATIC"));

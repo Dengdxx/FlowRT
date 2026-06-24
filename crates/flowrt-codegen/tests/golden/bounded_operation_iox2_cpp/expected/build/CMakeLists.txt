@@ -67,16 +67,19 @@ file(GLOB_RECURSE FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS
     "${FLOWRT_USER_CPP_ROOT}/*.cxx"
     "${FLOWRT_USER_CPP_ROOT}/*.c"
     "${FLOWRT_USER_C_ROOT}/*.c"
-    "${FLOWRT_USER_APP_ROOT}/*/cpp/*.cpp"
-    "${FLOWRT_USER_APP_ROOT}/*/cpp/*.cc"
-    "${FLOWRT_USER_APP_ROOT}/*/cpp/*.cxx"
-    "${FLOWRT_USER_APP_ROOT}/*/cpp/*.c"
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cpp"
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cc"
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.cxx"
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/src/*.c"
     "${FLOWRT_USER_APP_ROOT}/*/c/*.c"
 )
-set(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING "User C/C++ sources from app/cpp, app/c, app/<module>/cpp and app/<module>/c that implement flowrt_user::build_app and C callback factories")
+file(GLOB FLOWRT_DEFAULT_USER_CPP_INCLUDE_DIRS CONFIGURE_DEPENDS
+    "${FLOWRT_USER_APP_ROOT}/*/cpp/inc"
+)
+set(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING "User C/C++ sources from app/cpp, app/c, app/<module>/cpp/src and app/<module>/c that implement flowrt_user::build_app and C callback factories")
 if(FLOWRT_USER_CPP_SOURCES)
     add_library(bounded_operation_iox2_cpp_cpp_user STATIC ${FLOWRT_USER_CPP_SOURCES})
-    target_include_directories(bounded_operation_iox2_cpp_cpp_user PUBLIC ${FLOWRT_USER_CPP_ROOT} ${FLOWRT_USER_C_ROOT} ${FLOWRT_USER_APP_ROOT})
+    target_include_directories(bounded_operation_iox2_cpp_cpp_user PUBLIC ${FLOWRT_USER_CPP_ROOT} ${FLOWRT_USER_C_ROOT} ${FLOWRT_USER_APP_ROOT} ${FLOWRT_DEFAULT_USER_CPP_INCLUDE_DIRS})
     if(FLOWRT_CXX_COMPILE_OPTIONS)
         target_compile_options(bounded_operation_iox2_cpp_cpp_user PRIVATE ${FLOWRT_CXX_COMPILE_OPTIONS})
     endif()

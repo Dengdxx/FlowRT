@@ -38,7 +38,7 @@ check_v0280_module_app_layout_readiness() {
         require_file_text "v0.28.0 smoke 覆盖 module-aware App API" \
             "app/mygo_lidar/rust/calibrator.rs" "$smoke_script"
         require_file_text "v0.28.0 smoke 覆盖 module reference stub" \
-            "app/stubs/mygo_lidar/cpp/driver.cpp" "$smoke_script"
+            "app/stubs/mygo_lidar/cpp/src/driver.cpp" "$smoke_script"
         require_file_text "v0.28.0 smoke 覆盖 prepare 不写用户 app" \
             "test ! -e \"\$project/app/mygo_lidar\"" "$smoke_script"
         require_file_text "v0.28.0 smoke 覆盖 generated CMake module C/C++ discovery" \

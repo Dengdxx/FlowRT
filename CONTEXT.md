@@ -8,11 +8,12 @@
 当前 workspace 准备 `v0.28.0 Module-aware App Layout` 发布：本版本不新增 RSDL、Contract IR
 或 runtime 执行语义，而是优化 workspace module 的用户侧代码组织。App API manifest、
 `implementation.md` 和 reference stubs 对 workspace module component 使用
-`app/<module>/<lang>/<component>.*` 与
-`flowrt/app/stubs/<module>/<lang>/<component>.*`，root component 保持既有
+`app/<module>/rust/<component>.rs`、`app/<module>/cpp/src/<component>.cpp`、
+`app/<module>/c/<component>.c` 与对应 reference stub 路径，root component 保持既有
 `app/rust/mod.rs`、`app/cpp/**` 和 `app/c/**` 路径；generated CMake 自动发现
-`app/<module>/cpp/**` 和 `app/<module>/c/**`，Rust 仍由 `app/rust/mod.rs` 作为 graph 级入口
-聚合 module-local 实现。同一 module 可以包含不同语言的 component，但语言边界仍由
+`app/<module>/cpp/src/**` 和 `app/<module>/c/**`，并把 `app/<module>/cpp/inc` 加入 C++
+include 路径；Rust 仍由 `app/rust/mod.rs` 作为 graph 级入口聚合 module-local 实现。
+同一 module 可以包含不同语言的 component，但语言边界仍由
 component 和 process group 决定，不表示同一进程内混合 Rust/C++ 用户对象。
 
 当前 workspace 版本为 `0.28.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
