@@ -49,7 +49,9 @@ use introspection::{
     self_description_nodes, self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
+#[cfg(test)]
 use replay::replay_fixture;
+use replay::{ReplayOptions, ReplayOutputFormat, replay_fixture_with_options};
 #[cfg(test)]
 use toolchain::{RuntimeDependencyPolicy, ToolchainProfile};
 use workflows::*;
@@ -470,6 +472,14 @@ enum Command {
         /// 忽略事件时间，尽快注入所有事件。
         #[arg(long)]
         as_fast_as_possible: bool,
+
+        /// 回放后验证 Operation observation trace 与录制证据一致。
+        #[arg(long)]
+        verify_operation_observations: bool,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = ReplayOutputFormat::Text)]
+        format: ReplayOutputFormat,
     },
 
     /// 查询或提交 live runtime 参数。
@@ -1442,10 +1452,20 @@ fn main() -> Result<()> {
             socket,
             speed,
             as_fast_as_possible,
+            verify_operation_observations,
+            format,
         } => {
             println!(
                 "{}",
-                replay_fixture(&file, &image, socket.as_deref(), speed, as_fast_as_possible)?
+                replay_fixture_with_options(ReplayOptions {
+                    file: &file,
+                    image: &image,
+                    socket: socket.as_deref(),
+                    speed,
+                    as_fast_as_possible,
+                    verify_operation_observations,
+                    format,
+                })?
             );
         }
         Command::Params { command } => match command {

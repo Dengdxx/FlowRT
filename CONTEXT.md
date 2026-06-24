@@ -143,7 +143,12 @@ iox2 slot、manifest / selfdesc endpoint 与 frame 诊断展示，以及真实 `
   解码，避免只由底层 runtime helper 证明远程 queryable。
   Operation start/cancel accepted 后会进入 recorder command event，`flowrt replay --file
   <recording.mcap>` 可读取 operation command timeline 并重新驱动 start/cancel；
-  progress/result/error 仍只作为 observation evidence，不参与重放。
+  progress/result/error 仍只作为 observation evidence，不参与重放。未发布的 `v0.27.1`
+  收口中，`flowrt replay --verify-operation-observations` 会读取录制中的
+  state/progress/result/error evidence，在 replay 后通过 `OperationObserve` 拉取新 runtime
+  trace，并按 recorded id 到 replay id 的映射比较 Operation 名称、event sequence、progress
+  sequence、终态/error message 和 typed payload bytes；runtime recorder 也会把
+  progress/result/error payload bytes 写入 observation JSON，而不只写 `payload_len`。
 - 测试覆盖：codegen golden、focused smoke、部分真实 runtime smoke、v0.25.1 的
   `zenoh_service_demo` / `iox2_service_demo` generated transport app 真实 build 证据，以及
   v0.26.0 的代表性 iox2/zenoh generated dataflow、Service、Operation、bounded variable

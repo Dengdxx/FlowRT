@@ -1229,13 +1229,15 @@ impl IntrospectionState {
             entry.name = operation.to_string();
             entry.last_event = Some("flowrt.operation.progress".to_string());
         }
+        let payload_len = payload.as_ref().map(Vec::len);
         self.recorder.record_operation_event_json(
             operation,
             "flowrt.operation.progress",
             serde_json::json!({
                 "operation_id": operation_id,
                 "sequence": sequence,
-                "payload_len": payload.as_ref().map(Vec::len),
+                "payload": payload,
+                "payload_len": payload_len,
             }),
         );
     }
@@ -1350,6 +1352,7 @@ impl IntrospectionState {
                     .insert(operation_id.to_string(), result_status);
             }
         }
+        let payload_len = payload.as_ref().map(Vec::len);
         self.recorder.record_operation_event_json(
             operation,
             event,
@@ -1357,7 +1360,8 @@ impl IntrospectionState {
                 "operation_id": operation_id,
                 "result": result,
                 "error": error,
-                "payload_len": payload.as_ref().map(Vec::len),
+                "payload": payload,
+                "payload_len": payload_len,
             }),
         );
     }

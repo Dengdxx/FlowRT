@@ -1129,6 +1129,8 @@ fn cli_parses_replay_fixture_command() {
         socket,
         speed,
         as_fast_as_possible,
+        verify_operation_observations,
+        format,
     } = cli.command
     else {
         panic!("replay command should parse into Command::Replay")
@@ -1139,6 +1141,36 @@ fn cli_parses_replay_fixture_command() {
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
     assert_eq!(speed, 2.0);
     assert!(!as_fast_as_possible);
+    assert!(!verify_operation_observations);
+    assert_eq!(format, ReplayOutputFormat::Text);
+}
+
+#[test]
+fn cli_parses_replay_operation_observation_verification() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "replay",
+        "--file",
+        "fixtures/operation.mcap",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--verify-operation-observations",
+        "--format",
+        "json",
+    ])
+    .unwrap();
+
+    let Command::Replay {
+        verify_operation_observations,
+        format,
+        ..
+    } = cli.command
+    else {
+        panic!("replay verification command should parse into Command::Replay")
+    };
+
+    assert!(verify_operation_observations);
+    assert_eq!(format, ReplayOutputFormat::Json);
 }
 
 #[test]

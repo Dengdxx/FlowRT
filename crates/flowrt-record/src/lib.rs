@@ -293,6 +293,14 @@ impl ReplayTimelineEntry {
 pub const OPERATION_COMMAND_START_SCHEMA_NAME: &str = "flowrt.operation.command.start.v1";
 /// Operation cancel command record payload schema 名称。
 pub const OPERATION_COMMAND_CANCEL_SCHEMA_NAME: &str = "flowrt.operation.command.cancel.v1";
+/// Operation state observation record payload schema 名称。
+pub const OPERATION_OBSERVATION_STATE_SCHEMA_NAME: &str = "flowrt.operation.state_changed";
+/// Operation progress observation record payload schema 名称。
+pub const OPERATION_OBSERVATION_PROGRESS_SCHEMA_NAME: &str = "flowrt.operation.progress";
+/// Operation result observation record payload schema 名称。
+pub const OPERATION_OBSERVATION_RESULT_SCHEMA_NAME: &str = "flowrt.operation.result";
+/// Operation error observation record payload schema 名称。
+pub const OPERATION_OBSERVATION_ERROR_SCHEMA_NAME: &str = "flowrt.operation.error";
 
 /// 可重放的 Operation command 种类。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,6 +340,72 @@ pub struct OperationCommandReplayEntry {
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+}
+
+/// 可验证的 Operation observation 事件种类。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationObservationKind {
+    State,
+    Progress,
+    Result,
+    Error,
+}
+
+impl OperationObservationKind {
+    /// 返回 JSON/诊断输出中使用的稳定事件名。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Progress => "progress",
+            Self::Result => "result",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// 从 record 里投影出来、可用于 replay 后一致性验证的 Operation observation。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationObservationReplayEntry {
+    pub time_ms: u64,
+    pub operation: String,
+    pub operation_id: String,
+    /// 同一 invocation 内按录制 observation 顺序派生的稳定序号。
+    pub sequence: u64,
+    pub kind: OperationObservationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationStateObservationPayload {
+    operation_id: String,
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationProgressObservationPayload {
+    operation_id: String,
+    #[serde(default)]
+    sequence: Option<u64>,
+    #[serde(default)]
+    payload: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationTerminalObservationPayload {
+    operation_id: String,
+    result: String,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    payload: Option<Vec<u8>>,
 }
 
 /// 从 MCAP 字节读出按时间升序的回放时间线（只取 `ChannelSample` 事件）。
@@ -410,6 +484,101 @@ pub fn read_operation_command_timeline(
     Ok(ordered.into_iter().map(|(_, _, entry)| entry).collect())
 }
 
+/// 从 MCAP 字节读出按时间升序的 Operation observation trace。
+///
+/// observation 只作为 record→replay 的验证证据，不参与 replay 注入。reader 读取
+/// state/progress/result/error schema，并按每个 invocation 的录制顺序派生 `sequence`。
+pub fn read_operation_observation_trace(
+    data: &[u8],
+) -> RecordResult<Vec<OperationObservationReplayEntry>> {
+    let mut ordered: Vec<(u64, u64, OperationObservationReplayEntry)> = Vec::new();
+    for message in mcap::MessageStream::new(data)? {
+        let message = message?;
+        let envelope: RecordEnvelope = serde_json::from_slice(&message.data)?;
+        if envelope.event_kind != RecordEventKind::OperationEvent {
+            continue;
+        }
+        let entry = match envelope.payload_schema.as_str() {
+            OPERATION_OBSERVATION_STATE_SCHEMA_NAME => {
+                let payload: OperationStateObservationPayload =
+                    serde_json::from_slice(&envelope.payload)?;
+                OperationObservationReplayEntry {
+                    time_ms: envelope.monotonic_ns / 1_000_000,
+                    operation: envelope.entity.name,
+                    operation_id: payload.operation_id,
+                    sequence: 0,
+                    kind: OperationObservationKind::State,
+                    state: Some(payload.state),
+                    progress_sequence: None,
+                    payload: None,
+                    message: None,
+                }
+            }
+            OPERATION_OBSERVATION_PROGRESS_SCHEMA_NAME => {
+                let payload: OperationProgressObservationPayload =
+                    serde_json::from_slice(&envelope.payload)?;
+                OperationObservationReplayEntry {
+                    time_ms: envelope.monotonic_ns / 1_000_000,
+                    operation: envelope.entity.name,
+                    operation_id: payload.operation_id,
+                    sequence: 0,
+                    kind: OperationObservationKind::Progress,
+                    state: None,
+                    progress_sequence: payload.sequence,
+                    payload: payload.payload,
+                    message: None,
+                }
+            }
+            OPERATION_OBSERVATION_RESULT_SCHEMA_NAME => {
+                let payload: OperationTerminalObservationPayload =
+                    serde_json::from_slice(&envelope.payload)?;
+                OperationObservationReplayEntry {
+                    time_ms: envelope.monotonic_ns / 1_000_000,
+                    operation: envelope.entity.name,
+                    operation_id: payload.operation_id,
+                    sequence: 0,
+                    kind: OperationObservationKind::Result,
+                    state: Some(payload.result),
+                    progress_sequence: None,
+                    payload: payload.payload,
+                    message: payload.error,
+                }
+            }
+            OPERATION_OBSERVATION_ERROR_SCHEMA_NAME => {
+                let payload: OperationTerminalObservationPayload =
+                    serde_json::from_slice(&envelope.payload)?;
+                OperationObservationReplayEntry {
+                    time_ms: envelope.monotonic_ns / 1_000_000,
+                    operation: envelope.entity.name,
+                    operation_id: payload.operation_id,
+                    sequence: 0,
+                    kind: OperationObservationKind::Error,
+                    state: Some(payload.result),
+                    progress_sequence: None,
+                    payload: payload.payload,
+                    message: payload.error,
+                }
+            }
+            _ => continue,
+        };
+        ordered.push((entry.time_ms, envelope.sequence, entry));
+    }
+    ordered.sort_by_key(|(time_ms, sequence, _)| (*time_ms, *sequence));
+
+    let mut next_sequence_by_operation_id = BTreeMap::new();
+    Ok(ordered
+        .into_iter()
+        .map(|(_, _, mut entry)| {
+            let sequence = next_sequence_by_operation_id
+                .entry(entry.operation_id.clone())
+                .or_insert(0);
+            entry.sequence = *sequence;
+            *sequence += 1;
+            entry
+        })
+        .collect())
+}
+
 /// 读取 MCAP 文件并解析回放时间线。
 pub fn read_replay_timeline_from_path(
     path: &std::path::Path,
@@ -424,6 +593,14 @@ pub fn read_operation_command_timeline_from_path(
 ) -> RecordResult<Vec<OperationCommandReplayEntry>> {
     let data = std::fs::read(path)?;
     read_operation_command_timeline(&data)
+}
+
+/// 读取 MCAP 文件并解析 Operation observation trace。
+pub fn read_operation_observation_trace_from_path(
+    path: &std::path::Path,
+) -> RecordResult<Vec<OperationObservationReplayEntry>> {
+    let data = std::fs::read(path)?;
+    read_operation_observation_trace(&data)
 }
 
 /// 把回放时间线写为 line-delimited JSON（每行一条 [`ReplayTimelineEntry`]）。

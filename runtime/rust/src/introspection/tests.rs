@@ -1591,6 +1591,56 @@ fn recorder_captures_operation_start_and_cancel_commands() {
 }
 
 #[test]
+fn recorder_captures_operation_observation_payload_bytes() {
+    let state = IntrospectionState::new();
+    state.start_recorder(IntrospectionRecorderStart {
+        output: Some("memory://operation-observations.mcap".to_string()),
+        filters: vec!["operation:controller.plan".to_string()],
+        queue_depth: Some(8),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime_pid: 42,
+        selfdesc_hash: "abc123".to_string(),
+    });
+
+    state.record_operation_progress_payload(
+        "controller.plan",
+        "111:7:3",
+        4,
+        Some(vec![7, 0, 0, 0]),
+    );
+    state.record_operation_result_payload(
+        "controller.plan",
+        "111:7:3",
+        "failed",
+        Some("planner rejected"),
+        Some(vec![1, 2]),
+    );
+
+    let events = state.drain_recorder_events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[0].payload_schema,
+        flowrt_record::OPERATION_OBSERVATION_PROGRESS_SCHEMA_NAME
+    );
+    assert_eq!(
+        events[1].payload_schema,
+        flowrt_record::OPERATION_OBSERVATION_ERROR_SCHEMA_NAME
+    );
+    let progress: serde_json::Value = serde_json::from_slice(&events[0].payload).unwrap();
+    assert_eq!(progress["operation_id"], "111:7:3");
+    assert_eq!(progress["sequence"], 4);
+    assert_eq!(progress["payload"], serde_json::json!([7, 0, 0, 0]));
+    assert_eq!(progress["payload_len"], 4);
+    let error: serde_json::Value = serde_json::from_slice(&events[1].payload).unwrap();
+    assert_eq!(error["operation_id"], "111:7:3");
+    assert_eq!(error["result"], "failed");
+    assert_eq!(error["error"], "planner rejected");
+    assert_eq!(error["payload"], serde_json::json!([1, 2]));
+    assert_eq!(error["payload_len"], 2);
+}
+
+#[test]
 fn recorder_marks_variable_channel_frame_payload_encoding() {
     let state = IntrospectionState::new();
     state.start_recorder(IntrospectionRecorderStart {

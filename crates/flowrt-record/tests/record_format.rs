@@ -3,10 +3,11 @@ use std::io::Cursor;
 
 use flowrt_record::{
     DescriptorPayloadArtifact, DescriptorRecordPayload, DescriptorRecordStatus, FlowrtMcapWriter,
-    OperationCommandKind, OperationCommandReplayEntry, OperationStartCommandPayload,
-    PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope,
-    RecordError, RecordEventKind, ReplayTimelineEntry, read_operation_command_timeline,
-    read_replay_timeline,
+    OperationCommandKind, OperationCommandReplayEntry, OperationObservationKind,
+    OperationObservationReplayEntry, OperationStartCommandPayload, PayloadEncoding,
+    RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope, RecordError,
+    RecordEventKind, ReplayTimelineEntry, read_operation_command_timeline,
+    read_operation_observation_trace, read_replay_timeline,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -225,6 +226,101 @@ fn read_operation_command_timeline_extracts_start_and_cancel_only() -> TestResul
                 goal_payload: Some(vec![7, 0, 0, 0]),
                 timeout_ms: Some(2500),
                 owner: Some("flowrt.cli".to_string()),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn read_operation_observation_trace_extracts_payload_bytes_and_terminal_error() -> TestResult {
+    let mut writer = FlowrtMcapWriter::new(Cursor::new(Vec::new()))?;
+    let operations = writer.register_channel("operations", RecordEventKind::OperationEvent)?;
+    let diagnostics = writer.register_channel("diagnostics", RecordEventKind::DiagnosticsEvent)?;
+
+    let mut state = sample_envelope(RecordEventKind::OperationEvent);
+    state.monotonic_ns = 10_000_000;
+    state.sequence = 1;
+    state.entity = RecordEntity {
+        kind: RecordEntityKind::Operation,
+        name: "controller.plan".to_string(),
+        instance: Some("controller".to_string()),
+        task: None,
+        type_name: None,
+    };
+    state.payload_encoding = PayloadEncoding::Json;
+    state.payload_schema = "flowrt.operation.state_changed".to_string();
+    state.payload = br#"{"operation_id":"111:7:3","state":"running"}"#.to_vec();
+
+    let progress = RecordEnvelope {
+        monotonic_ns: 20_000_000,
+        sequence: 2,
+        payload_schema: "flowrt.operation.progress".to_string(),
+        payload: br#"{"operation_id":"111:7:3","sequence":4,"payload":[7,0,0,0],"payload_len":4}"#
+            .to_vec(),
+        ..state.clone()
+    };
+    let error = RecordEnvelope {
+        monotonic_ns: 30_000_000,
+        sequence: 3,
+        payload_schema: "flowrt.operation.error".to_string(),
+        payload:
+            br#"{"operation_id":"111:7:3","result":"failed","error":"planner rejected","payload":[1]}"#
+                .to_vec(),
+        ..state.clone()
+    };
+    let command = RecordEnvelope {
+        payload_schema: "flowrt.operation.command.start.v1".to_string(),
+        payload: br#"{"operation_id":"111:7:3","goal_payload":[]}"#.to_vec(),
+        ..state.clone()
+    };
+    let diagnostic = sample_envelope(RecordEventKind::DiagnosticsEvent);
+
+    writer.write_event(operations, &progress)?;
+    writer.write_event(operations, &command)?;
+    writer.write_event(operations, &error)?;
+    writer.write_event(operations, &state)?;
+    writer.write_event(diagnostics, &diagnostic)?;
+    writer.flush()?;
+    let bytes = writer.finish_into_inner()?.into_inner();
+
+    let trace = read_operation_observation_trace(&bytes)?;
+
+    assert_eq!(
+        trace,
+        vec![
+            OperationObservationReplayEntry {
+                time_ms: 10,
+                operation: "controller.plan".to_string(),
+                operation_id: "111:7:3".to_string(),
+                sequence: 0,
+                kind: OperationObservationKind::State,
+                state: Some("running".to_string()),
+                progress_sequence: None,
+                payload: None,
+                message: None,
+            },
+            OperationObservationReplayEntry {
+                time_ms: 20,
+                operation: "controller.plan".to_string(),
+                operation_id: "111:7:3".to_string(),
+                sequence: 1,
+                kind: OperationObservationKind::Progress,
+                state: None,
+                progress_sequence: Some(4),
+                payload: Some(vec![7, 0, 0, 0]),
+                message: None,
+            },
+            OperationObservationReplayEntry {
+                time_ms: 30,
+                operation: "controller.plan".to_string(),
+                operation_id: "111:7:3".to_string(),
+                sequence: 2,
+                kind: OperationObservationKind::Error,
+                state: Some("failed".to_string()),
+                progress_sequence: None,
+                payload: Some(vec![1]),
+                message: Some("planner rejected".to_string()),
             },
         ]
     );

@@ -34,7 +34,7 @@ flowrt echo <channel> [<channel> ...] [--socket <path>] [--image <path/to/genera
 flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>] [--follow] [--interval-ms <ms>] [--raw]
 flowrt pub <boundary-input> --json <json> [--image <path/to/generated-app-or-selfdesc.json>] [--socket <path>] [--published-at-ms <ms>]
 flowrt pub <boundary-input> --file <path/to/input.jsonl|input.json> [--freq <hz>] [--image <path/to/generated-app-or-selfdesc.json>] [--socket <path>] [--published-at-ms <ms>]
-flowrt replay --file <path/to/fixture.jsonl|fixture.json|recording.mcap> --image <path/to/generated-app-or-selfdesc.json> [--socket <path>] [--speed <ratio>] [--as-fast-as-possible]
+flowrt replay --file <path/to/fixture.jsonl|fixture.json|recording.mcap> --image <path/to/generated-app-or-selfdesc.json> [--socket <path>] [--speed <ratio>] [--as-fast-as-possible] [--verify-operation-observations] [--format <text|json>]
 flowrt params list --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt params get <instance.param> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt params set <instance.param> <json-value> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
@@ -1174,6 +1174,8 @@ flowrt replay --file fixture.jsonl --image flowrt/selfdesc/selfdesc.json
 flowrt replay --file fixture.json --image flowrt/selfdesc/selfdesc.json --speed 2.0
 flowrt replay --file fixture.jsonl --image flowrt/selfdesc/selfdesc.json --as-fast-as-possible
 flowrt replay --file run.mcap --image flowrt/selfdesc/selfdesc.json --as-fast-as-possible
+flowrt replay --file run.mcap --image flowrt/selfdesc/selfdesc.json --verify-operation-observations
+flowrt replay --file run.mcap --image flowrt/selfdesc/selfdesc.json --verify-operation-observations --format json
 ```
 
 `replay` 是 FlowRT-native offline validation 工具。JSON / JSONL fixture 只向 island
@@ -1209,6 +1211,25 @@ result、error、status 等 Operation observation event 只作为证据，不会
 start command 直接携带录制时的 canonical goal payload、timeout 和 owner；cancel command 会把
 录制 invocation id 映射到本次 replay start 返回的新 invocation id 后再发送。输出摘要中的
 `operation_commands` 表示实际重放的 command event 数。
+
+传入 `--verify-operation-observations` 时，`replay` 会先要求 MCAP 中存在 Operation
+observation stream；只有 command timeline 而没有 observation evidence 的录制会 fail-fast。
+命令重放后，CLI 通过本机 introspection socket 的 `OperationObserve` 读取 replay runtime
+新产生的 state/progress/result/error trace，并用 recorded invocation id 到 replay invocation
+id 的映射比较 observation。比较忽略 wall-clock timestamp，只比较 Operation 名称、mapped id、
+event kind、同一 invocation 内 sequence、progress sequence、terminal state/error message
+和 typed payload bytes；decoded JSON 只用于其他命令展示，不作为 verifier 主键。
+
+文本输出会追加：
+
+```text
+operation_observation_verification expected=3 observed=3 matched=3 missing=0 extra=0 mismatched=0
+```
+
+`--format json` 会输出 `operation_observation_verification` 对象，包含 `expected`、
+`observed`、`matched`、`missing`、`extra`、`mismatched`、`id_map` 和 `mismatches`。
+任一 missing、extra 或 mismatched 非零时命令返回非零；JSON 模式的错误信息会保留同一份
+结构化 diff，便于 CI 收集。
 
 ## `params`
 
@@ -1621,6 +1642,10 @@ flowrt record --output op.mcap --operation controller.plan --force
 ```
 
 `record` 通过 live runtime introspection socket 按需开启 recorder tap，把 FlowRT 事件写入 MCAP 文件。它不需要 RSDL 源文件，也不需要生成应用二进制；事件 schema 使用 FlowRT 自有 `RecordEnvelope` v1，覆盖 channel sample、boundary output sample、参数控制面、Service、Operation、diagnostics、scheduler/time 和 runtime/process metadata。
+Operation start/cancel accepted 会写入 command event；Operation state/progress/result/error
+会写入 observation event。progress/result/error observation 会保留 typed payload byte array
+和 `payload_len`，用于 `flowrt replay --verify-operation-observations` 做 record→replay
+字节级一致性验证。
 fixed-size sample 记录 native Message ABI bytes；variable frame sample 记录 canonical frame
 bytes 和 message type，由 self-description 解释字段 layout，不携带 ROS2 schema。
 Operation start/cancel accepted 后会额外写入 `flowrt.operation.command.start.v1` /

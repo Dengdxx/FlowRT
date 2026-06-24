@@ -697,6 +697,443 @@ fn replay_mcap_operation_commands_start_and_cancel_invocation() {
 }
 
 #[test]
+fn replay_mcap_verifies_operation_observations_with_replayed_id_mapping() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": null
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "PlanGoal",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "target",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("replay-mcap-operation-observation-verify");
+    let selfdesc = root.join("selfdesc.json");
+    let recording = root.join("run.mcap");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    {
+        let mut writer =
+            flowrt_record::FlowrtMcapWriter::new(std::io::Cursor::new(Vec::new())).unwrap();
+        let channel = writer
+            .register_channel(
+                "flowrt/record/operation_event",
+                flowrt_record::RecordEventKind::OperationEvent,
+            )
+            .unwrap();
+        let entity = flowrt_record::RecordEntity {
+            kind: flowrt_record::RecordEntityKind::Operation,
+            name: "controller.plan".to_string(),
+            instance: Some("controller".to_string()),
+            task: None,
+            type_name: None,
+        };
+        let start = flowrt_record::RecordEnvelope {
+            schema_version: flowrt_record::RECORD_SCHEMA_VERSION,
+            event_kind: flowrt_record::RecordEventKind::OperationEvent,
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime_pid: 88,
+            selfdesc_hash: self_description_hash(source.as_bytes()),
+            monotonic_ns: 0,
+            sample_time_ns: None,
+            wall_unix_ns: 0,
+            sequence: 0,
+            entity: entity.clone(),
+            payload_encoding: flowrt_record::PayloadEncoding::Json,
+            payload_schema: flowrt_record::OPERATION_COMMAND_START_SCHEMA_NAME.to_string(),
+            payload: serde_json::to_vec(&flowrt_record::OperationStartCommandPayload {
+                operation_id: "111:7:3".to_string(),
+                goal_payload: vec![7, 0, 0, 0],
+                timeout_ms: Some(2500),
+                owner: Some("flowrt.cli".to_string()),
+            })
+            .unwrap(),
+        };
+        let state = flowrt_record::RecordEnvelope {
+            payload_schema: flowrt_record::OPERATION_OBSERVATION_STATE_SCHEMA_NAME.to_string(),
+            payload: br#"{"operation_id":"111:7:3","state":"running"}"#.to_vec(),
+            monotonic_ns: 1_000_000,
+            sequence: 1,
+            ..start.clone()
+        };
+        let progress = flowrt_record::RecordEnvelope {
+            payload_schema: flowrt_record::OPERATION_OBSERVATION_PROGRESS_SCHEMA_NAME.to_string(),
+            payload: br#"{"operation_id":"111:7:3","sequence":0,"payload":[9],"payload_len":1}"#
+                .to_vec(),
+            monotonic_ns: 2_000_000,
+            sequence: 2,
+            ..start.clone()
+        };
+        let result = flowrt_record::RecordEnvelope {
+            payload_schema: flowrt_record::OPERATION_OBSERVATION_RESULT_SCHEMA_NAME.to_string(),
+            payload:
+                br#"{"operation_id":"111:7:3","result":"succeeded","error":null,"payload":[1],"payload_len":1}"#
+                    .to_vec(),
+            monotonic_ns: 3_000_000,
+            sequence: 3,
+            ..start.clone()
+        };
+        writer.write_event(channel, &start).unwrap();
+        writer.write_event(channel, &state).unwrap();
+        writer.write_event(channel, &progress).unwrap();
+        writer.write_event(channel, &result).unwrap();
+        writer.flush().unwrap();
+        let bytes = writer.finish_into_inner().unwrap().into_inner();
+        std::fs::write(&recording, bytes).unwrap();
+    }
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let state_for_start = state.clone();
+    state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
+        assert_eq!(payload, vec![7, 0, 0, 0]);
+        let replay_id = "222:8:4";
+        state_for_start.record_operation_transition(
+            "controller.plan",
+            replay_id,
+            "running",
+            owner.as_deref(),
+            timeout_ms,
+        );
+        state_for_start.record_operation_progress_payload(
+            "controller.plan",
+            replay_id,
+            0,
+            Some(vec![9]),
+        );
+        state_for_start.record_operation_result_payload(
+            "controller.plan",
+            replay_id,
+            "succeeded",
+            None,
+            Some(vec![1]),
+        );
+        Ok(flowrt::IntrospectionOperationStartStatus {
+            operation_id: replay_id.to_string(),
+            operation: flowrt::IntrospectionOperationStatus {
+                name: "controller.plan".to_string(),
+                ready: true,
+                current_state: Some("succeeded".to_string()),
+                current_owner: owner,
+                current_deadline_ms: timeout_ms,
+                ..Default::default()
+            },
+        })
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = crate::replay::replay_fixture_with_options(crate::replay::ReplayOptions {
+        file: &recording,
+        image: &selfdesc,
+        socket: Some(&socket),
+        speed: 1.0,
+        as_fast_as_possible: true,
+        verify_operation_observations: true,
+        format: crate::replay::ReplayOutputFormat::Json,
+    })
+    .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(json["operation_commands"], 1);
+    assert_eq!(json["operation_observation_verification"]["expected"], 3);
+    assert_eq!(json["operation_observation_verification"]["matched"], 3);
+    assert_eq!(json["operation_observation_verification"]["mismatched"], 0);
+    assert_eq!(
+        json["operation_observation_verification"]["id_map"]["111:7:3"],
+        "222:8:4"
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn replay_mcap_operation_observation_verification_reports_payload_mismatch() {
+    let source = operation_replay_selfdesc();
+    let root = temp_test_dir("replay-mcap-operation-observation-mismatch");
+    let selfdesc = root.join("selfdesc.json");
+    let recording = root.join("run.mcap");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    write_operation_replay_recording(&recording, source, true);
+    let server = spawn_operation_replay_server(source, &socket, vec![8], vec![1]);
+
+    let error = crate::replay::replay_fixture_with_options(crate::replay::ReplayOptions {
+        file: &recording,
+        image: &selfdesc,
+        socket: Some(&socket),
+        speed: 1.0,
+        as_fast_as_possible: true,
+        verify_operation_observations: true,
+        format: crate::replay::ReplayOutputFormat::Json,
+    })
+    .unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("\"mismatched\": 1"), "{message}");
+    assert!(message.contains("\"matched\": 2"), "{message}");
+    assert!(message.contains("payload"), "{message}");
+    assert!(
+        message.contains("\"recorded_id\": \"111:7:3\""),
+        "{message}"
+    );
+    assert!(message.contains("\"replay_id\": \"222:8:4\""), "{message}");
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn replay_mcap_operation_observation_verification_requires_observation_stream() {
+    let source = operation_replay_selfdesc();
+    let root = temp_test_dir("replay-mcap-operation-observation-missing");
+    let selfdesc = root.join("selfdesc.json");
+    let recording = root.join("run.mcap");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    write_operation_replay_recording(&recording, source, false);
+
+    let error = crate::replay::replay_fixture_with_options(crate::replay::ReplayOptions {
+        file: &recording,
+        image: &selfdesc,
+        socket: None,
+        speed: 1.0,
+        as_fast_as_possible: true,
+        verify_operation_observations: true,
+        format: crate::replay::ReplayOutputFormat::Text,
+    })
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not contain any Operation observation events"),
+        "{error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn operation_replay_selfdesc() -> &'static str {
+    r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": null
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "PlanGoal",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "target",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#
+}
+
+fn write_operation_replay_recording(
+    path: &std::path::Path,
+    source: &str,
+    include_observations: bool,
+) {
+    let mut writer =
+        flowrt_record::FlowrtMcapWriter::new(std::io::Cursor::new(Vec::new())).unwrap();
+    let channel = writer
+        .register_channel(
+            "flowrt/record/operation_event",
+            flowrt_record::RecordEventKind::OperationEvent,
+        )
+        .unwrap();
+    let entity = flowrt_record::RecordEntity {
+        kind: flowrt_record::RecordEntityKind::Operation,
+        name: "controller.plan".to_string(),
+        instance: Some("controller".to_string()),
+        task: None,
+        type_name: None,
+    };
+    let start = flowrt_record::RecordEnvelope {
+        schema_version: flowrt_record::RECORD_SCHEMA_VERSION,
+        event_kind: flowrt_record::RecordEventKind::OperationEvent,
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime_pid: 88,
+        selfdesc_hash: self_description_hash(source.as_bytes()),
+        monotonic_ns: 0,
+        sample_time_ns: None,
+        wall_unix_ns: 0,
+        sequence: 0,
+        entity: entity.clone(),
+        payload_encoding: flowrt_record::PayloadEncoding::Json,
+        payload_schema: flowrt_record::OPERATION_COMMAND_START_SCHEMA_NAME.to_string(),
+        payload: serde_json::to_vec(&flowrt_record::OperationStartCommandPayload {
+            operation_id: "111:7:3".to_string(),
+            goal_payload: vec![7, 0, 0, 0],
+            timeout_ms: Some(2500),
+            owner: Some("flowrt.cli".to_string()),
+        })
+        .unwrap(),
+    };
+    writer.write_event(channel, &start).unwrap();
+    if include_observations {
+        let state = flowrt_record::RecordEnvelope {
+            payload_schema: flowrt_record::OPERATION_OBSERVATION_STATE_SCHEMA_NAME.to_string(),
+            payload: br#"{"operation_id":"111:7:3","state":"running"}"#.to_vec(),
+            monotonic_ns: 1_000_000,
+            sequence: 1,
+            ..start.clone()
+        };
+        let progress = flowrt_record::RecordEnvelope {
+            payload_schema: flowrt_record::OPERATION_OBSERVATION_PROGRESS_SCHEMA_NAME.to_string(),
+            payload: br#"{"operation_id":"111:7:3","sequence":0,"payload":[9],"payload_len":1}"#
+                .to_vec(),
+            monotonic_ns: 2_000_000,
+            sequence: 2,
+            ..start.clone()
+        };
+        let result = flowrt_record::RecordEnvelope {
+            payload_schema: flowrt_record::OPERATION_OBSERVATION_RESULT_SCHEMA_NAME.to_string(),
+            payload:
+                br#"{"operation_id":"111:7:3","result":"succeeded","error":null,"payload":[1],"payload_len":1}"#
+                    .to_vec(),
+            monotonic_ns: 3_000_000,
+            sequence: 3,
+            ..start.clone()
+        };
+        writer.write_event(channel, &state).unwrap();
+        writer.write_event(channel, &progress).unwrap();
+        writer.write_event(channel, &result).unwrap();
+    }
+    writer.flush().unwrap();
+    let bytes = writer.finish_into_inner().unwrap().into_inner();
+    std::fs::write(path, bytes).unwrap();
+}
+
+fn spawn_operation_replay_server(
+    source: &str,
+    socket: &std::path::Path,
+    progress_payload: Vec<u8>,
+    result_payload: Vec<u8>,
+) -> flowrt::IntrospectionServer {
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let state_for_start = state.clone();
+    state.register_operation_start_handler("controller.plan", move |payload, timeout_ms, owner| {
+        assert_eq!(payload, vec![7, 0, 0, 0]);
+        let replay_id = "222:8:4";
+        state_for_start.record_operation_transition(
+            "controller.plan",
+            replay_id,
+            "running",
+            owner.as_deref(),
+            timeout_ms,
+        );
+        state_for_start.record_operation_progress_payload(
+            "controller.plan",
+            replay_id,
+            0,
+            Some(progress_payload.clone()),
+        );
+        state_for_start.record_operation_result_payload(
+            "controller.plan",
+            replay_id,
+            "succeeded",
+            None,
+            Some(result_payload.clone()),
+        );
+        Ok(flowrt::IntrospectionOperationStartStatus {
+            operation_id: replay_id.to_string(),
+            operation: flowrt::IntrospectionOperationStatus {
+                name: "controller.plan".to_string(),
+                ready: true,
+                current_state: Some("succeeded".to_string()),
+                current_owner: owner,
+                current_deadline_ms: timeout_ms,
+                ..Default::default()
+            },
+        })
+    });
+    flowrt::spawn_status_server_at(socket.to_path_buf(), handshake, state)
+        .expect("status server should start")
+}
+
+#[test]
 fn replay_reports_bad_jsonl_line_number() {
     let root = temp_test_dir("replay-bad-jsonl");
     let selfdesc = root.join("selfdesc.json");
