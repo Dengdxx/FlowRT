@@ -28,6 +28,7 @@ scripts/check-codegen-compile-coverage.sh
 scripts/test-codegen-compile.sh
 scripts/test-cpp-static-quality.sh
 scripts/test-v0260-transport-compile-evidence-smoke.sh
+scripts/test-v0271-debt-closure-smoke.sh
 ```
 
 codegen golden snapshot 只锁定生成文本漂移，不能证明 generated shell 可被 Rust/C++ 编译器接受。
@@ -44,6 +45,11 @@ generated shell 做语法或 crate 真编译；默认临时工作目录位于
 `target/flowrt-codegen-compile-tmp`，避免大型 Rust compile case 占满 `/tmp` tmpfs。它仍不同于
 真实 SDK demo build/run：compile net 证明生成物可编译，`zenoh_service_demo`、
 `iox2_service_demo` 等安装后或 SDK smoke 才证明依赖解析、链接和运行路径可用。
+Rust generated case 会先用默认 5 次外层重试的 `cargo fetch` 解析临时 workspace 依赖，再用
+`cargo check --locked --offline` 执行编译证明；这样 crates.io 瞬断只影响 fetch 阶段，不会和
+生成物真实编译错误混在一起。
+`transport compile evidence matrix` 是 v0.26.0 对这套 generated compile net 的发布锚点，
+用于确保 transport 相关 golden 覆盖从文本快照升级为可编译证据。
 
 `scripts/test-cpp-static-quality.sh` 是长期 C++ 静态质量门禁，分三类 profile 执行：
 `runtime` profile 读取 `runtime/cpp` 的 CMake `compile_commands.json`，`generated` profile
@@ -61,6 +67,16 @@ scripts/test-v0270-operation-control-plane-smoke.sh
 该 smoke 聚焦 `v0.27.0` 的发布缺口：本机/远程 Operation CLI、bounded variable frame
 payload 编解码、fault matrix 多 boundary input replay source、self-description canonical
 message identity 和 generated Operation 关键接线。
+
+debt closure smoke：
+
+```bash
+scripts/test-v0271-debt-closure-smoke.sh
+```
+
+该 smoke 聚焦 `v0.27.1` 的长期 debt 收束：evidence matrix、generated compile net、C++
+static quality、feedback typed literal、route typed transport error、Operation observation
+record/replay verification 和 C ABI readonly string params 必须同时具备定向回归或门禁证据。
 
 VSCode / clangd：
 

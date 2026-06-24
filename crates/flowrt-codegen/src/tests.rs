@@ -19,6 +19,7 @@ mod params;
 mod ros2_bridge;
 mod runtime_plan;
 mod services;
+mod standby_failover;
 mod tasks;
 
 fn contract_from_source(source: &str) -> ContractIr {

@@ -14,6 +14,8 @@
 #
 # 覆盖 golden corpus 中已生成 Rust/C++ runtime shell 的 case。覆盖自检会拒绝新增
 # runtime_shell snapshot 后忘记纳入证据矩阵，或矩阵残留已经删除的 stale case。
+# Rust generated Cargo workspace 先用带重试的 fetch 解析依赖，再用 locked offline check
+# 证明生成物编译，避免 crates.io 瞬断和真实编译错误混在同一个失败点里。
 
 set -euo pipefail
 
@@ -55,6 +57,51 @@ run_flowrt() {
     "${flowrt_cmd[@]}" "$@"
 }
 export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
+export CARGO_NET_RETRY="${CARGO_NET_RETRY:-10}"
+export CARGO_HTTP_TIMEOUT="${CARGO_HTTP_TIMEOUT:-600}"
+export CARGO_HTTP_MULTIPLEXING="${CARGO_HTTP_MULTIPLEXING:-false}"
+
+cargo_network_attempts="${FLOWRT_CODEGEN_COMPILE_CARGO_ATTEMPTS:-5}"
+retry_cargo_network_command() {
+    local label="$1"
+    shift
+    local attempt=1
+    local status=0
+    while true; do
+        if "$@"; then
+            return 0
+        else
+            status="$?"
+        fi
+        if ((attempt >= cargo_network_attempts)); then
+            return "$status"
+        fi
+        printf 'warning: %s failed with status %s; retrying (%s/%s)\n' \
+            "$label" "$status" "$((attempt + 1))" "$cargo_network_attempts" >&2
+        sleep "$((attempt * 5))"
+        attempt="$((attempt + 1))"
+    done
+}
+
+if [[ "${FLOWRT_CODEGEN_COMPILE_RETRY_SELF_TEST:-0}" == "1" ]]; then
+    set +e
+    retry_output="$(
+        retry_cargo_network_command "retry self-test" bash -c 'exit 7' 2>&1
+    )"
+    retry_status="$?"
+    set -e
+    if [[ "$retry_status" -ne 7 ]]; then
+        printf 'retry self-test expected status 7, got %s\n' "$retry_status" >&2
+        exit 1
+    fi
+    if [[ "$retry_output" != *"status 7"* ]]; then
+        printf 'retry self-test did not preserve failed command status in diagnostics\n' >&2
+        printf '%s\n' "$retry_output" >&2
+        exit 1
+    fi
+    echo "retry self-test passed"
+    exit 0
+fi
 
 list_compile_cases() {
     python3 - scripts/evidence-matrix.toml <<'PY'
@@ -194,17 +241,22 @@ compile_cpp() {
 # 解析 flowrt，避免 full build。
 compile_rust() {
     local case="$1" proj="$work_dir/$1"
+    local manifest="$proj/flowrt/build/Cargo.toml"
+    local target_dir="$proj/cargo-target"
     echo "codegen compile net: [rust] $case"
     prepare_case "$case" "$proj"
     install_generated_rust_stubs "$case" "$proj"
     printf '\n[patch.crates-io]\nflowrt = { path = "%s/runtime/rust" }\n' \
-        "$repo_root" >> "$proj/flowrt/build/Cargo.toml"
+        "$repo_root" >> "$manifest"
     # 隔离 target-dir：仓库 .cargo/config.toml 把 build.target-dir 钉到共享 target/。
     # 不隔离时，每个生成 crate 都叫 flowrt_app，会命中共享 target 的旧 fingerprint，cargo
     # 跳过重编（"Finished" 无 "Checking"）→ 漏掉生成代码的真实编译错。每 case 独立 target
     # 强制从零编译，真正校验本次生成的 shell。
-    run env CARGO_TARGET_DIR="$proj/cargo-target" \
-        cargo check --manifest-path "$proj/flowrt/build/Cargo.toml"
+    run retry_cargo_network_command "cargo fetch [$case]" \
+        env CARGO_TARGET_DIR="$target_dir" \
+        cargo fetch --manifest-path "$manifest"
+    run env CARGO_TARGET_DIR="$target_dir" \
+        cargo check --locked --offline --manifest-path "$manifest"
 }
 
 while read -r language case_name; do
