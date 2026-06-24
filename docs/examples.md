@@ -21,7 +21,7 @@
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
 | --- | --- | --- | --- | --- |
 | `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | 验证 `[package.imports]`、Rust codegen、inproc run 和 launch manifest |
-| `examples/workspace_demo` | Rust | `inproc` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | 验证 workspace / module / composition、跨模块引用和同名 module symbol 的生成命名 |
+| `examples/workspace_demo` | Rust + C++ | `iox2` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | 验证 workspace / module / composition、module-local Rust/C++ 用户目录和同名 module symbol 的生成命名 |
 | `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂、C++ runtime shell 和 supervisor 启动 |
 | `examples/c_counter_demo` | C callback v0 | `inproc` | `flowrt build examples/c_counter_demo/rsdl/robot.rsdl`；再按需 `flowrt build --launcher examples/c_counter_demo/rsdl/robot.rsdl` | 验证 C component callback table、fixed-size message input/output、CMake app build/run 和 supervisor launch |
 | `examples/imu_demo` | Rust + C++ | `inproc` 声明用于 build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口、消息、参数 schema 和生成物边界；不伪装为 mixed inproc 可运行 |
@@ -92,7 +92,9 @@ compositions = ["composition/default.rsdl"]
 ```
 
 module 只声明自己的 `type` 和 `component`，composition 统一声明 `instance`、`task`、
-`bind`、`profile` 和 `target`。跨模块引用使用 `module::Name`：
+`bind`、`profile` 和 `target`。示例把 `perception` Rust component 和 `control`
+C++ component 放在不同 process group，并通过 `iox2` 连接。跨模块引用使用
+`module::Name`：
 
 ```toml
 [component.processor]
@@ -108,6 +110,9 @@ output = ["command:Sample"]
 - root/composition 层短名存在歧义时必须显式写 `module::Name`。
 - 生成的 Rust/C++ 用户接口使用稳定 generated symbol，例如 `PerceptionProcessor`
   和 `ControlProcessorInterface`，避免同名 module symbol 互相撞。
+- 入库用户实现跟随 module-local 布局：Rust 感知实现位于
+  `app/perception/rust/processor.rs`，C++ 控制实现位于
+  `app/control/cpp/src/processor.cpp`，C++ 头文件位于 `app/control/cpp/inc/`。
 - `flowrt/app/app_api.json` 和 `flowrt/app/implementation.md` 会把 module component 的建议
   用户路径显示为 `app/<module>/rust/<component>.rs`、
   `app/<module>/cpp/src/<component>.cpp` 或 `app/<module>/c/<component>.c`；C++ 参考 stub
@@ -119,6 +124,7 @@ output = ["command:Sample"]
 
 ```bash
 flowrt check examples/workspace_demo/rsdl/robot.rsdl
+flowrt deps examples/workspace_demo/rsdl/robot.rsdl --backend iox2
 flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl
 ```
 

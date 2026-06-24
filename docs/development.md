@@ -30,6 +30,7 @@ scripts/test-cpp-static-quality.sh
 scripts/test-v0260-transport-compile-evidence-smoke.sh
 scripts/test-v0271-debt-closure-smoke.sh
 scripts/test-v0280-module-app-layout-smoke.sh
+scripts/test-v0290-example-module-layout-smoke.sh
 ```
 
 codegen golden snapshot 只锁定生成文本漂移，不能证明 generated shell 可被 Rust/C++ 编译器接受。
@@ -92,18 +93,36 @@ scripts/test-v0280-module-app-layout-smoke.sh
 generated CMake 自动发现 `app/<module>/cpp/src/**` 和 `app/<module>/c/**`，并加入
 `app/<module>/cpp/inc` include 路径。
 
+入库示例 module layout smoke：
+
+```bash
+scripts/test-v0290-example-module-layout-smoke.sh
+```
+
+该 smoke 聚焦 `v0.29.0` 的入库示例迁移：`examples/workspace_demo` 采用 module-local
+用户目录，Rust 实现位于 `app/perception/rust/processor.rs`，C++ 实现位于
+`app/control/cpp/src/processor.cpp`，C++ headers 位于 `app/control/cpp/inc/`；示例 contract
+使用 Rust/C++ process 分离和 `iox2` backend。smoke 会复制示例到临时目录，验证
+App API / reference stub / generated CMake 路径，并执行 `flowrt deps` 与
+`flowrt build --launcher`。
+
 VSCode / clangd：
 
 ```bash
 cmake -S runtime/cpp -B build/cpp
 cargo run -p flowrt-cli -- prepare examples/cpp_counter_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- prepare examples/workspace_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/mixed_zenoh_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/ros2_bridge_demo/rsdl/robot.rsdl
 ```
 
-仓库根目录的 `.clangd` 会让 `runtime/cpp/**` 使用 `build/cpp/compile_commands.json`，并让 `examples/*/app/cpp/**` 读取本示例自己的 `flowrt/cpp/include` 生成头。`flowrt/` 和 `examples/*/flowrt/` 仍是可删除、可重建的生成物，不入库；如果清理过这些目录，需要先重新执行对应示例的 `prepare` 或 `build`，再重启 clangd。
+仓库根目录的 `.clangd` 会让 `runtime/cpp/**` 使用 `build/cpp/compile_commands.json`，并让
+`examples/*/app/cpp/**` 和 `examples/*/app/*/cpp/**` 读取本示例自己的
+`flowrt/cpp/include` 生成头；module-local C++ 文件还会加入相邻 `cpp/inc`。`flowrt/` 和
+`examples/*/flowrt/` 仍是可删除、可重建的生成物，不入库；如果清理过这些目录，需要先重新执行
+对应示例的 `prepare` 或 `build`，再重启 clangd。
 
 FlowRT demo smoke：
 

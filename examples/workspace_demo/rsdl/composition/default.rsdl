@@ -1,6 +1,6 @@
 [instance.source]
 component = "perception::processor"
-process = "main"
+process = "perception"
 target = "linux"
 
 [instance.source.task]
@@ -10,7 +10,7 @@ output = ["sample"]
 
 [instance.controller]
 component = "control::processor"
-process = "main"
+process = "control"
 target = "linux"
 
 [instance.controller.task]
@@ -24,9 +24,9 @@ to = "controller.sample"
 channel = "latest"
 
 [profile.default]
-backend = "inproc"
+backend = "iox2"
 
 [target.linux]
 platform = "linux-amd64"
-runtime = ["rust"]
-backends = ["inproc"]
+runtime = ["rust", "cpp"]
+backends = ["iox2"]

@@ -5,20 +5,24 @@
 
 ## 当前版本背景
 
-当前 workspace 准备 `v0.28.0 Module-aware App Layout` 发布：本版本不新增 RSDL、Contract IR
-或 runtime 执行语义，而是优化 workspace module 的用户侧代码组织。App API manifest、
-`implementation.md` 和 reference stubs 对 workspace module component 使用
+当前 workspace 版本为 `0.28.0`。`v0.28.0 Module-aware App Layout` 已发布并合入主线：本版本
+不新增 RSDL、Contract IR 或 runtime 执行语义，而是优化 workspace module 的用户侧代码组织。
+App API manifest、`implementation.md` 和 reference stubs 对 workspace module component 使用
 `app/<module>/rust/<component>.rs`、`app/<module>/cpp/src/<component>.cpp`、
 `app/<module>/c/<component>.c` 与对应 reference stub 路径，root component 保持既有
 `app/rust/mod.rs`、`app/cpp/**` 和 `app/c/**` 路径；generated CMake 自动发现
 `app/<module>/cpp/src/**` 和 `app/<module>/c/**`，并把 `app/<module>/cpp/inc` 加入 C++
 include 路径；Rust 仍由 `app/rust/mod.rs` 作为 graph 级入口聚合 module-local 实现。
-同一 module 可以包含不同语言的 component，但语言边界仍由
-component 和 process group 决定，不表示同一进程内混合 Rust/C++ 用户对象。
+同一 module 可以包含不同语言的 component，但语言边界仍由 component 和 process group
+决定，不表示同一进程内混合 Rust/C++ 用户对象。
 
-当前 workspace 版本为 `0.28.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
-CHANGELOG v0.28.0 release 段随发布分支同步；后续变更记录在 `## 未发布`。
-`scripts/test-v0280-module-app-layout-smoke.sh` 是本版本 focused gate，覆盖 module-aware
+当前未发布变更暂归 `v0.29.0`：入库 `examples/workspace_demo` 已迁移为 module-local 用户
+目录示例，`perception` Rust 实现位于 `app/perception/rust/processor.rs`，`control` C++
+实现位于 `app/control/cpp/src/processor.cpp`，C++ headers 位于 `app/control/cpp/inc/`；
+composition 使用 Rust/C++ process 分离和 `iox2` backend，避免示例继续展示旧 root-only
+用户代码组织。`scripts/test-v0290-example-module-layout-smoke.sh` 复制该示例到临时目录，
+验证 App API、reference stub、generated CMake 路径，并执行 `deps` 与 `build --launcher`。
+`scripts/test-v0280-module-app-layout-smoke.sh` 仍是 `v0.28.0` focused gate，覆盖 module-aware
 App API/stub 路径、`prepare` 不覆盖用户 `app/`、同一 module 内 Rust/C++ component 路径分层
 和 generated CMake 对 module C/C++ 用户目录的自动发现。
 `scripts/test-codegen-compile.sh` 继续覆盖代表性 iox2 / zenoh generated dataflow、

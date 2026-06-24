@@ -17,3 +17,14 @@ CompileFlags:
     - -I../../../../runtime/cpp/include
     - -I../../flowrt/cpp/include
     - -pthread
+---
+If:
+  PathMatch: examples/.*/app/.*/cpp/.*
+CompileFlags:
+  CompilationDatabase: None
+  Add:
+    - -std=c++20
+    - -I../../../../../../runtime/cpp/include
+    - -I../../../../flowrt/cpp/include
+    - -I../inc
+    - -pthread

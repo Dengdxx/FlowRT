@@ -5,6 +5,6 @@ name = "control"
 command = "f32"
 
 [component.processor]
-language = "rust"
+language = "cpp"
 input = ["sample:perception::Sample"]
 output = ["command:Sample"]

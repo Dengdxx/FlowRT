@@ -184,7 +184,10 @@ my_robot/
         processor.rs
     chassis/
       cpp/
-        driver.cpp
+        inc/
+          driver.hpp
+        src/
+          driver.cpp
   external/
     driver_package/
       flowrt-external.toml
@@ -883,7 +886,7 @@ env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
 | --- | --- | --- | --- | --- |
 | `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | RSDL imports、Rust codegen、inproc run 和 launch。 |
-| `examples/workspace_demo` | Rust | `inproc` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | workspace / module / composition、跨模块引用。 |
+| `examples/workspace_demo` | Rust + C++ | `iox2` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | workspace / module / composition、module-local Rust/C++ 用户目录。 |
 | `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | C++ only CMake app 路径。 |
 | `examples/c_counter_demo` | C callback v0 | `inproc` | `flowrt build examples/c_counter_demo/rsdl/robot.rsdl` | C callback table、fixed-size message、CMake app run 和 supervisor launch。 |
 | `examples/imu_demo` | Rust + C++ | `inproc` build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | mixed contract 的接口和生成物边界。 |
