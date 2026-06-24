@@ -62,16 +62,51 @@ run run_flowrt prepare "$corpus/cross_process_feedback_rust/input.rsdl" --out-di
 shell="$proj/flowrt/rust/src/runtime_shell.rs"
 
 # 源进程（plant_proc，bind_1=plant.state 的 source）启动期对 zenoh channel 播 init（时间戳 0）。
-if ! grep -q "publish_at(State { x: 0f64 }, 0)" "$shell"; then
-    echo "ERROR: 跨进程 feedback 源端 init 播种缺失" >&2
-    exit 1
-fi
-# 消费进程（ctrl_proc）不得播种 bind_1（消费端经 transport 接收，不本地播种）。
-ctrl_body="$(awk '/fn run_process_ctrl_proc/{f=1} f{print} /fn run_process_plant_proc/{f=0}' "$shell")"
-if grep -q "publish_at(State { x: 0f64 }, 0)" <<<"$ctrl_body"; then
-    echo "ERROR: 消费进程不应本地播种跨进程 feedback init" >&2
-    exit 1
-fi
+# 0.27.1 起 fixed-size typed literal 统一生成 sparse overlay seed，不再依赖 struct literal 文本。
+python3 - "$shell" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+
+
+def function_body(name: str) -> str:
+    marker = f"fn {name}"
+    start = source.find(marker)
+    if start < 0:
+        raise SystemExit(f"ERROR: 生成 shell 缺少函数 {name}")
+    brace = source.find("{", start)
+    if brace < 0:
+        raise SystemExit(f"ERROR: 函数 {name} 缺少函数体")
+    depth = 0
+    for index in range(brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace + 1:index]
+    raise SystemExit(f"ERROR: 函数 {name} 函数体未闭合")
+
+
+def has_bind_1_seed_publish(body: str) -> bool:
+    compact = " ".join(body.split())
+    return (
+        "app.bind_1.lock()" in compact
+        and ".publish_at(" in compact
+        and "State::default()" in compact
+        and ".x = 0f64" in compact
+        and "}, 0)" in compact
+    )
+
+
+if not has_bind_1_seed_publish(function_body("run_process_plant_proc")):
+    raise SystemExit("ERROR: 跨进程 feedback 源端 init 播种缺失")
+
+if has_bind_1_seed_publish(function_body("run_process_ctrl_proc")):
+    raise SystemExit("ERROR: 消费进程不应本地播种跨进程 feedback init")
+PY
 echo "  ✓ 源进程播种 init、消费进程不播种"
 
 echo "v0.21.4 cross-process feedback smoke passed"

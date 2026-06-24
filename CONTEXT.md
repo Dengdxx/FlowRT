@@ -390,7 +390,8 @@ runtime 尚未实现的显式 opt-in（Operation `feedback = "fifo"`、显式
   既有 per-process 跨进程输入回放；
 - 新 golden `cross_process_feedback_{rust,cpp}` 锁定两语言生成输出（source 播种 / 消费不播种 /
   消费端 transport 接收）；其 zenoh shell 不纳入 inproc-only 编译网，以 golden 文本 + smoke 接线
-  断言把关；既有同进程 feedback golden 字节不漂移。
+  断言把关，smoke 按函数体检查 source process 的 sparse overlay seed publish，而不绑定旧
+  struct literal 文本；既有同进程 feedback golden 字节不漂移。
 
 上一发布线为 `v0.21.3 Graph Health Aggregation + Controlled Stop`，是 `0.21.x` 主题第四切片：
 把每实例 lifecycle 聚合成单一 graph health（worst-of，always-on observable + 图级诊断），并提供
