@@ -97,6 +97,17 @@ pub(crate) struct DeployArtifactSelection {
     pub(crate) platforms: Vec<String>,
 }
 
+pub(crate) struct DeployOptions<'a> {
+    pub(crate) bundle: &'a Path,
+    pub(crate) host: &'a str,
+    pub(crate) target: &'a str,
+    pub(crate) remote_dir: &'a str,
+    pub(crate) dry_run: bool,
+    pub(crate) allow_island: bool,
+    pub(crate) activate: bool,
+    pub(crate) start: bool,
+}
+
 pub(crate) struct BundleExecutablePlan {
     pub(crate) kind: String,
     pub(crate) source: PathBuf,
@@ -882,6 +893,7 @@ pub(crate) fn current_unix_ms() -> u64 {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 pub(crate) fn deploy_bundle(
     bundle: &Path,
     host: &str,
@@ -890,6 +902,27 @@ pub(crate) fn deploy_bundle(
     dry_run: bool,
     allow_island: bool,
 ) -> Result<String> {
+    deploy_bundle_with_options(DeployOptions {
+        bundle,
+        host,
+        target,
+        remote_dir,
+        dry_run,
+        allow_island,
+        activate: false,
+        start: false,
+    })
+}
+
+pub(crate) fn deploy_bundle_with_options(options: DeployOptions<'_>) -> Result<String> {
+    let bundle = options.bundle;
+    let host = options.host;
+    let target = options.target;
+    let remote_dir = options.remote_dir;
+    let dry_run = options.dry_run;
+    let allow_island = options.allow_island;
+    let activate = options.activate || options.start;
+    let start = options.start;
     validate_deploy_host(host)?;
     validate_deploy_remote_dir(remote_dir)?;
     let loaded = load_bundle_manifest(bundle)?;
@@ -902,20 +935,23 @@ pub(crate) fn deploy_bundle(
         "deploy",
     )?;
     let selected_artifacts = select_deploy_artifacts(bundle, &manifest, target)?;
+    let managed_plan = DeployManagedPlan::new(&manifest, target, remote_dir);
     let mut warnings = Vec::new();
     if let Some(version_warning) = loaded.version_warning {
         warnings.push(version_warning);
     }
     let warning = deploy_warning_suffix(&warnings);
     if dry_run {
+        let managed_suffix = deploy_managed_suffix(&managed_plan, activate, start);
         return Ok(format!(
-            "deploy plan bundle={} host={} target={} remote_dir={} entry={}{}{}",
+            "deploy plan bundle={} host={} target={} remote_dir={} entry={}{}{}{}",
             bundle.display(),
             host,
             target,
             remote_dir,
             manifest.entry,
             deploy_artifact_suffix(&selected_artifacts),
+            managed_suffix,
             warning
         ));
     }
@@ -938,7 +974,8 @@ pub(crate) fn deploy_bundle(
     let warning = deploy_warning_suffix(&warnings);
     validate_remote_deploy_probe(host, &manifest, target, &selected_artifacts.platforms)?;
 
-    let remote = format!("{host}:{remote_dir}");
+    let remote = format!("{host}:{}", managed_plan.incoming);
+    prepare_remote_incoming(host, remote_dir, &managed_plan.incoming)?;
     let upload = ProcessCommand::new("scp")
         .arg("-r")
         .arg("--")
@@ -949,13 +986,150 @@ pub(crate) fn deploy_bundle(
     if !upload.success() {
         anyhow::bail!("bundle upload failed with status {upload}");
     }
+    install_remote_managed_release(host, &managed_plan, target, activate)?;
+    if start {
+        start_remote_managed_release(host, remote_dir)?;
+    }
 
+    let managed_suffix = deploy_managed_suffix(&managed_plan, activate, start);
     Ok(format!(
-        "deployed FlowRT bundle {} to {}{}",
+        "deployed FlowRT bundle {} to {}{}{}",
         bundle.display(),
         remote,
+        managed_suffix,
         warning
     ))
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DeployManagedPlan {
+    pub(crate) release_id: String,
+    pub(crate) incoming: String,
+}
+
+impl DeployManagedPlan {
+    pub(crate) fn new(manifest: &BundleManifest, target: &str, remote_dir: &str) -> Self {
+        let release_id = managed_release_id(manifest, target);
+        Self {
+            incoming: format!("{remote_dir}/incoming/{release_id}"),
+            release_id,
+        }
+    }
+}
+
+pub(crate) fn deploy_managed_suffix(
+    plan: &DeployManagedPlan,
+    activate: bool,
+    start: bool,
+) -> String {
+    let actions = match (activate, start) {
+        (false, false) => "install",
+        (true, false) => "install,activate",
+        (true, true) => "install,activate,start",
+        (false, true) => unreachable!("start implies activate"),
+    };
+    format!(
+        " release={} incoming={} managed={actions}",
+        plan.release_id, plan.incoming
+    )
+}
+
+fn prepare_remote_incoming(host: &str, remote_dir: &str, incoming: &str) -> Result<()> {
+    let incoming_parent = format!("{remote_dir}/incoming");
+    for command in [
+        vec!["rm", "-rf", incoming],
+        vec!["mkdir", "-p", incoming_parent.as_str()],
+    ] {
+        let output = ProcessCommand::new("ssh")
+            .arg("--")
+            .arg(host)
+            .args(command)
+            .output()
+            .with_context(|| format!("failed to prepare remote incoming dir on `{host}`"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            anyhow::bail!(
+                "remote incoming preparation failed: {}",
+                if detail.is_empty() {
+                    output.status.to_string()
+                } else {
+                    detail.to_string()
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
+fn install_remote_managed_release(
+    host: &str,
+    plan: &DeployManagedPlan,
+    target: &str,
+    activate: bool,
+) -> Result<()> {
+    let mut args = vec![
+        "flowrt",
+        "managed",
+        "install",
+        plan.incoming.as_str(),
+        "--remote-dir",
+    ];
+    let remote_dir = plan
+        .incoming
+        .strip_suffix(&format!("/incoming/{}", plan.release_id))
+        .unwrap_or("");
+    args.push(remote_dir);
+    args.push("--target");
+    args.push(target);
+    if activate {
+        args.push("--activate");
+    }
+    let output = ProcessCommand::new("ssh")
+        .arg("--")
+        .arg(host)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to install remote managed release on `{host}`"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        anyhow::bail!(
+            "remote managed install failed: {}",
+            if detail.is_empty() {
+                output.status.to_string()
+            } else {
+                detail.to_string()
+            }
+        );
+    }
+    Ok(())
+}
+
+fn start_remote_managed_release(host: &str, remote_dir: &str) -> Result<()> {
+    let output = ProcessCommand::new("ssh")
+        .arg("--")
+        .arg(host)
+        .arg("flowrt")
+        .arg("managed")
+        .arg("start")
+        .arg("--remote-dir")
+        .arg(remote_dir)
+        .output()
+        .with_context(|| format!("failed to start remote managed release on `{host}`"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        anyhow::bail!(
+            "remote managed start failed: {}",
+            if detail.is_empty() {
+                output.status.to_string()
+            } else {
+                detail.to_string()
+            }
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn deploy_warning_suffix(warnings: &[String]) -> String {

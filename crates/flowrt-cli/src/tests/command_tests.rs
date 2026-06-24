@@ -75,6 +75,71 @@ fn command_build_parses_target_platform() {
 }
 
 #[test]
+fn cli_accepts_managed_runtime_commands() {
+    Cli::command().debug_assert();
+
+    let remote = Cli::try_parse_from([
+        "flowrt",
+        "remote",
+        "status",
+        "--host",
+        "robot@host",
+        "--remote-dir",
+        "/opt/robot",
+    ])
+    .expect("remote status should parse");
+    let Command::Remote {
+        command:
+            RemoteCommand::Status {
+                host,
+                remote_dir,
+                format,
+            },
+    } = remote.command
+    else {
+        panic!("remote status parsed into unexpected command")
+    };
+    assert_eq!(host, "robot@host");
+    assert_eq!(remote_dir, "/opt/robot");
+    assert_eq!(format, StatusFormat::Text);
+
+    let managed =
+        Cli::try_parse_from(["flowrt", "managed", "status", "--remote-dir", "/opt/robot"])
+            .expect("managed status should parse");
+    let Command::Managed {
+        command: ManagedCommand::Status { remote_dir, format },
+    } = managed.command
+    else {
+        panic!("managed status parsed into unexpected command")
+    };
+    assert_eq!(remote_dir, PathBuf::from("/opt/robot"));
+    assert_eq!(format, StatusFormat::Text);
+
+    let deploy = Cli::try_parse_from([
+        "flowrt",
+        "deploy",
+        "dist/bundle",
+        "--host",
+        "robot@host",
+        "--target",
+        "edge",
+        "--remote-dir",
+        "/opt/robot",
+        "--activate",
+        "--start",
+    ])
+    .expect("deploy --activate --start should parse");
+    let Command::Deploy {
+        activate, start, ..
+    } = deploy.command
+    else {
+        panic!("deploy parsed into unexpected command")
+    };
+    assert!(activate);
+    assert!(start);
+}
+
+#[test]
 fn cli_parses_fault_matrix_commands() {
     let check = Cli::try_parse_from(["flowrt", "fault-matrix", "check", "fault-matrix.toml"])
         .expect("fault-matrix check should parse");
@@ -2046,6 +2111,8 @@ fn cli_parses_deploy_command() {
         remote_dir,
         dry_run,
         allow_island,
+        activate,
+        start,
     } = cli.command
     else {
         panic!("deploy command should parse into Command::Deploy")
@@ -2056,6 +2123,8 @@ fn cli_parses_deploy_command() {
     assert_eq!(remote_dir, "/tmp/flowrt-demo");
     assert!(dry_run);
     assert!(!allow_island);
+    assert!(!activate);
+    assert!(!start);
 }
 
 /// 兼容测试：`--run-ticks 0` 仍会被 CLI 拒绝。

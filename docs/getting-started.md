@@ -360,9 +360,16 @@ flowrt launch --run-steps 2 examples/external_driver_demo/rsdl/robot.rsdl
 ```bash
 flowrt bundle examples/external_driver_demo/rsdl/robot.rsdl --output dist/external-driver-demo
 flowrt deploy dist/external-driver-demo --host user@host --target edge --remote-dir /opt/external-driver-demo --dry-run
+flowrt deploy dist/external-driver-demo --host user@host --target edge --remote-dir /opt/external-driver-demo --activate --start
+flowrt remote status --host user@host --remote-dir /opt/external-driver-demo
+flowrt remote logs --host user@host --remote-dir /opt/external-driver-demo --lines 50
+flowrt remote stop --host user@host --remote-dir /opt/external-driver-demo
 ```
 
-实际部署时，目标机器需要安装同版本 FlowRT deb；`deploy` baseline 通过 SSH/SCP 上传 bundle，不负责远端安装系统包。
+实际部署时，目标机器需要安装匹配版本 FlowRT deb；`deploy` 通过 SSH/SCP 上传 bundle，
+写入目标机 managed release store，并可用 `--activate --start` 直接启动 generated
+supervisor。`remote status/logs/stop/rollback` 复用目标机本地 `managed` 状态文件和日志。
+`deploy` 不负责远端安装系统包或配置长期 systemd 服务。
 
 ## 切换 profile
 

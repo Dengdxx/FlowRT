@@ -70,6 +70,69 @@ fn deploy_bundle_v2_dry_run_selects_target_artifacts() {
 }
 
 #[test]
+fn deploy_bundle_dry_run_reports_managed_activate_and_start_plan() {
+    let root = temp_test_dir("deploy-managed-plan");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("bin/linux-arm64")).unwrap();
+    std::fs::write(bundle.join("bin/linux-arm64/flowrt-supervisor"), b"pi").unwrap();
+    let pi_hash = file_sha256(&bundle.join("bin/linux-arm64/flowrt-supervisor")).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 2,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "managed_deploy_demo".into(),
+        profile: Some("default".into()),
+        artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/linux-arm64/flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+        resource_providers: vec![],
+        runtime_dependencies: vec![],
+        artifacts: vec![BundleArtifact {
+            kind: "supervisor".into(),
+            target: "pi".into(),
+            platform: Some("linux-arm64".into()),
+            path: "bin/linux-arm64/flowrt-supervisor".into(),
+            sha256: pi_hash,
+        }],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let output = deploy_bundle_with_options(DeployOptions {
+        bundle: &bundle,
+        host: "robot@192.0.2.10",
+        target: "pi",
+        remote_dir: "/opt/flowrt-demo",
+        dry_run: true,
+        allow_island: false,
+        activate: true,
+        start: true,
+    })
+    .unwrap();
+
+    assert!(
+        output.contains("managed=install,activate,start"),
+        "unexpected output: {output}"
+    );
+    assert!(output.contains("release="), "unexpected output: {output}");
+    assert!(
+        output.contains("incoming=/opt/flowrt-demo/incoming/"),
+        "unexpected output: {output}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn deploy_bundle_v2_allows_complete_multi_platform_external_package_closure() {
     let root = temp_test_dir("deploy-v2-external-complete");
     let bundle = root.join("bundle");

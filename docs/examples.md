@@ -40,7 +40,7 @@
 | `examples/zenoh_service_demo` | Rust | `zenoh` | `flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl` | 验证 generated Service over zenoh 的跨进程 request/response、typed API 和 service key expression |
 | `examples/iox2_service_demo` | Rust | `iox2` | `flowrt check examples/iox2_service_demo/rsdl/robot.rsdl` | 验证 generated Service/Operation over iox2 的同主机跨进程 control-plane、typed API、bounded frame slot 和 canonical service name |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
-| `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
+| `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约、bundle 和 managed deploy 生命周期 |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor 观测 |
 | `examples/libjpeg_cross_demo` | C++ | `inproc` | `scripts/test-v086-cross-sdk-demos.sh` | 验证公开可移植 C/C++ 库通过 pkg-config overlay 接入 amd64 到 arm64 交叉构建 |
 | `examples/kleidiai_cross_demo` | C++ | `inproc` | `scripts/test-v086-cross-sdk-demos.sh` | 验证 Arm 专用公开 SDK 通过 pkg-config overlay 接入 FlowRT C++ component 并在 arm64 运行 |
@@ -287,6 +287,10 @@ flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl
 flowrt launch --run-steps 2 examples/external_driver_demo/rsdl/robot.rsdl
 flowrt bundle examples/external_driver_demo/rsdl/robot.rsdl --output dist/external-driver-demo
 flowrt deploy dist/external-driver-demo --host user@host --target edge --remote-dir /opt/external-driver-demo --dry-run
+flowrt deploy dist/external-driver-demo --host user@host --target edge --remote-dir /opt/external-driver-demo --activate --start
+flowrt remote status --host user@host --remote-dir /opt/external-driver-demo
+flowrt remote logs --host user@host --remote-dir /opt/external-driver-demo --lines 50
+flowrt remote stop --host user@host --remote-dir /opt/external-driver-demo
 ```
 
 该示例不访问真实硬件。`bin/driver` 只校验 supervisor 注入的 `FLOWRT_*` 环境变量和
@@ -295,6 +299,9 @@ manifest、self-description、supervisor 和离线 bundle 主路径。
 bundle / deploy 会把 external package artifact 按 target platform 纳入闭包校验；
 缺少对应 platform 的 executable artifact、artifact platform 不匹配或 hash 不一致时，
 dry-run 也会拒绝，并提示重新执行对应 target 的 `flowrt build --launcher` 后再 bundle。
+真实 `deploy --activate --start` 会把 bundle 安装到目标机 `<remote-dir>/releases/<release-id>/`，
+更新 active release，并启动 generated supervisor；后续用 `flowrt remote ...` 查看状态、
+读取日志、停止或回滚。
 
 ## 公开交叉 SDK 示例
 

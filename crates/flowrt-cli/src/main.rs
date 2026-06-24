@@ -290,6 +290,27 @@ enum Command {
         /// 允许部署 island 脚手架 bundle；默认拒绝，避免误部署为生产系统。
         #[arg(long)]
         allow_island: bool,
+
+        /// 部署后原子激活该 release。
+        #[arg(long)]
+        activate: bool,
+
+        /// 部署并激活后启动远端 supervisor。
+        #[arg(long)]
+        start: bool,
+    },
+
+    /// 管理远端 FlowRT release 和运行实例。
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommand,
+    },
+
+    /// 在目标机本地执行 managed runtime 操作；供 `remote` / `deploy` 经 SSH 调用。
+    #[command(hide = true)]
+    Managed {
+        #[command(subcommand)]
+        command: ManagedCommand,
     },
 
     /// 输出远端部署前置校验指纹；供 `flowrt deploy` 通过 SSH 调用。
@@ -657,6 +678,202 @@ enum ExternalCommand {
         /// external package 搜索目录。
         #[arg(long, default_value = "external")]
         path: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RemoteCommand {
+    /// 激活一个已安装 release。
+    Activate {
+        /// 远端主机，格式同 ssh，例如 `user@host`。
+        #[arg(long)]
+        host: String,
+
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: String,
+
+        /// release id。
+        #[arg(long)]
+        release: String,
+
+        /// 只输出远端命令，不执行 ssh。
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// 启动 active release 的 generated supervisor。
+    Start {
+        /// 远端主机，格式同 ssh，例如 `user@host`。
+        #[arg(long)]
+        host: String,
+
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: String,
+
+        /// 可选 release id；传入时先激活再启动。
+        #[arg(long)]
+        release: Option<String>,
+
+        /// 只输出远端命令，不执行 ssh。
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// 停止当前运行的 supervisor。
+    Stop {
+        /// 远端主机，格式同 ssh，例如 `user@host`。
+        #[arg(long)]
+        host: String,
+
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: String,
+
+        /// graceful stop 超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
+
+        /// 只输出远端命令，不执行 ssh。
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// 查看远端 managed runtime 状态。
+    Status {
+        /// 远端主机，格式同 ssh，例如 `user@host`。
+        #[arg(long)]
+        host: String,
+
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: String,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = StatusFormat::Text)]
+        format: StatusFormat,
+    },
+
+    /// 查看当前 run 的 supervisor 日志尾部。
+    Logs {
+        /// 远端主机，格式同 ssh，例如 `user@host`。
+        #[arg(long)]
+        host: String,
+
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: String,
+
+        /// 输出最后 N 行。
+        #[arg(long, default_value_t = 200, value_parser = parse_positive_usize)]
+        lines: usize,
+    },
+
+    /// 回滚到 previous release。
+    Rollback {
+        /// 远端主机，格式同 ssh，例如 `user@host`。
+        #[arg(long)]
+        host: String,
+
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: String,
+
+        /// 回滚后启动 release。
+        #[arg(long)]
+        start: bool,
+
+        /// 只输出远端命令，不执行 ssh。
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ManagedCommand {
+    /// 安装 bundle 到本机 managed release store。
+    Install {
+        /// bundle 目录。
+        bundle: PathBuf,
+
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: PathBuf,
+
+        /// target 名称。
+        #[arg(long)]
+        target: String,
+
+        /// 安装后激活该 release。
+        #[arg(long)]
+        activate: bool,
+    },
+
+    /// 激活本机已安装 release。
+    Activate {
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: PathBuf,
+
+        /// release id。
+        #[arg(long)]
+        release: String,
+    },
+
+    /// 启动 active release 的 supervisor。
+    Start {
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: PathBuf,
+
+        /// 可选 release id；传入时先激活再启动。
+        #[arg(long)]
+        release: Option<String>,
+    },
+
+    /// 停止当前运行的 supervisor。
+    Stop {
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: PathBuf,
+
+        /// graceful stop 超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
+    },
+
+    /// 查看本机 managed runtime 状态。
+    Status {
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: PathBuf,
+
+        /// 输出格式。
+        #[arg(long, value_enum, default_value_t = StatusFormat::Text)]
+        format: StatusFormat,
+    },
+
+    /// 查看当前 run 的 supervisor 日志尾部。
+    Logs {
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: PathBuf,
+
+        /// 输出最后 N 行。
+        #[arg(long, default_value_t = 200, value_parser = parse_positive_usize)]
+        lines: usize,
+    },
+
+    /// 回滚到 previous release。
+    Rollback {
+        /// FlowRT managed application root。
+        #[arg(long)]
+        remote_dir: PathBuf,
+
+        /// 回滚后启动 release。
+        #[arg(long)]
+        start: bool,
     },
 }
 
@@ -1258,12 +1475,127 @@ fn main() -> Result<()> {
             remote_dir,
             dry_run,
             allow_island,
+            activate,
+            start,
         } => {
             println!(
                 "{}",
-                deploy_bundle(&bundle, &host, &target, &remote_dir, dry_run, allow_island)?
+                deploy_bundle_with_options(DeployOptions {
+                    bundle: &bundle,
+                    host: &host,
+                    target: &target,
+                    remote_dir: &remote_dir,
+                    dry_run,
+                    allow_island,
+                    activate,
+                    start,
+                })?
             );
         }
+        Command::Remote { command } => match command {
+            RemoteCommand::Activate {
+                host,
+                remote_dir,
+                release,
+                dry_run,
+            } => {
+                println!(
+                    "{}",
+                    remote_activate(&host, &remote_dir, &release, dry_run)?
+                );
+            }
+            RemoteCommand::Start {
+                host,
+                remote_dir,
+                release,
+                dry_run,
+            } => {
+                println!(
+                    "{}",
+                    remote_start(&host, &remote_dir, release.as_deref(), dry_run)?
+                );
+            }
+            RemoteCommand::Stop {
+                host,
+                remote_dir,
+                timeout_ms,
+                dry_run,
+            } => {
+                println!("{}", remote_stop(&host, &remote_dir, timeout_ms, dry_run)?);
+            }
+            RemoteCommand::Status {
+                host,
+                remote_dir,
+                format,
+            } => {
+                print!("{}", remote_status(&host, &remote_dir, format)?);
+            }
+            RemoteCommand::Logs {
+                host,
+                remote_dir,
+                lines,
+            } => {
+                print!("{}", remote_logs(&host, &remote_dir, lines)?);
+            }
+            RemoteCommand::Rollback {
+                host,
+                remote_dir,
+                start,
+                dry_run,
+            } => {
+                println!("{}", remote_rollback(&host, &remote_dir, start, dry_run)?);
+            }
+        },
+        Command::Managed { command } => match command {
+            ManagedCommand::Install {
+                bundle,
+                remote_dir,
+                target,
+                activate,
+            } => {
+                println!(
+                    "{}",
+                    managed_install(&bundle, &remote_dir, &target, activate)?.message
+                );
+            }
+            ManagedCommand::Activate {
+                remote_dir,
+                release,
+            } => {
+                let active = managed_activate(&remote_dir, &release)?;
+                println!("activated FlowRT release {}", active.current_release);
+            }
+            ManagedCommand::Start {
+                remote_dir,
+                release,
+            } => {
+                let run = managed_start(&remote_dir, release.as_deref())?;
+                println!(
+                    "started FlowRT release {} pid={} log={}",
+                    run.release_id,
+                    run.supervisor_pid,
+                    run.log_path.display()
+                );
+            }
+            ManagedCommand::Stop {
+                remote_dir,
+                timeout_ms,
+            } => {
+                println!(
+                    "{}",
+                    managed_stop(&remote_dir, Duration::from_millis(timeout_ms))?
+                );
+            }
+            ManagedCommand::Status { remote_dir, format } => {
+                print!("{}", managed_status_output(&remote_dir, format)?);
+            }
+            ManagedCommand::Logs { remote_dir, lines } => {
+                print!("{}", managed_logs(&remote_dir, lines)?);
+            }
+            ManagedCommand::Rollback { remote_dir, start } => {
+                println!("{}", managed_rollback(&remote_dir, start)?.message);
+            }
+        },
         Command::DeployProbe { target_platform } => {
             println!("{}", deploy_probe(&target_platform)?);
         }

@@ -111,4 +111,5 @@ mod cargo_build;
 mod cmake;
 mod deploy;
 mod external;
+mod managed;
 mod prepare;

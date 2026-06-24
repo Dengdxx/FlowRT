@@ -410,13 +410,27 @@ bundle 内容包括：
 - `flowrt/contract`、`flowrt/launch`、`flowrt/selfdesc` 和 `flowrt/build/build-info.json`
 - `external/` 下随项目携带的 external package 副本
 
-目标机器需要安装同版本 FlowRT deb。baseline deploy 使用 SSH/SCP 上传 bundle 并做远端 FlowRT 版本检查：
+目标机器需要安装匹配版本 FlowRT deb。deploy 使用 SSH/SCP 上传 bundle，做远端 FlowRT
+版本和 target probe 校验，并把 bundle 安装进目标机 managed release store：
 
 ```bash
 flowrt deploy dist/robot-bundle --host user@host --target edge --remote-dir /opt/my_robot
+flowrt deploy dist/robot-bundle --host user@host --target edge --remote-dir /opt/my_robot --activate --start
 ```
 
-只查看计划可加 `--dry-run`。
+`--activate` 会把新 release 写成 active；`--start` 隐含 activate，并启动 generated
+supervisor。目标机上的 managed 目录包含 `releases/<release-id>/`、`state/active.json`、
+`state/run.json` 和 `logs/<run-id>/supervisor.log`。运行后可用：
+
+```bash
+flowrt remote status --host user@host --remote-dir /opt/my_robot
+flowrt remote logs --host user@host --remote-dir /opt/my_robot --lines 100
+flowrt remote stop --host user@host --remote-dir /opt/my_robot
+flowrt remote rollback --host user@host --remote-dir /opt/my_robot --start
+```
+
+只查看部署计划可加 `--dry-run`。`deploy` 不做交叉编译、不安装系统 deb，也不替用户配置
+长期 systemd 服务。
 
 ## 用户组件
 

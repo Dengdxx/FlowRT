@@ -128,4 +128,4 @@ script = "scripts/test-v0280-module-app-layout-smoke.sh"
 
 [[focused_smoke]]
 version = "0.29.0"
-script = "scripts/test-v0290-example-module-layout-smoke.sh"
+script = "scripts/test-v0290-remote-managed-runtime-smoke.sh"

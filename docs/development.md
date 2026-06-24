@@ -30,7 +30,7 @@ scripts/test-cpp-static-quality.sh
 scripts/test-v0260-transport-compile-evidence-smoke.sh
 scripts/test-v0271-debt-closure-smoke.sh
 scripts/test-v0280-module-app-layout-smoke.sh
-scripts/test-v0290-example-module-layout-smoke.sh
+scripts/test-v0290-remote-managed-runtime-smoke.sh
 ```
 
 codegen golden snapshot 只锁定生成文本漂移，不能证明 generated shell 可被 Rust/C++ 编译器接受。
@@ -93,17 +93,18 @@ scripts/test-v0280-module-app-layout-smoke.sh
 generated CMake 自动发现 `app/<module>/cpp/src/**` 和 `app/<module>/c/**`，并加入
 `app/<module>/cpp/inc` include 路径。
 
-入库示例 module layout smoke：
+remote managed runtime smoke：
 
 ```bash
-scripts/test-v0290-example-module-layout-smoke.sh
+scripts/test-v0290-remote-managed-runtime-smoke.sh
 ```
 
-该 smoke 聚焦 `v0.29.0` 的入库示例迁移：`examples/workspace_demo` 采用 module-local
-用户目录，Rust 实现位于 `app/perception/rust/processor.rs`，C++ 实现位于
-`app/control/cpp/src/processor.cpp`，C++ headers 位于 `app/control/cpp/inc/`；示例 contract
-使用 Rust/C++ process 分离和 `iox2` backend。smoke 会复制示例到临时目录，验证
-App API / reference stub / generated CMake 路径，并执行 `flowrt deps` 与
+该 smoke 聚焦 `v0.29.0` 的 remote managed runtime：用伪 bundle 覆盖 managed install、
+start、status、logs、rollback 和 stop 生命周期，证明 release store、active/run 状态和
+supervisor 日志路径可用。它同时保留入库示例迁移检查：`examples/workspace_demo` 采用
+module-local 用户目录，Rust 实现位于 `app/perception/rust/processor.rs`，C++ 实现位于
+`app/control/cpp/src/processor.cpp`，C++ headers 位于 `app/control/cpp/inc/`；smoke 会复制示例
+到临时目录，验证 App API / reference stub / generated CMake 路径，并执行 `flowrt deps` 与
 `flowrt build --launcher`。
 
 VSCode / clangd：

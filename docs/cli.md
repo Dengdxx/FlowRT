@@ -26,7 +26,13 @@ flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-
 flowrt fault-matrix check <path/to/fault-matrix.toml>
 flowrt fault-matrix run <path/to/fault-matrix.toml> [--out-dir <dir>] [--report <path/to/report.json>]
 flowrt bundle <path/to/robot.rsdl> [--out-dir flowrt] --output <path/to/bundle-dir> [--profile <name>] [--build-mode <release|debug>] [--allow-island]
-flowrt deploy <path/to/bundle-dir> --host <user@host> --target <target-name> --remote-dir <dir> [--dry-run] [--allow-island]
+flowrt deploy <path/to/bundle-dir> --host <user@host> --target <target-name> --remote-dir <dir> [--dry-run] [--allow-island] [--activate] [--start]
+flowrt remote activate --host <user@host> --remote-dir <dir> --release <release-id> [--dry-run]
+flowrt remote start --host <user@host> --remote-dir <dir> [--release <release-id>] [--dry-run]
+flowrt remote stop --host <user@host> --remote-dir <dir> [--timeout-ms <ms>] [--dry-run]
+flowrt remote status --host <user@host> --remote-dir <dir> [--format <text|json>]
+flowrt remote logs --host <user@host> --remote-dir <dir> [--lines <N>]
+flowrt remote rollback --host <user@host> --remote-dir <dir> [--start] [--dry-run]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
@@ -794,10 +800,29 @@ resource provider 和 runtime dependency 纳入部署闭包。bundle 不包含 F
 
 ```bash
 flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /opt/external-demo
+flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /opt/external-demo --activate --start
 flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /opt/external-demo --dry-run
 ```
 
-`deploy` 读取 `bundle.toml`，不回读源码或 RSDL。schema v2 bundle 以 `artifacts` 列表作为部署事实源：dry-run 和真实部署都会按请求 `target` 选择 artifact，并校验 platform、相对路径、文件存在性、sha256、external package artifact closure、external scope resource provider closure，以及 runtime dependency 的 version、platform、path 和 sha256；如果 artifact platform、`bin/<platform>/` 路径层级或 hash 不一致，会提示重新执行对应的 `flowrt build --target <platform> --launcher` 或 `flowrt doctor <rsdl> --target <platform>` 后再 bundle。schema v1 bundle 继续按顶层 `target` 字段兼容。非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在同一 `major.minor` 的 FlowRT，再调用远端 FlowRT deploy probe 校验 remote platform 和 runtime dependency 指纹，最后用 `scp -r` 上传 bundle 到 `remote-dir`。它不做交叉编译、不安装系统 deb、不管理远端 supervisor 服务，这些属于后续多目标部署深化。
+`deploy` 读取 `bundle.toml`，不回读源码或 RSDL。schema v2 bundle 以 `artifacts` 列表作为部署事实源：dry-run 和真实部署都会按请求 `target` 选择 artifact，并校验 platform、相对路径、文件存在性、sha256、external package artifact closure、external scope resource provider closure，以及 runtime dependency 的 version、platform、path 和 sha256；如果 artifact platform、`bin/<platform>/` 路径层级或 hash 不一致，会提示重新执行对应的 `flowrt build --target <platform> --launcher` 或 `flowrt doctor <rsdl> --target <platform>` 后再 bundle。schema v1 bundle 继续按顶层 `target` 字段兼容。非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在同一 `major.minor` 的 FlowRT，再调用远端 FlowRT deploy probe 校验 remote platform 和 runtime dependency 指纹，最后用 `scp -r` 上传 bundle 到 `<remote-dir>/incoming/<release-id>`，并在目标机执行 `flowrt managed install`。传入 `--activate` 时会原子更新 active release；传入 `--start` 时隐含 activate，并在安装后启动 generated supervisor。它不做交叉编译、不安装系统 deb，也不替用户配置 SSH 或系统服务。
+
+managed 目录布局由目标机本地 `flowrt managed` 维护：
+
+```text
+<remote-dir>/
+  incoming/<release-id>/          # deploy 上传的临时 bundle
+  releases/<release-id>/          # 内容寻址 release store
+    bundle.toml
+    flowrt-managed-release.json
+    ...
+  state/
+    active.json                   # current / previous release pointer
+    run.json                      # 当前或最近一次 run 状态
+  logs/<run-id>/supervisor.log
+```
+
+release id 由 bundle package、profile、target、platform、build mode、entry 和 artifact
+hash 派生；同一 bundle 重复部署会落到同一个 release id。
 
 如果 bundle manifest 标记 `artifact_mode = "island"`、`temporary_overlay = true` 或
 `test_only = true`，`deploy` 默认拒绝部署。需要把 island 脚手架临时部署到测试机器时，
@@ -807,6 +832,35 @@ flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /op
 `deploy` 还会拒绝空 host、以 `-` 开头的 host、空 remote dir 和带 shell 元字符的
 remote dir；CLI 调用 `ssh` / `scp` 时使用参数边界，避免 host、path 或远端参数被解释成
 本地 option。
+
+## `remote` / `managed`
+
+```bash
+flowrt remote status --host user@host --remote-dir /opt/my_robot
+flowrt remote logs --host user@host --remote-dir /opt/my_robot --lines 100
+flowrt remote stop --host user@host --remote-dir /opt/my_robot
+flowrt remote rollback --host user@host --remote-dir /opt/my_robot --start
+```
+
+`remote` 是面向用户的远端运行管理入口。它不通过 zenoh control-plane 控制业务
+Operation，而是通过 SSH 调用目标机本地 `flowrt managed ...`，管理由 `deploy` 安装到
+`<remote-dir>` 的 release store 和 generated supervisor 进程。`activate` 只更新
+`state/active.json`；`start` 启动 active release 的 bundle entry；`stop` 先发 SIGTERM，
+超时后 SIGKILL；`status` 可用 `--format json` 输出 active、run 和 release 列表；`logs`
+读取当前 run 的 `supervisor.log` 尾部；`rollback --start` 会先停止当前 run，再切回
+previous release 并启动。
+
+`managed` 是隐藏的目标机本地命令，供 `deploy` 和 `remote` 通过 SSH 调用，也可在目标机
+调试时显式执行：
+
+```bash
+flowrt managed install /tmp/bundle --remote-dir /opt/my_robot --target edge --activate
+flowrt managed start --remote-dir /opt/my_robot
+flowrt managed status --remote-dir /opt/my_robot --format json
+```
+
+用户正常跨机器入口应优先使用 `flowrt deploy ... --activate --start` 和 `flowrt remote ...`。
+目标机仍需要安装匹配版本的 FlowRT；`deploy` 不负责安装系统包或配置长期 systemd 服务。
 
 ## `[[process]]` 编排字段
 

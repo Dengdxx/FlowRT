@@ -16,12 +16,24 @@ include 路径；Rust 仍由 `app/rust/mod.rs` 作为 graph 级入口聚合 modu
 同一 module 可以包含不同语言的 component，但语言边界仍由 component 和 process group
 决定，不表示同一进程内混合 Rust/C++ 用户对象。
 
-当前未发布变更暂归 `v0.29.0`：入库 `examples/workspace_demo` 已迁移为 module-local 用户
-目录示例，`perception` Rust 实现位于 `app/perception/rust/processor.rs`，`control` C++
-实现位于 `app/control/cpp/src/processor.cpp`，C++ headers 位于 `app/control/cpp/inc/`；
-composition 使用 Rust/C++ process 分离和 `iox2` backend，避免示例继续展示旧 root-only
-用户代码组织。`scripts/test-v0290-example-module-layout-smoke.sh` 复制该示例到临时目录，
-验证 App API、reference stub、generated CMake 路径，并执行 `deps` 与 `build --launcher`。
+当前未发布变更暂归 `v0.29.0 Remote Managed Runtime`：`flowrt deploy` 已接入目标机
+managed release store，非 dry-run 会把 bundle 上传到 `<remote-dir>/incoming/<release-id>`，
+在远端执行 `flowrt managed install`，并可通过 `--activate` 原子更新 active release、通过
+`--start` 启动 generated supervisor。新增公开 `flowrt remote
+activate/start/stop/status/logs/rollback` 命令，通过 SSH 调用目标机本地 managed runtime；
+隐藏 `flowrt managed ...` 维护 `releases/<release-id>/`、`state/active.json`、
+`state/run.json` 和 `logs/<run-id>/supervisor.log`。`rollback --start` 会先停止当前 run，
+再切回 previous release 并启动。目标机仍需要安装匹配版本 FlowRT；deploy 不做系统包安装、
+交叉编译或长期 systemd 配置。
+
+同一未发布批次还保留入库示例结构更新：`examples/workspace_demo` 已迁移为 module-local
+用户目录示例，`perception` Rust 实现位于 `app/perception/rust/processor.rs`，`control`
+C++ 实现位于 `app/control/cpp/src/processor.cpp`，C++ headers 位于
+`app/control/cpp/inc/`；composition 使用 Rust/C++ process 分离和 `iox2` backend，避免示例
+继续展示旧 root-only 用户代码组织。`scripts/test-v0290-remote-managed-runtime-smoke.sh`
+复制该示例到临时目录，验证 App API、reference stub、generated CMake 路径，并执行
+`deps` 与 `build --launcher`；随后用伪 bundle 覆盖 managed install、start、status、logs、
+rollback 和 stop 生命周期。
 `scripts/test-v0280-module-app-layout-smoke.sh` 仍是 `v0.28.0` focused gate，覆盖 module-aware
 App API/stub 路径、`prepare` 不覆盖用户 `app/`、同一 module 内 Rust/C++ component 路径分层
 和 generated CMake 对 module C/C++ 用户目录的自动发现。

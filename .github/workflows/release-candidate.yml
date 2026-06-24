@@ -740,8 +740,8 @@ jobs:
           bash -n "$focused_smoke"
           "$focused_smoke"
 
-  v0290-example-module-layout-smoke:
-    name: v0.29.0 Example Module Layout Smoke
+  v0290-remote-managed-runtime-smoke:
+    name: v0.29.0 Remote Managed Runtime Smoke
     runs-on: ubuntu-latest
 
     steps:
@@ -756,7 +756,7 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: v0.29.0 example module layout smoke
+      - name: v0.29.0 remote managed runtime smoke
         shell: bash
         run: |
           set -euo pipefail
@@ -1600,7 +1600,7 @@ jobs:
       - v0270-operation-control-plane-smoke
       - v0271-debt-closure-smoke
       - v0280-module-app-layout-smoke
-      - v0290-example-module-layout-smoke
+      - v0290-remote-managed-runtime-smoke
       - v083-toolchain-smoke
 
     steps:
@@ -2100,7 +2100,7 @@ jobs:
       - v0270-operation-control-plane-smoke
       - v0271-debt-closure-smoke
       - v0280-module-app-layout-smoke
-      - v0290-example-module-layout-smoke
+      - v0290-remote-managed-runtime-smoke
       - v083-toolchain-smoke
       - cpp-zenoh-runtime
       - package
