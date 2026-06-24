@@ -226,10 +226,11 @@ fn global_tick_fifo_feedback_rust_uses_transport_fifo_and_seed_depth() {
     assert!(rust_shell.contains(
         "flowrt::zenoh::ZenohChannelConfig::fifo(2, flowrt::OverflowPolicy::DropOldest)"
     ));
-    assert!(!rust_shell.contains("push_at(State { x: 0f64 }, 0)"));
+    let seed = "{ let mut __seed = State::default(); __seed.x = 0f64; __seed }";
+    assert!(!rust_shell.contains(&format!("push_at({seed}, 0)")));
     assert!(
         rust_shell
-            .matches("publish_at(State { x: 0f64 }, 0)")
+            .matches(&format!("publish_at({seed}, 0)"))
             .count()
             >= 2
     );
